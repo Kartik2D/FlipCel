@@ -174,6 +174,9 @@ class App {
     this.universalPanel.addEventListener("clear", () => this.onClear());
     this.universalPanel.addEventListener("undo", () => this.onUndo());
     this.universalPanel.addEventListener("redo", () => this.onRedo());
+    this.universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {
+      this.onAliasFixToggle((e as CustomEvent<boolean>).detail);
+    });
 
     // Layers panel events
     this.layersPanel.addEventListener("layer-add", (e: Event) => {
@@ -587,6 +590,10 @@ class App {
     this.pixelCanvasManager.clear();
     this.paperRenderer.clearActiveLayer(); // Only clear the active layer
     this.historyManager.snapshot(); // Record as a history action (not clear history)
+  }
+
+  private onAliasFixToggle(enabled: boolean) {
+    this.paperRenderer.setAliasFixEnabled(enabled);
   }
 
   // ============================================================

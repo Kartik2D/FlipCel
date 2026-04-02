@@ -2267,6 +2267,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
   @property({ type: Number }) zoomLevel = 100;
   @property({ type: Number }) rotation = 0;
   @property({ type: Boolean }) cursorEnabled = true;
+  @property({ type: Boolean }) aliasFixEnabled = true;
 
   private history = new StoreController(this, historyStateStore);
 
@@ -2294,6 +2295,18 @@ export class InkwellUniversalPanel extends FloatingPanel {
         this.cursorEnabled = (e.target as HTMLInputElement).checked;
         this.emit("cursor-toggle", this.cursorEnabled);
       }}
+              />
+            </div>
+
+            <div class="toggle">
+              <span>ailias fix</span>
+              <input
+                type="checkbox"
+                .checked=${this.aliasFixEnabled}
+                @change=${(e: Event) => {
+                  this.aliasFixEnabled = (e.target as HTMLInputElement).checked;
+                  this.emit("alias-fix-toggle", this.aliasFixEnabled);
+                }}
               />
             </div>
 

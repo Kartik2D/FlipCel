@@ -28,6 +28,8 @@ interface SpatialIndexEntry {
 export class PaperRenderer {
   private config: CanvasConfig;
   private camera: Camera | null = null;
+  private aliasFixEnabled = true;
+  private readonly aliasFixStrokeWidth = 0.5;
 
   // Spatial index of current layer pieces (Path + CompoundPath)
   private spatialIndex = new RBush<SpatialIndexEntry>();
@@ -213,14 +215,14 @@ export class PaperRenderer {
         if (indices.length === 1) {
           const src = subs[root];
           const newPath = new paper.Path(subData[root]);
-          newPath.fillColor = fillColor;
+          this.applyPathStyle(newPath, fillColor);
           newPath.closed = src.closed;
           this.normalizeBooleanResult(newPath);
           layer.insertChild(insertAt++, newPath);
           this.indexInsert(newPath);
         } else {
           const newCompound = new paper.CompoundPath([]);
-          newCompound.fillColor = fillColor;
+          this.applyPathStyle(newCompound, fillColor);
           // Even-odd is robust to winding issues and preserves holes / islands correctly
           newCompound.fillRule = "evenodd";
           for (const ci of indices) {
@@ -629,6 +631,38 @@ export class PaperRenderer {
   }
 
   /**
+   * Apply fill and tiny same-color stroke to hide anti-aliased seams.
+   */
+  private applyPathStyle(item: paper.PathItem, fill: paper.Color | null): void {
+    if (!fill) {
+      item.fillColor = null;
+      item.strokeColor = null;
+      item.strokeWidth = 0;
+      return;
+    }
+    item.fillColor = fill.clone();
+    if (this.aliasFixEnabled) {
+      item.strokeColor = fill.clone();
+      item.strokeWidth = this.aliasFixStrokeWidth;
+    } else {
+      item.strokeColor = null;
+      item.strokeWidth = 0;
+    }
+  }
+
+  setAliasFixEnabled(enabled: boolean): void {
+    this.aliasFixEnabled = enabled;
+    for (const layer of paper.project.layers) {
+      for (const child of layer.children) {
+        if (child instanceof paper.Path || child instanceof paper.CompoundPath) {
+          this.applyPathStyle(child, child.fillColor);
+        }
+      }
+    }
+    paper.view.update();
+  }
+
+  /**
    * Check if two paths collide
    */
   private pathsCollide(a: paper.PathItem, b: paper.PathItem): boolean {
@@ -692,7 +726,7 @@ export class PaperRenderer {
           if (cleaned && !cleaned.isEmpty()) {
             this.forceEvenOdd(cleaned);
             // Cleaned result replaces originals
-            cleaned.fillColor = currentPath.fillColor;
+            this.applyPathStyle(cleaned, currentPath.fillColor);
             // Index updates: remove consumed pieces, insert result
             this.indexRemove(ex);
             if (currentPath.parent) this.indexRemove(currentPath);
@@ -712,7 +746,7 @@ export class PaperRenderer {
           const cleaned = this.normalizeBooleanResult(result);
           if (cleaned && !cleaned.isEmpty()) {
             this.forceEvenOdd(cleaned);
-            cleaned.fillColor = ex.fillColor;
+            this.applyPathStyle(cleaned, ex.fillColor);
             this.indexRemove(ex);
             ex.replaceWith(cleaned);
             this.indexInsert(cleaned);
@@ -749,7 +783,7 @@ export class PaperRenderer {
         const cleaned = this.normalizeBooleanResult(result);
         if (cleaned && !cleaned.isEmpty()) {
           this.forceEvenOdd(cleaned);
-          cleaned.fillColor = ex.fillColor;
+          this.applyPathStyle(cleaned, ex.fillColor);
           this.indexRemove(ex);
           ex.replaceWith(cleaned);
           this.indexInsert(cleaned);
@@ -780,7 +814,7 @@ export class PaperRenderer {
 
     // Apply color and move to layer root
     for (const p of newPaths) {
-      p.fillColor = paperColor;
+      this.applyPathStyle(p, paperColor);
       layer.addChild(p);
       this.indexInsert(p);
     }
@@ -861,7 +895,7 @@ export class PaperRenderer {
             p.remove();
             if (cleaned && !cleaned.isEmpty()) {
               this.forceEvenOdd(cleaned);
-              cleaned.fillColor = paperColor;
+              this.applyPathStyle(cleaned, paperColor);
               layer.addChild(cleaned);
               this.indexInsert(cleaned);
               clippedPaths.push(cleaned);
@@ -906,7 +940,7 @@ export class PaperRenderer {
           }
         }
         if (remaining && !remaining.isEmpty()) {
-          remaining.fillColor = paperColor;
+          this.applyPathStyle(remaining, paperColor);
           layer.addChild(remaining);
           this.indexInsert(remaining);
           clippedPaths.push(remaining);
@@ -1047,7 +1081,7 @@ export class PaperRenderer {
           }
         } catch {}
       }
-      result.fillColor = paths[0].fillColor;
+      this.applyPathStyle(result, paths[0].fillColor);
       colorPaths.set(color, result);
       for (const p of paths) if (p.parent && p !== result) p.remove();
     }
@@ -1102,7 +1136,7 @@ export class PaperRenderer {
           const cleaned = this.normalizeBooleanResult(result);
           if (cleaned && !cleaned.isEmpty()) {
             this.forceEvenOdd(cleaned);
-            cleaned.fillColor = botPath.fillColor;
+            this.applyPathStyle(cleaned, botPath.fillColor);
             botPath.replaceWith(cleaned);
             colorPaths.set(c.color, cleaned);
           } else {
