@@ -16,7 +16,8 @@ import type { Point } from "./types";
 
 export interface ToggleSetting {
   type: "toggle";
-  options: readonly [string, string];
+  /** At least two options (e.g. add / subtract / inside) */
+  options: readonly string[];
   default: string;
 }
 
@@ -77,7 +78,11 @@ export interface ToolDefinition<T extends SettingsSchema = SettingsSchema> {
 // ============================================================
 
 const brushSettings = {
-  mode: { type: "toggle", options: ["add", "subtract"], default: "add" },
+  mode: {
+    type: "toggle",
+    options: ["add", "subtract", "inside"] as const,
+    default: "add",
+  },
   sizeMin: { type: "range", min: 1, max: 100, step: 0.1, default: 1 },
   sizeMax: { type: "range", min: 1, max: 100, step: 0.1, default: 4 },
 } as const satisfies SettingsSchema;
@@ -150,7 +155,11 @@ export const brush: ToolDefinition<typeof brushSettings> = {
 // ============================================================
 
 const lassoSettings = {
-  mode: { type: "toggle", options: ["add", "subtract"], default: "add" },
+  mode: {
+    type: "toggle",
+    options: ["add", "subtract", "inside"] as const,
+    default: "add",
+  },
 } as const satisfies SettingsSchema;
 
 // Helper function to draw the lasso shape (closure to avoid adding to interface)
@@ -243,13 +252,32 @@ export const pan: ToolDefinition<typeof panSettings> = {
 };
 
 // ============================================================
+// Eyedropper Tool
+// ============================================================
+
+const eyedropperSettings = {} as const satisfies SettingsSchema;
+
+export const eyedropper: ToolDefinition<typeof eyedropperSettings> = {
+  id: "eyedropper",
+  name: "Eyedropper",
+  hotkey: "i",
+  settings: eyedropperSettings,
+
+  onStart() {},
+  onMove() {},
+  onEnd() {
+    return null;
+  },
+};
+
+// ============================================================
 // Tool Registry
 // ============================================================
 
-export const tools = [brush, lasso, select, pan] as const;
+export const tools = [brush, lasso, select, pan, eyedropper] as const;
 
 export type ToolId = (typeof tools)[number]["id"];
-export type DrawMode = "add" | "subtract";
+export type DrawMode = "add" | "subtract" | "inside";
 
 /**
  * Get a tool definition by id

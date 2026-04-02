@@ -817,6 +817,139 @@ export class PaperRenderer {
     paper.view.update();
   }
 
+  /**
+   * Resolve a hit-test item to a root Path/CompoundPath on the active layer (for inside-mode clip).
+   */
+  hitToClipPathItem(hit: paper.Item | null): paper.PathItem | null {
+    if (!hit) return null;
+    let cur: paper.Item | null = hit;
+    const layer = paper.project.activeLayer;
+    while (cur) {
+      if (cur instanceof paper.Path || cur instanceof paper.CompoundPath) {
+        if (cur.layer === layer) return cur;
+      }
+      cur = cur.parent;
+    }
+    return null;
+  }
+
+  /**
+   * Add traced paths clipped by intersect with a shape (or full viewport when clipPathItem is null).
+   * Result merges into the layer like addPath.
+   */
+  async addPathIntersectClip(
+    svg: string,
+    color: string = "#000000",
+    clipPathItem: paper.PathItem | null,
+  ): Promise<void> {
+    const layer = paper.project.activeLayer;
+    const paperColor = new paper.Color(color);
+
+    this.ensureSpatialIndex();
+
+    const newPaths = this.importSVG(svg);
+    if (newPaths.length === 0) return;
+
+    const clippedPaths: paper.PathItem[] = [];
+    if (clipPathItem) {
+      const clip = clipPathItem.clone({ insert: false });
+      try {
+        for (const p of newPaths) {
+          try {
+            const ix = p.intersect(clip);
+            const cleaned = this.normalizeBooleanResult(ix);
+            p.remove();
+            if (cleaned && !cleaned.isEmpty()) {
+              this.forceEvenOdd(cleaned);
+              cleaned.fillColor = paperColor;
+              layer.addChild(cleaned);
+              this.indexInsert(cleaned);
+              clippedPaths.push(cleaned);
+            } else {
+              cleaned?.remove();
+            }
+          } catch {
+            p.remove();
+          }
+        }
+      } finally {
+        clip.remove();
+      }
+    } else {
+      // Paint-behind fallback: keep only the non-overlapping parts vs all touching existing paths.
+      const padding = 2;
+      for (const p of newPaths) {
+        let remaining: paper.PathItem | null = p;
+        const existing = this.queryByBounds(p.bounds, padding);
+        for (const ex of existing) {
+          if (!remaining || !remaining.parent || !ex.parent) break;
+          if (!this.pathsCollide(remaining, ex)) continue;
+          try {
+            const ix = this.normalizeBooleanResult(remaining.intersect(ex));
+            const hasOverlap = !!(ix && !ix.isEmpty());
+            ix?.remove();
+            if (!hasOverlap) continue;
+
+            const sub = remaining.subtract(ex) as paper.PathItem | null;
+            const diff: paper.PathItem | null = this.normalizeBooleanResult(sub);
+            remaining.remove();
+            if (diff && !diff.isEmpty()) {
+              this.forceEvenOdd(diff);
+              remaining = diff;
+            } else {
+              diff?.remove();
+              remaining = null;
+              break;
+            }
+          } catch {
+            // Keep current remaining shape if boolean op fails for this candidate.
+          }
+        }
+        if (remaining && !remaining.isEmpty()) {
+          remaining.fillColor = paperColor;
+          layer.addChild(remaining);
+          this.indexInsert(remaining);
+          clippedPaths.push(remaining);
+        } else {
+          remaining?.remove();
+        }
+      }
+    }
+
+    if (clippedPaths.length === 0) {
+      paper.view.update();
+      return;
+    }
+
+    const newSet = new Set(clippedPaths);
+    const existingSet = new Map<number, paper.PathItem>();
+    const padding = 2;
+    for (const np of clippedPaths) {
+      for (const hit of this.queryByBounds(np.bounds, padding)) {
+        if (newSet.has(hit)) continue;
+        existingSet.set(hit.id, hit);
+      }
+    }
+    const layerOrder = new Map<number, number>();
+    for (let i = 0; i < layer.children.length; i++) {
+      const c = layer.children[i];
+      if (c instanceof paper.Path || c instanceof paper.CompoundPath) {
+        layerOrder.set(c.id, i);
+      }
+    }
+    const existing = [...existingSet.values()].sort(
+      (a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0),
+    );
+
+    const changedItems: paper.PathItem[] = [];
+    for (const newPath of clippedPaths) {
+      this.mergePathWithExisting(newPath, existing, changedItems);
+    }
+
+    this.normalizeAfterLocalEdit([...changedItems, ...clippedPaths]);
+    paper.view.update();
+  }
+
   async subtractPath(svg: string): Promise<void> {
     // Build index from current layer pieces (exclude the soon-to-be-imported eraser)
     this.ensureSpatialIndex();

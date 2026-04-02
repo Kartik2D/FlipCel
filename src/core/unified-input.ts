@@ -769,6 +769,9 @@ export class UnifiedInputManager {
       case "select":
         this.canvas.style.cursor = "default";
         break;
+      case "eyedropper":
+        this.canvas.style.cursor = "copy";
+        break;
       default:
         this.canvas.style.cursor = "crosshair";
     }

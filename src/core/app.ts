@@ -38,6 +38,7 @@ import type {
 import "../ui/ui-lib"; // Register Lit components
 import {
   colorStore,
+  prevColorStore,
   toolStore,
   configStore,
   modifiersStore,
@@ -66,6 +67,9 @@ class App {
   private camera: Camera;
   private isInitialized = false;
   private pixelResScale = 2;
+
+  /** Inside mode only: clip to path under pointer, or null for full viewport ("paint behind"). */
+  private insideClipForStroke: paper.PathItem | null | undefined = undefined;
 
   constructor() {
     // Get canvas elements
@@ -385,6 +389,23 @@ class App {
       return;
     }
 
+    if (tool === "eyedropper") {
+      this.pickColorAt(point);
+      return;
+    }
+
+    if (tool === "brush" || tool === "lasso") {
+      if (this.getEffectiveMode(tool) === "inside") {
+        const viewportPoint = this.pixelToViewport(point);
+        const hit = this.paperRenderer.hitTest(viewportPoint);
+        this.insideClipForStroke = this.paperRenderer.hitToClipPathItem(hit);
+      } else {
+        this.insideClipForStroke = undefined;
+      }
+    } else {
+      this.insideClipForStroke = undefined;
+    }
+
     // Delegate to tool behavior via PixelCanvas
     const settings = toolSettingsStore.get();
     this.pixelCanvasManager.startTool(tool, point, settings);
@@ -397,6 +418,11 @@ class App {
 
     if (tool === "select") {
       this.selectionController.handleMove(point);
+      return;
+    }
+
+    if (tool === "eyedropper") {
+      this.pickColorAt(point);
       return;
     }
 
@@ -414,43 +440,62 @@ class App {
       return;
     }
 
+    if (tool === "eyedropper") return;
+
     this.uiOverlay.setDrawingState(false);
 
     // Delegate to tool behavior via PixelCanvas
     const settings = toolSettingsStore.get();
     const stroke = this.pixelCanvasManager.endTool(tool, settings);
 
-    if (!stroke || stroke.points.length === 0) return;
+    if (!stroke || stroke.points.length === 0) {
+      this.insideClipForStroke = undefined;
+      return;
+    }
 
     try {
       const svg = await this.tracer.trace(this.pixelCanvas);
-      if (svg) {
-        const effectiveMode = this.getEffectiveMode(tool);
-
-        if (effectiveMode === "add") {
-          const color = colorStore.get();
-          await this.paperRenderer.addPath(svg, color);
-        } else {
-          await this.paperRenderer.subtractPath(svg);
-        }
-        this.pixelCanvasManager.clear();
-        this.historyManager.snapshot(); // Record history after drawing
+      if (!svg) {
+        this.insideClipForStroke = undefined;
+        return;
       }
+
+      const clipForInside = this.insideClipForStroke;
+      this.insideClipForStroke = undefined;
+
+      const effectiveMode = this.getEffectiveMode(tool);
+
+      if (effectiveMode === "add") {
+        const color = colorStore.get();
+        await this.paperRenderer.addPath(svg, color);
+      } else if (effectiveMode === "subtract") {
+        await this.paperRenderer.subtractPath(svg);
+      } else {
+        const color = colorStore.get();
+        await this.paperRenderer.addPathIntersectClip(svg, color, clipForInside ?? null);
+      }
+      this.pixelCanvasManager.clear();
+      this.historyManager.snapshot(); // Record history after drawing
     } catch (error) {
+      this.insideClipForStroke = undefined;
       console.error("Tracing failed:", error);
     }
   }
 
-  private getEffectiveMode(tool: ToolId): "add" | "subtract" {
+  private getEffectiveMode(tool: ToolId): "add" | "subtract" | "inside" {
     const settings = toolSettingsStore.get();
     const modifiers = modifiersStore.get();
     const toolSettings = settings[tool] as { mode?: string };
-    const baseMode = toolSettings.mode ?? "add";
-    return modifiers.shift
-      ? baseMode === "add"
-        ? "subtract"
-        : "add"
-      : (baseMode as "add" | "subtract");
+    const baseMode = (toolSettings.mode ?? "add") as "add" | "subtract" | "inside";
+    if (!modifiers.shift) return baseMode;
+
+    const modeCycle: Array<"add" | "subtract" | "inside"> = [
+      "add",
+      "subtract",
+      "inside",
+    ];
+    const idx = modeCycle.indexOf(baseMode);
+    return modeCycle[(idx + 1) % modeCycle.length];
   }
 
   private onToolCancel(tool: ToolId) {
@@ -461,6 +506,9 @@ class App {
       return;
     }
 
+    if (tool === "eyedropper") return;
+
+    this.insideClipForStroke = undefined;
     this.uiOverlay.setDrawingState(false);
     // End the tool action without tracing
     const settings = toolSettingsStore.get();
@@ -494,6 +542,31 @@ class App {
     if (brushSettings.sizeMax !== undefined) {
       this.uiOverlay.setMaxBrushSize(brushSettings.sizeMax);
     }
+  }
+
+  private pickColorAt(point: Point) {
+    const viewportPoint = this.pixelToViewport(point);
+    const item = this.paperRenderer.hitTest(viewportPoint);
+    if (!item || !("fillColor" in item)) return;
+
+    const fillColor = item.fillColor;
+    if (!fillColor) return;
+
+    const toHex = (channel: number) =>
+      Math.round(Math.max(0, Math.min(1, channel)) * 255)
+        .toString(16)
+        .padStart(2, "0");
+    const pickedColor = `#${toHex(fillColor.red)}${toHex(fillColor.green)}${toHex(fillColor.blue)}`;
+
+    prevColorStore.set(colorStore.get());
+    colorStore.set(pickedColor);
+  }
+
+  private pixelToViewport(point: Point): Point {
+    return {
+      x: (point.x / this.config.pixelWidth) * this.config.viewportWidth,
+      y: (point.y / this.config.pixelHeight) * this.config.viewportHeight,
+    };
   }
 
   private onPixelResChange(scale: number) {

@@ -2030,7 +2030,11 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
     def: SettingDef,
     currentValue: unknown
   ): TemplateResult {
-    const hint = key === "mode" && this.modifiers.value.shift ? "(Shift toggled)" : "";
+    const hint =
+      key === "mode" &&
+      this.modifiers.value.shift
+        ? "(Shift toggled)"
+        : "";
     const label = this.formatLabel(key);
 
     if (def.type === "toggle") {
@@ -2120,6 +2124,9 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
       if (currentToolId === "pan") {
         return html`<p class="hint">Drag to pan, scroll to zoom.</p>`;
       }
+      if (currentToolId === "eyedropper") {
+        return html`<p class="hint">Click artwork to pick its color.</p>`;
+      }
       return html``;
     }
 
@@ -2159,25 +2166,50 @@ interface PanelVisibility {
   visible: boolean;
 }
 
-@customElement("inkwell-universal-panel")
-export class InkwellUniversalPanel extends FloatingPanel {
-  @property({ type: Number }) zoomLevel = 100;
-  @property({ type: Number }) rotation = 0;
-  @property({ type: Boolean }) cursorEnabled = true;
+const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
+  { id: "color-panel", label: "HSV", visible: true },
+  { id: "hsl-panel", label: "HSL", visible: true },
+  { id: "okhsl-rect-panel", label: "OKHSL", visible: true },
+  { id: "tools-panel", label: "Tools", visible: true },
+  { id: "tool-settings-panel", label: "Tool Settings", visible: true },
+  { id: "universal-panel", label: "Settings", visible: true },
+  { id: "layers-panel", label: "Layers", visible: true },
+];
 
-  @state() private panelVisibility: PanelVisibility[] = [
-    { id: "color-panel", label: "HSV", visible: true },
-    { id: "hsl-panel", label: "HSL", visible: true },
-    { id: "okhsl-rect-panel", label: "OKHSL", visible: true },
-    { id: "tools-panel", label: "Tools", visible: true },
-    { id: "tool-settings-panel", label: "Settings", visible: true },
-    { id: "layers-panel", label: "Layers", visible: true },
-  ];
+// ============================================================
+// Top Bar Panel (panel visibility toggles)
+// ============================================================
 
-  private history = new StoreController(this, historyStateStore);
+@customElement("inkwell-top-bar-panel")
+export class InkwellTopBarPanel extends FloatingPanel {
+  @state() private panelVisibility: PanelVisibility[] = PANEL_VISIBILITY_DEFAULTS.map((p) => ({
+    ...p,
+  }));
 
   static styles = css`
     ${FloatingPanel.styles}
+
+    :host {
+      --panel-top: 1%;
+      --panel-left: 50%;
+      --panel-width: max-content;
+      transform: translateX(-50%);
+      z-index: 1200;
+      max-width: calc(100vw - 16px);
+    }
+
+    .face {
+      padding: 8px 10px;
+    }
+
+    .bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      width: max-content;
+      max-width: 100%;
+    }
   `;
 
   connectedCallback() {
@@ -2198,17 +2230,49 @@ export class InkwellUniversalPanel extends FloatingPanel {
 
   private togglePanel(id: string) {
     const el = document.getElementById(id);
-    if (el) {
-      const panel = this.panelVisibility.find((p) => p.id === id);
-      if (panel) {
-        const newVisible = !panel.visible;
-        el.style.display = newVisible ? "" : "none";
-        this.panelVisibility = this.panelVisibility.map((p) =>
-          p.id === id ? { ...p, visible: newVisible } : p
-        );
-      }
-    }
+    if (!el) return;
+    const panel = this.panelVisibility.find((p) => p.id === id);
+    if (!panel) return;
+
+    const newVisible = !panel.visible;
+    el.style.display = newVisible ? "" : "none";
+    this.panelVisibility = this.panelVisibility.map((p) =>
+      p.id === id ? { ...p, visible: newVisible } : p,
+    );
   }
+
+  render() {
+    return html`
+      <div class="block">
+        <div class="face">
+          <div class="bar">
+            ${this.panelVisibility.map(
+              (panel) => html`
+                <blocky-button
+                  ?active=${panel.visible}
+                  @click=${() => this.togglePanel(panel.id)}
+                  >${panel.label}</blocky-button
+                >
+              `,
+            )}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+}
+
+@customElement("inkwell-universal-panel")
+export class InkwellUniversalPanel extends FloatingPanel {
+  @property({ type: Number }) zoomLevel = 100;
+  @property({ type: Number }) rotation = 0;
+  @property({ type: Boolean }) cursorEnabled = true;
+
+  private history = new StoreController(this, historyStateStore);
+
+  static styles = css`
+    ${FloatingPanel.styles}
+  `;
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(
@@ -2285,20 +2349,6 @@ export class InkwellUniversalPanel extends FloatingPanel {
               >
             </div>
 
-          <section>
-            <h3>Panels</h3>
-            <div class="grid">
-              ${this.panelVisibility.map(
-                (panel) => html`
-                  <blocky-button
-                    ?active=${panel.visible}
-                    @click=${() => this.togglePanel(panel.id)}
-                    >${panel.label}</blocky-button
-                  >
-                `
-              )}
-            </div>
-          </section>
         </div>
       </div>
     `;
@@ -2492,6 +2542,7 @@ declare global {
     "inkwell-hsl-panel": InkwellHSLPanel;
     "inkwell-okhsl-rect-panel": InkwellOKHSLRectPanel;
     "inkwell-okhsl-panel": InkwellOKHSLPanel;
+    "inkwell-top-bar-panel": InkwellTopBarPanel;
     "inkwell-tools-panel": InkwellToolsPanel;
     "inkwell-tool-settings-panel": InkwellToolSettingsPanel;
     "inkwell-universal-panel": InkwellUniversalPanel;
