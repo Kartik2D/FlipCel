@@ -421,6 +421,29 @@ export class PaperRenderer {
   }
 
   /**
+   * Reorder layers by IDs from bottom to top.
+   * Returns false if the provided list doesn't match existing layers.
+   */
+  reorderLayers(layerIdsBottomToTop: string[]): boolean {
+    if (layerIdsBottomToTop.length !== this.layerMap.size) return false;
+
+    const orderedLayers: paper.Layer[] = [];
+    for (const id of layerIdsBottomToTop) {
+      const layer = this.layerMap.get(id);
+      if (!layer) return false;
+      orderedLayers.push(layer);
+    }
+
+    // Bringing each layer to front in bottom->top sequence yields exact z-order.
+    for (const layer of orderedLayers) {
+      layer.bringToFront();
+    }
+
+    paper.view.update();
+    return true;
+  }
+
+  /**
    * Import and scale SVG, returning extracted paths (ungrouped)
    * When camera is active, positions paths in world space
    *
@@ -914,7 +937,9 @@ export class PaperRenderer {
       const padding = 2;
       for (const p of newPaths) {
         let remaining: paper.PathItem | null = p;
-        const existing = this.queryByBounds(p.bounds, padding);
+        const existing = this.queryByBounds(p.bounds, padding).filter(
+          (it) => it.layer === layer,
+        );
         for (const ex of existing) {
           if (!remaining || !remaining.parent || !ex.parent) break;
           if (!this.pathsCollide(remaining, ex)) continue;
@@ -960,6 +985,7 @@ export class PaperRenderer {
     const padding = 2;
     for (const np of clippedPaths) {
       for (const hit of this.queryByBounds(np.bounds, padding)) {
+        if (hit.layer !== layer) continue;
         if (newSet.has(hit)) continue;
         existingSet.set(hit.id, hit);
       }

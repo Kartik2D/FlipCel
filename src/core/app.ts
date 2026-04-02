@@ -195,6 +195,10 @@ class App {
       const layerId = (e as CustomEvent<string>).detail;
       this.onLayerVisibilityToggle(layerId);
     });
+    this.layersPanel.addEventListener("layer-reorder", (e: Event) => {
+      const orderedTopToBottom = (e as CustomEvent<string[]>).detail;
+      this.onLayerReorder(orderedTopToBottom);
+    });
   }
 
   private calculateConfig(): CanvasConfig {
@@ -705,6 +709,29 @@ class App {
         l.id === layerId ? { ...l, visible: newVisibility } : l
       ),
     }));
+  }
+
+  private onLayerReorder(orderedTopToBottom: string[]) {
+    const state = layerStore.get();
+    const layersById = new Map(state.layers.map((layer) => [layer.id, layer]));
+
+    // Store and renderer use bottom->top order; panel emits top->bottom.
+    const orderedBottomToTop = [...orderedTopToBottom].reverse();
+    if (orderedBottomToTop.length !== state.layers.length) return;
+
+    const reorderedLayers = orderedBottomToTop
+      .map((id) => layersById.get(id))
+      .filter((layer): layer is NonNullable<typeof layer> => Boolean(layer));
+
+    if (reorderedLayers.length !== state.layers.length) return;
+
+    this.paperRenderer.reorderLayers(orderedBottomToTop);
+    layerStore.set({
+      layers: reorderedLayers,
+      activeLayerId: state.activeLayerId,
+    });
+
+    this.historyManager.snapshot();
   }
 }
 

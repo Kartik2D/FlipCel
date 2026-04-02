@@ -367,6 +367,7 @@ export class Block extends LitElement {
 
   private _onDragEnd = () => {
     this._applyPercentagePosition();
+    this.onDragCommitted();
     this._cleanupDrag();
   };
 
@@ -509,6 +510,10 @@ export class Block extends LitElement {
     this._applyPercentagePosition();
     this._cleanupResize();
   };
+
+  protected onDragCommitted() {
+    // Subclasses can react when a drag operation commits a new position.
+  }
 
   private _cleanupResize() {
     this._isResizing = false;
@@ -1474,6 +1479,9 @@ export class OKHSLPicker extends BaseColorPicker {
 // ============================================================
 
 export class FloatingPanel extends Block {
+  @property({ type: Boolean, reflect: true }) pinned = false;
+  @property({ type: Boolean }) showPinnedClose = true;
+
   static styles = css`
     ${Block.styles}
 
@@ -1512,6 +1520,36 @@ export class FloatingPanel extends Block {
       text-transform: uppercase;
       letter-spacing: 0.5px;
       color: #666;
+    }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+    }
+
+    .floating-close {
+      position: absolute;
+      top: -10px;
+      right: -10px;
+      width: 22px;
+      height: 22px;
+      border: 1px solid #8a8a8a;
+      border-radius: 50%;
+      background: #d2d2d2;
+      color: #4d4d4d;
+      font-size: 14px;
+      line-height: 1;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      z-index: 1300;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      padding: 0;
+    }
+
+    .floating-close:hover {
+      background: #c4c4c4;
     }
 
     .grid {
@@ -1560,6 +1598,43 @@ export class FloatingPanel extends Block {
   connectedCallback() {
     super.connectedCallback();
     this.setAttribute('data-panel', '');
+  }
+
+  protected onDragCommitted() {
+    this.pinned = true;
+  }
+
+  protected requestHidePanel() {
+    this.pinned = false;
+    this.style.display = "none";
+    this.dispatchEvent(
+      new CustomEvent("panel-visibility-change", {
+        detail: { id: this.id, visible: false },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  protected renderPanelTitle(title: string) {
+    return html`<h3 class="panel-title"><span>${title}</span></h3>`;
+  }
+
+  protected renderPinnedClose() {
+    if (!this.pinned || !this.showPinnedClose) return html``;
+    return html`
+      <button
+        class="floating-close"
+        title="Hide panel"
+        data-interactive
+        @click=${(e: Event) => {
+          e.stopPropagation();
+          this.requestHidePanel();
+        }}
+      >
+        ×
+      </button>
+    `;
   }
 }
 
@@ -1649,6 +1724,7 @@ export class InkwellColorPanel extends FloatingPanel {
 
   render() {
     return html`
+      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
           <hsv-wheel
@@ -1723,8 +1799,10 @@ export class InkwellHSLPanel extends FloatingPanel {
 
   render() {
     return html`
+      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
+          ${this.renderPanelTitle("HSL")}
           <hsl-picker
             .color=${this.color}
             .prevColor=${this.prevColor}
@@ -1794,8 +1872,10 @@ export class InkwellOKHSLRectPanel extends FloatingPanel {
 
   render() {
     return html`
+      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
+          ${this.renderPanelTitle("OKHSL")}
           <okhsl-rect-picker
             .color=${this.color}
             .prevColor=${this.prevColor}
@@ -1883,8 +1963,10 @@ export class InkwellOKHSLPanel extends FloatingPanel {
 
   render() {
     return html`
+      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
+          ${this.renderPanelTitle("OKHSL (circle)")}
           <okhsl-picker
             .color=${this.color}
             .prevColor=${this.prevColor}
@@ -1949,9 +2031,10 @@ export class InkwellToolsPanel extends FloatingPanel {
 
   render() {
     return html`
+      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-          <h3>Tools</h3>
+          ${this.renderPanelTitle("Tools")}
           <div class="grid">
             ${tools.map(
               (t) => html`
@@ -2146,9 +2229,10 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
 
   render() {
     return html`
+      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-            <h3>Tool Settings</h3>
+            ${this.renderPanelTitle("Tool Settings")}
             ${this.renderToolSettings()}
         </div>
       </div>
@@ -2166,14 +2250,16 @@ interface PanelVisibility {
   visible: boolean;
 }
 
+type ToggleablePanel = FloatingPanel & HTMLElement;
+
 const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
-  { id: "color-panel", label: "HSV", visible: true },
-  { id: "hsl-panel", label: "HSL", visible: true },
-  { id: "okhsl-rect-panel", label: "OKHSL", visible: true },
-  { id: "tools-panel", label: "Tools", visible: true },
-  { id: "tool-settings-panel", label: "Tool Settings", visible: true },
-  { id: "universal-panel", label: "Settings", visible: true },
-  { id: "layers-panel", label: "Layers", visible: true },
+  { id: "color-panel", label: "HSV", visible: false },
+  { id: "hsl-panel", label: "HSL", visible: false },
+  { id: "okhsl-rect-panel", label: "OKHSL", visible: false },
+  { id: "tools-panel", label: "Tools", visible: false },
+  { id: "tool-settings-panel", label: "Tool Settings", visible: false },
+  { id: "universal-panel", label: "Settings", visible: false },
+  { id: "layers-panel", label: "Layers", visible: false },
 ];
 
 // ============================================================
@@ -2185,6 +2271,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
   @state() private panelVisibility: PanelVisibility[] = PANEL_VISIBILITY_DEFAULTS.map((p) => ({
     ...p,
   }));
+  private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
+  private readonly panelVisibilityChangeHandler = (e: Event) =>
+    this.onPanelVisibilityChange(e as CustomEvent<{ id: string; visible: boolean }>);
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -2214,35 +2303,131 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   connectedCallback() {
     super.connectedCallback();
-    this.syncPanelVisibility();
+    this.pinned = true;
+    this.showPinnedClose = false;
+    this.initializeAllPanelsHidden();
+    document.addEventListener("pointerdown", this.outsidePointerHandler, true);
+    document.addEventListener("panel-visibility-change", this.panelVisibilityChangeHandler as EventListener);
   }
 
-  private syncPanelVisibility() {
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    document.removeEventListener("pointerdown", this.outsidePointerHandler, true);
+    document.removeEventListener(
+      "panel-visibility-change",
+      this.panelVisibilityChangeHandler as EventListener,
+    );
+  }
+
+  firstUpdated() {
+    this.positionAllVisiblePanels();
+  }
+
+  private initializeAllPanelsHidden() {
     this.panelVisibility = this.panelVisibility.map((panel) => {
-      const el = document.getElementById(panel.id);
+      const el = document.getElementById(panel.id) as ToggleablePanel | null;
       if (el) {
-        const isHidden = el.style.display === "none";
-        return { ...panel, visible: !isHidden };
+        el.style.display = "none";
       }
-      return panel;
+      return { ...panel, visible: false };
     });
   }
 
-  private togglePanel(id: string) {
-    const el = document.getElementById(id);
+  private togglePanel(id: string, triggerEl?: HTMLElement) {
+    const el = document.getElementById(id) as ToggleablePanel | null;
     if (!el) return;
     const panel = this.panelVisibility.find((p) => p.id === id);
     if (!panel) return;
 
     const newVisible = !panel.visible;
     el.style.display = newVisible ? "" : "none";
-    this.panelVisibility = this.panelVisibility.map((p) =>
-      p.id === id ? { ...p, visible: newVisible } : p,
+    if (newVisible) {
+      this.positionPanelBelowTrigger(el, triggerEl);
+      this.bringPanelToFront(el);
+    }
+    this.panelVisibility = this.panelVisibility.map((p) => {
+      if (p.id === id) return { ...p, visible: newVisible };
+      if (!newVisible || !p.visible) return p;
+
+      const otherEl = document.getElementById(p.id) as ToggleablePanel | null;
+      if (!otherEl || otherEl.pinned) return p;
+
+      otherEl.style.display = "none";
+      return { ...p, visible: false };
+    });
+  }
+
+  private onPanelVisibilityChange(e: CustomEvent<{ id: string; visible: boolean }>) {
+    const { id, visible } = e.detail;
+    this.panelVisibility = this.panelVisibility.map((panel) =>
+      panel.id === id ? { ...panel, visible } : panel,
     );
+  }
+
+  private closePanelsOnOutsideClick(e: PointerEvent) {
+    const path = e.composedPath();
+    const clickedInsidePanel = path.some(
+      (node) => node instanceof HTMLElement && node.hasAttribute("data-panel"),
+    );
+    if (clickedInsidePanel) return;
+
+    let changed = false;
+    this.panelVisibility = this.panelVisibility.map((panel) => {
+      if (!panel.visible) return panel;
+      const el = document.getElementById(panel.id) as ToggleablePanel | null;
+      if (!el || el.pinned) return panel;
+      el.style.display = "none";
+      changed = true;
+      return { ...panel, visible: false };
+    });
+
+    if (changed) this.requestUpdate();
+  }
+
+  private positionAllVisiblePanels() {
+    const buttons = Array.from(this.renderRoot.querySelectorAll<HTMLElement>("blocky-button"));
+    this.panelVisibility.forEach((panel, index) => {
+      if (!panel.visible) return;
+      const panelEl = document.getElementById(panel.id) as ToggleablePanel | null;
+      if (!panelEl) return;
+      this.positionPanelBelowTrigger(panelEl, buttons[index]);
+    });
+  }
+
+  private positionPanelBelowTrigger(panelEl: ToggleablePanel, triggerEl?: HTMLElement) {
+    if (!triggerEl) return;
+
+    const triggerRect = triggerEl.getBoundingClientRect();
+    const gap = 10;
+    const panelRect = panelEl.getBoundingClientRect();
+    const idealLeft = triggerRect.left + triggerRect.width / 2 - panelRect.width / 2;
+    const maxLeft = window.innerWidth - panelRect.width - 8;
+    const clampedLeft = Math.max(8, Math.min(idealLeft, maxLeft));
+    let top = triggerRect.bottom + gap;
+
+    if (top + panelRect.height > window.innerHeight - 8) {
+      top = Math.max(8, triggerRect.top - panelRect.height - gap);
+    }
+
+    panelEl.style.left = `${Math.round(clampedLeft)}px`;
+    panelEl.style.top = `${Math.round(top)}px`;
+    panelEl.style.right = "auto";
+    panelEl.style.bottom = "auto";
+  }
+
+  private bringPanelToFront(panelEl: HTMLElement) {
+    const allPanels = document.querySelectorAll<HTMLElement>("[data-panel]");
+    let maxZIndex = 1000;
+    allPanels.forEach((panel) => {
+      const zIndex = parseInt(window.getComputedStyle(panel).zIndex || "1000", 10);
+      if (zIndex > maxZIndex) maxZIndex = zIndex;
+    });
+    panelEl.style.zIndex = `${maxZIndex + 1}`;
   }
 
   render() {
     return html`
+      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
           <div class="bar">
@@ -2250,7 +2435,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
               (panel) => html`
                 <blocky-button
                   ?active=${panel.visible}
-                  @click=${() => this.togglePanel(panel.id)}
+                  @click=${(e: Event) =>
+                    this.togglePanel(panel.id, e.currentTarget as HTMLElement)}
                   >${panel.label}</blocky-button
                 >
               `,
@@ -2283,9 +2469,10 @@ export class InkwellUniversalPanel extends FloatingPanel {
 
   render() {
     return html`
+      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-          <h3>View</h3>
+            ${this.renderPanelTitle("Settings")}
             <div class="toggle">
               <span>Show Cursor</span>
               <input
@@ -2377,6 +2564,8 @@ import { layerStore, generateLayerId } from "../core/stores";
 @customElement("inkwell-layers-panel")
 export class InkwellLayersPanel extends FloatingPanel {
   private layers = new StoreController(this, layerStore);
+  @state() private draggedLayerId: string | null = null;
+  @state() private dropTargetLayerId: string | null = null;
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -2417,6 +2606,15 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     .layer-item.hidden {
       opacity: 0.5;
+    }
+
+    .layer-item.dragging {
+      opacity: 0.45;
+    }
+
+    .layer-item.drop-target {
+      outline: 2px dashed #0066cc;
+      outline-offset: -2px;
     }
 
     .layer-name {
@@ -2489,21 +2687,80 @@ export class InkwellLayersPanel extends FloatingPanel {
     this.emit("layer-add", { id: newId, name: `Layer ${layerNumber}` });
   }
 
+  private onLayerDragStart(layerId: string, e: DragEvent) {
+    this.draggedLayerId = layerId;
+    this.dropTargetLayerId = null;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", layerId);
+    }
+  }
+
+  private onLayerDragOver(layerId: string, e: DragEvent) {
+    if (!this.draggedLayerId || this.draggedLayerId === layerId) return;
+    e.preventDefault();
+    this.dropTargetLayerId = layerId;
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  }
+
+  private onLayerDrop(targetLayerId: string, e: DragEvent) {
+    e.preventDefault();
+    const draggedLayerId = this.draggedLayerId ?? e.dataTransfer?.getData("text/plain");
+    if (!draggedLayerId || draggedLayerId === targetLayerId) {
+      this.draggedLayerId = null;
+      this.dropTargetLayerId = null;
+      return;
+    }
+
+    const displayLayers = [...this.layers.value.layers].reverse();
+    const fromIndex = displayLayers.findIndex((layer) => layer.id === draggedLayerId);
+    const toIndex = displayLayers.findIndex((layer) => layer.id === targetLayerId);
+    if (fromIndex < 0 || toIndex < 0) {
+      this.draggedLayerId = null;
+      this.dropTargetLayerId = null;
+      return;
+    }
+
+    const reordered = [...displayLayers];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved);
+
+    this.emit(
+      "layer-reorder",
+      reordered.map((layer) => layer.id),
+    );
+
+    this.draggedLayerId = null;
+    this.dropTargetLayerId = null;
+  }
+
+  private onLayerDragEnd() {
+    this.draggedLayerId = null;
+    this.dropTargetLayerId = null;
+  }
+
   render() {
     const { layers, activeLayerId } = this.layers.value;
     // Display layers in reverse order (top layer first)
     const displayLayers = [...layers].reverse();
 
     return html`
+      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-          <h3>Layers</h3>
+          ${this.renderPanelTitle("Layers")}
           <div class="layer-list">
             ${displayLayers.map(
               (layer) => html`
                 <div
-                  class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
+                  class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""} ${this.draggedLayerId === layer.id ? "dragging" : ""} ${this.dropTargetLayerId === layer.id ? "drop-target" : ""}"
+                  data-interactive
+                  draggable="true"
                   @click=${() => this.selectLayer(layer.id)}
+                  @dragstart=${(e: DragEvent) => this.onLayerDragStart(layer.id, e)}
+                  @dragover=${(e: DragEvent) => this.onLayerDragOver(layer.id, e)}
+                  @drop=${(e: DragEvent) => this.onLayerDrop(layer.id, e)}
+                  @dragend=${() => this.onLayerDragEnd()}
                 >
                   <button
                     class="visibility-btn ${!layer.visible ? "hidden" : ""}"
