@@ -293,6 +293,18 @@ export class PaperRenderer {
     return this.camera.worldToScreen(worldX, worldY);
   }
 
+  /**
+   * Serialize the current viewport (pan/zoom/rotation) to an SVG document.
+   * Uses Paper's view bounds and view matrix so output matches on-screen art.
+   */
+  exportViewAsSvgString(): string {
+    return paper.project.exportSVG({
+      bounds: "view",
+      asString: true,
+      precision: 4,
+    }) as string;
+  }
+
   // ============================================================
   // Layer Management
   // ============================================================
@@ -1181,6 +1193,37 @@ export class PaperRenderer {
     this.splitDisconnected();
     this.rebuildSpatialIndex();
     paper.view.update();
+  }
+
+  /**
+   * Merge every layer into the active layer, then flatten overlaps/colors.
+   * Returns the surviving layer ID, or null if no active layer exists.
+   */
+  flattenAllLayers(): string | null {
+    const targetLayerId = this.activeLayerId;
+    if (!targetLayerId) return null;
+
+    const targetLayer = this.layerMap.get(targetLayerId);
+    if (!targetLayer) return null;
+
+    targetLayer.activate();
+
+    for (const layer of [...paper.project.layers]) {
+      for (const child of [...layer.children]) {
+        targetLayer.addChild(child);
+      }
+    }
+
+    for (const [layerId, layer] of [...this.layerMap.entries()]) {
+      if (layerId === targetLayerId) continue;
+      layer.remove();
+      this.layerMap.delete(layerId);
+    }
+
+    targetLayer.visible = true;
+    this.indexDirty = true;
+    this.flatten();
+    return targetLayerId;
   }
 
   /**

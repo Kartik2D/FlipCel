@@ -31,9 +31,9 @@ import type { CanvasConfig, Point, Modifiers } from "./types";
 import type { ToolId, AllToolSettings } from "./tools";
 import type {
   InkwellToolsPanel,
-  InkwellToolSettingsPanel,
   InkwellUniversalPanel,
   InkwellLayersPanel,
+  InkwellTopBarPanel,
 } from "../ui/ui-lib";
 import "../ui/ui-lib"; // Register Lit components
 import {
@@ -61,9 +61,9 @@ class App {
   private selectionController: SelectionController;
   private historyManager: HistoryManager;
   private toolsPanel: InkwellToolsPanel;
-  private toolSettingsPanel: InkwellToolSettingsPanel;
   private universalPanel: InkwellUniversalPanel;
   private layersPanel: InkwellLayersPanel;
+  private topBarPanel: InkwellTopBarPanel;
   private camera: Camera;
   private isInitialized = false;
   private pixelResScale = 2;
@@ -116,9 +116,9 @@ class App {
 
     // Get panel Lit elements
     this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
-    this.toolSettingsPanel = document.getElementById("tool-settings-panel") as InkwellToolSettingsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
     this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
+    this.topBarPanel = document.getElementById("top-bar-panel") as InkwellTopBarPanel;
     this.setupPanelEvents();
 
     // Initialize unified input manager
@@ -142,6 +142,8 @@ class App {
   }
 
   private setupPanelEvents() {
+    this.topBarPanel.addEventListener("export-view-svg", () => this.onExportViewSvg());
+
     // Tools panel events - sync to inputManager and handle selection placement
     this.toolsPanel.addEventListener("tool-change", (e: Event) => {
       const tool = (e as CustomEvent<ToolId>).detail;
@@ -149,13 +151,13 @@ class App {
       this.inputManager.setTool(tool);
     });
 
-    // Tool settings panel events - apply brush settings
-    this.toolSettingsPanel.addEventListener("settings-change", (e: Event) => {
+    // Tools panel also emits settings events (merged panel)
+    this.toolsPanel.addEventListener("settings-change", (e: Event) => {
       const settings = (e as CustomEvent<AllToolSettings>).detail;
       this.onToolSettingsChange(settings);
     });
 
-    this.toolSettingsPanel.addEventListener("pixel-res-change", (e: Event) => {
+    this.toolsPanel.addEventListener("pixel-res-change", (e: Event) => {
       this.onPixelResChange((e as CustomEvent<number>).detail);
     });
 
@@ -585,7 +587,20 @@ class App {
   }
 
   private onFlatten() {
-    this.paperRenderer.flatten();
+    const flattenedLayerId = this.paperRenderer.flattenAllLayers();
+    if (flattenedLayerId) {
+      const state = layerStore.get();
+      const survivingLayer =
+        state.layers.find((layer) => layer.id === flattenedLayerId) ?? state.layers[0];
+
+      if (survivingLayer) {
+        layerStore.set({
+          layers: [{ ...survivingLayer, visible: true }],
+          activeLayerId: survivingLayer.id,
+        });
+      }
+    }
+
     this.selectionController.clearSelection();
     this.historyManager.snapshot();
   }
@@ -709,6 +724,19 @@ class App {
         l.id === layerId ? { ...l, visible: newVisibility } : l
       ),
     }));
+  }
+
+  private onExportViewSvg() {
+    const svg = this.paperRenderer.exportViewAsSvgString();
+    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `inkwell-view-${Date.now()}.svg`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   private onLayerReorder(orderedTopToBottom: string[]) {

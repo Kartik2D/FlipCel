@@ -529,9 +529,13 @@ export class Block extends LitElement {
     if (changedProperties.has("blockWidth") || changedProperties.has("blockHeight")) {
       if (this.blockWidth !== null) {
         this.style.width = `${this.blockWidth}px`;
+      } else {
+        this.style.removeProperty("width");
       }
       if (this.blockHeight !== null) {
         this.style.height = `${this.blockHeight}px`;
+      } else {
+        this.style.removeProperty("height");
       }
     }
   }
@@ -1604,8 +1608,10 @@ export class FloatingPanel extends Block {
     this.pinned = true;
   }
 
-  protected requestHidePanel() {
+  hidePanel() {
     this.pinned = false;
+    this.blockWidth = null;
+    this.blockHeight = null;
     this.style.display = "none";
     this.dispatchEvent(
       new CustomEvent("panel-visibility-change", {
@@ -1629,7 +1635,7 @@ export class FloatingPanel extends Block {
         data-interactive
         @click=${(e: Event) => {
           e.stopPropagation();
-          this.requestHidePanel();
+          this.hidePanel();
         }}
       >
         ×
@@ -1802,7 +1808,6 @@ export class InkwellHSLPanel extends FloatingPanel {
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-          ${this.renderPanelTitle("HSL")}
           <hsl-picker
             .color=${this.color}
             .prevColor=${this.prevColor}
@@ -1875,7 +1880,6 @@ export class InkwellOKHSLRectPanel extends FloatingPanel {
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-          ${this.renderPanelTitle("OKHSL")}
           <okhsl-rect-picker
             .color=${this.color}
             .prevColor=${this.prevColor}
@@ -1966,7 +1970,6 @@ export class InkwellOKHSLPanel extends FloatingPanel {
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-          ${this.renderPanelTitle("OKHSL (circle)")}
           <okhsl-picker
             .color=${this.color}
             .prevColor=${this.prevColor}
@@ -2012,7 +2015,11 @@ export class InkwellOKHSLPanel extends FloatingPanel {
 
 @customElement("inkwell-tools-panel")
 export class InkwellToolsPanel extends FloatingPanel {
+  @property({ type: Number }) pixelRes = 2;
+
   private tool = new StoreController(this, toolStore);
+  private modifiers = new StoreController(this, modifiersStore);
+  private settings = new StoreController(this, toolSettingsStore);
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -2027,6 +2034,143 @@ export class InkwellToolsPanel extends FloatingPanel {
   private setTool(tool: ToolId) {
     this.tool.set(tool);
     this.emit("tool-change", tool);
+  }
+
+  private updateSetting(toolId: ToolId, key: string, value: unknown) {
+    this.settings.update((s) => ({
+      ...s,
+      [toolId]: { ...s[toolId], [key]: value },
+    }));
+    this.emit("settings-change", this.settings.value);
+  }
+
+  private renderPixelRes() {
+    return html`
+      <label>
+        <span>Pixel Resolution: ${this.pixelRes}x</span>
+        <input
+          type="range"
+          min="1"
+          max="8"
+          step="1"
+          .value=${String(this.pixelRes)}
+          @input=${(e: Event) => {
+            this.pixelRes = parseInt((e.target as HTMLInputElement).value);
+            this.emit("pixel-res-change", this.pixelRes);
+          }}
+        />
+      </label>
+    `;
+  }
+
+  private renderSetting(
+    toolId: ToolId,
+    key: string,
+    def: SettingDef,
+    currentValue: unknown
+  ): TemplateResult {
+    const hint =
+      key === "mode" &&
+      this.modifiers.value.shift
+        ? "(Shift toggled)"
+        : "";
+    const label = this.formatLabel(key);
+
+    if (def.type === "toggle") {
+      return html`
+        <label>
+          <span>${label} ${hint}</span>
+          <div class="row">
+            ${def.options.map(
+              (opt) => html`
+                <blocky-button
+                  ?active=${currentValue === opt}
+                  @click=${() => this.updateSetting(toolId, key, opt)}
+                  >${this.formatLabel(opt)}</blocky-button
+                >
+              `
+            )}
+          </div>
+        </label>
+      `;
+    }
+
+    if (def.type === "range") {
+      return html`
+        <label>
+          <span>${label}: ${currentValue}</span>
+          <input
+            type="range"
+            min=${def.min}
+            max=${def.max}
+            step=${def.step}
+            .value=${String(currentValue)}
+            @input=${(e: Event) =>
+              this.updateSetting(
+                toolId,
+                key,
+                parseFloat((e.target as HTMLInputElement).value)
+              )}
+          />
+        </label>
+      `;
+    }
+
+    if (def.type === "color") {
+      return html`
+        <label>
+          <span>${label}</span>
+          <input
+            type="color"
+            .value=${String(currentValue)}
+            @input=${(e: Event) =>
+              this.updateSetting(toolId, key, (e.target as HTMLInputElement).value)}
+          />
+        </label>
+      `;
+    }
+
+    return html``;
+  }
+
+  private formatLabel(key: string): string {
+    return key
+      .replace(/([A-Z])/g, " $1")
+      .replace(/^./, (str) => str.toUpperCase())
+      .trim();
+  }
+
+  private renderToolSettings(): TemplateResult {
+    const currentToolId = this.tool.value;
+    const currentTool = getTool(currentToolId);
+    const toolSettings = this.settings.value[currentToolId] as Record<string, unknown>;
+    const schema = currentTool.settings as SettingsSchema;
+
+    const schemaKeys = Object.keys(schema);
+    if (schemaKeys.length === 0) {
+      if (currentToolId === "select") {
+        return html`<p class="hint">Click to select, drag to move.</p>`;
+      }
+      if (currentToolId === "pan") {
+        return html`<p class="hint">Drag to pan, scroll to zoom.</p>`;
+      }
+      if (currentToolId === "eyedropper") {
+        return html`<p class="hint">Click artwork to pick its color.</p>`;
+      }
+      return html`${this.renderPixelRes()}`;
+    }
+
+    return html`
+      ${schemaKeys.map((key) =>
+        this.renderSetting(
+          currentToolId,
+          key,
+          schema[key],
+          toolSettings[key]
+        )
+      )}
+      ${this.renderPixelRes()}
+    `;
   }
 
   render() {
@@ -2046,6 +2190,10 @@ export class InkwellToolsPanel extends FloatingPanel {
               `
             )}
           </div>
+          <section>
+            ${this.renderPanelTitle("Tool Settings")}
+            ${this.renderToolSettings()}
+          </section>
         </div>
       </div>
     `;
@@ -2257,7 +2405,6 @@ const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
   { id: "hsl-panel", label: "HSL", visible: false },
   { id: "okhsl-rect-panel", label: "OKHSL", visible: false },
   { id: "tools-panel", label: "Tools", visible: false },
-  { id: "tool-settings-panel", label: "Tool Settings", visible: false },
   { id: "universal-panel", label: "Settings", visible: false },
   { id: "layers-panel", label: "Layers", visible: false },
 ];
@@ -2340,21 +2487,24 @@ export class InkwellTopBarPanel extends FloatingPanel {
     if (!panel) return;
 
     const newVisible = !panel.visible;
-    el.style.display = newVisible ? "" : "none";
-    if (newVisible) {
-      this.positionPanelBelowTrigger(el, triggerEl);
-      this.bringPanelToFront(el);
+    if (!newVisible) {
+      el.hidePanel();
+      return;
     }
-    this.panelVisibility = this.panelVisibility.map((p) => {
-      if (p.id === id) return { ...p, visible: newVisible };
-      if (!newVisible || !p.visible) return p;
 
+    this.panelVisibility.forEach((p) => {
+      if (p.id === id || !p.visible) return;
       const otherEl = document.getElementById(p.id) as ToggleablePanel | null;
-      if (!otherEl || otherEl.pinned) return p;
-
-      otherEl.style.display = "none";
-      return { ...p, visible: false };
+      if (!otherEl || otherEl.pinned) return;
+      otherEl.hidePanel();
     });
+
+    el.style.display = "";
+    this.positionPanelBelowTrigger(el, triggerEl);
+    this.bringPanelToFront(el);
+    this.panelVisibility = this.panelVisibility.map((p) =>
+      p.id === id ? { ...p, visible: true } : p,
+    );
   }
 
   private onPanelVisibilityChange(e: CustomEvent<{ id: string; visible: boolean }>) {
@@ -2372,13 +2522,12 @@ export class InkwellTopBarPanel extends FloatingPanel {
     if (clickedInsidePanel) return;
 
     let changed = false;
-    this.panelVisibility = this.panelVisibility.map((panel) => {
-      if (!panel.visible) return panel;
+    this.panelVisibility.forEach((panel) => {
+      if (!panel.visible) return;
       const el = document.getElementById(panel.id) as ToggleablePanel | null;
-      if (!el || el.pinned) return panel;
-      el.style.display = "none";
+      if (!el || el.pinned) return;
+      el.hidePanel();
       changed = true;
-      return { ...panel, visible: false };
     });
 
     if (changed) this.requestUpdate();
@@ -2441,6 +2590,13 @@ export class InkwellTopBarPanel extends FloatingPanel {
                 >
               `,
             )}
+            <blocky-button
+              @click=${() =>
+                this.dispatchEvent(
+                  new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
+                )}
+              >Export view to SVG</blocky-button
+            >
           </div>
         </div>
       </div>
