@@ -231,8 +231,7 @@ class App {
     // Set internal resolution
     this.pixelCanvas.width = this.config.pixelWidth;
     this.pixelCanvas.height = this.config.pixelHeight;
-    this.uiCanvas.width = viewportWidth;
-    this.uiCanvas.height = viewportHeight;
+    this.uiOverlay.updateConfig(this.config);
 
     // Configure pixel canvas context
     this.pixelCanvas2D.imageSmoothingEnabled = false;

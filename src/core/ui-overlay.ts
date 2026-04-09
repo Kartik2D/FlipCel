@@ -73,8 +73,7 @@ export class UIOverlay {
 
   updateConfig(config: CanvasConfig) {
     this.config = config;
-    this.ctx.canvas.width = config.viewportWidth;
-    this.ctx.canvas.height = config.viewportHeight;
+    this.syncCanvasResolution();
   }
 
   setMaxBrushSize(size: number) {
@@ -116,6 +115,16 @@ export class UIOverlay {
    */
   redraw() {
     this.draw();
+  }
+
+  /**
+   * Keep the UI canvas retina-sharp while drawing in CSS pixel coordinates.
+   */
+  private syncCanvasResolution() {
+    const dpr = window.devicePixelRatio || 1;
+    this.ctx.canvas.width = Math.round(this.config.viewportWidth * dpr);
+    this.ctx.canvas.height = Math.round(this.config.viewportHeight * dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   private shouldShowCursor(): boolean {

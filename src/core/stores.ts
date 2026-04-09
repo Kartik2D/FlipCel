@@ -197,7 +197,7 @@ export interface ViewOverlaySettings {
   gridEnabled: boolean;
   /** When true, draw the world origin axes and origin marker. */
   originEnabled: boolean;
-  /** When true, draw left and bottom viewport-edge guides. */
+  /** When true, draw bottom and right screen-size guides in world space. */
   screenSizeEnabled: boolean;
   /**
    * When true, grid spacing is recomputed from zoom so line density stays ~even on screen.
@@ -209,7 +209,7 @@ export interface ViewOverlaySettings {
 export const viewOverlayStore = new Store<ViewOverlaySettings>({
   gridEnabled: true,
   originEnabled: true,
-  screenSizeEnabled: false,
+  screenSizeEnabled: true,
   gridLiveWhileZooming: false,
 });
 
