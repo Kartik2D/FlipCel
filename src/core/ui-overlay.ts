@@ -74,6 +74,7 @@ export class UIOverlay {
   updateConfig(config: CanvasConfig) {
     this.config = config;
     this.syncCanvasResolution();
+    this.draw();
   }
 
   setMaxBrushSize(size: number) {

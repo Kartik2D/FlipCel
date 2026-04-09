@@ -402,10 +402,11 @@ export class UnifiedInputManager {
     // Normalize delta across browsers
     const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
 
-    // Shift+wheel = rotate
+    // Shift+wheel = pan (uses both deltaX and deltaY for 2D scroll wheels)
     if (e.shiftKey) {
-      const rotationDelta = delta * 0.001;
-      bus.emit(Events.CAMERA_ROTATE, { delta: rotationDelta, x, y });
+      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      const dx = e.deltaMode === 1 ? e.deltaX * 16 : e.deltaX;
+      bus.emit(Events.CAMERA_PAN, { deltaX: -dx, deltaY: -dy });
       return;
     }
 

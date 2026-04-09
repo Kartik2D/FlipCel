@@ -278,6 +278,7 @@ class App {
       this.camera.updateViewport(this.config.viewportWidth, this.config.viewportHeight);
       this.resizeCanvases();
       configStore.set(this.config); // Propagates to all subscribers
+      this.selectionController.drawUI();
     });
 
     // Take initial history snapshot (empty canvas state)
@@ -597,6 +598,7 @@ class App {
     this.resizeCanvases();
     this.pixelCanvasManager.clear();
     configStore.set(this.config); // Propagates to all subscribers
+    this.selectionController.drawUI();
   }
 
   private onFlatten() {
