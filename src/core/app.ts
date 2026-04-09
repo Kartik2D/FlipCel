@@ -33,7 +33,6 @@ import type {
   InkwellToolsPanel,
   InkwellUniversalPanel,
   InkwellLayersPanel,
-  InkwellTopBarPanel,
 } from "../ui/ui-lib";
 import "../ui/ui-lib"; // Register Lit components
 import {
@@ -44,6 +43,7 @@ import {
   modifiersStore,
   toolSettingsStore,
   layerStore,
+  viewOverlayStore,
 } from "./stores";
 
 class App {
@@ -63,7 +63,6 @@ class App {
   private toolsPanel: InkwellToolsPanel;
   private universalPanel: InkwellUniversalPanel;
   private layersPanel: InkwellLayersPanel;
-  private topBarPanel: InkwellTopBarPanel;
   private camera: Camera;
   private isInitialized = false;
   private pixelResScale = 2;
@@ -118,8 +117,12 @@ class App {
     this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
     this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
-    this.topBarPanel = document.getElementById("top-bar-panel") as InkwellTopBarPanel;
     this.setupPanelEvents();
+
+    viewOverlayStore.subscribeImmediate((prefs) => {
+      this.uiOverlay.setViewOverlayPrefs(prefs);
+      this.selectionController.drawUI();
+    });
 
     // Initialize unified input manager
     this.inputManager = new UnifiedInputManager(this.uiCanvas, this.config);
@@ -133,7 +136,9 @@ class App {
     bus.on(Events.TOOL_CANCEL, (tool: ToolId) => this.onToolCancel(tool));
     bus.on(Events.POINTER_MOVE, (point: Point) => this.onPointerMove(point));
     bus.on(Events.CAMERA_PAN, (d: { deltaX: number; deltaY: number }) => this.onCameraPan(d.deltaX, d.deltaY));
-    bus.on(Events.CAMERA_ZOOM, (d: { factor: number; x: number; y: number }) => this.onCameraZoom(d.factor, d.x, d.y));
+    bus.on(Events.CAMERA_ZOOM, (d: { factor: number; x: number; y: number }) =>
+      this.onCameraZoom(d.factor, d.x, d.y),
+    );
     bus.on(Events.CAMERA_ROTATE, (d: { delta: number; x: number; y: number }) => this.onCameraRotate(d.delta, d.x, d.y));
     bus.on(Events.TOOL_CHANGE, (tool: ToolId) => this.onInputToolChange(tool));
     bus.on(Events.MODIFIERS_CHANGE, (m: Modifiers) => this.onModifiersChange(m));
@@ -142,8 +147,6 @@ class App {
   }
 
   private setupPanelEvents() {
-    this.topBarPanel.addEventListener("export-view-svg", () => this.onExportViewSvg());
-
     // Tools panel events - sync to inputManager and handle selection placement
     this.toolsPanel.addEventListener("tool-change", (e: Event) => {
       const tool = (e as CustomEvent<ToolId>).detail;
@@ -179,6 +182,7 @@ class App {
     this.universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {
       this.onAliasFixToggle((e as CustomEvent<boolean>).detail);
     });
+    this.universalPanel.addEventListener("export-view-svg", () => this.onExportViewSvg());
 
     // Layers panel events
     this.layersPanel.addEventListener("layer-add", (e: Event) => {
@@ -398,6 +402,12 @@ class App {
       return;
     }
 
+    // Safety net: if a selection is still active when another tool starts,
+    // place it before the new interaction mutates the layer.
+    if (this.selectionController.hasSelection()) {
+      this.selectionController.clearSelection();
+    }
+
     if (tool === "eyedropper") {
       this.pickColorAt(point);
       return;
@@ -528,7 +538,7 @@ class App {
   private onPointerMove(point: Point) {
     this.uiOverlay.updateCursor(point);
 
-    if (toolStore.get() === "select" && this.selectionController.hasSelection()) {
+    if (toolStore.get() === "select" && this.selectionController.hasTransientUI()) {
       this.selectionController.drawUI();
     }
   }
@@ -538,9 +548,8 @@ class App {
   // ============================================================
 
   private onToolChange(tool: ToolId) {
-    // Place selection when switching away from select tool
-    const prevTool = toolStore.get();
-    if (prevTool === "select" && tool !== "select") {
+    // Leaving the select tool should always finalize or cancel its transient UI state.
+    if (tool !== "select") {
       this.selectionController.clearSelection();
     }
   }
@@ -556,19 +565,24 @@ class App {
   private pickColorAt(point: Point) {
     const viewportPoint = this.pixelToViewport(point);
     const item = this.paperRenderer.hitTest(viewportPoint);
-    if (!item || !("fillColor" in item)) return;
+    if (!item) return;
 
-    const fillColor = item.fillColor;
-    if (!fillColor) return;
+    let sample: paper.Color | null = null;
+    if ("fillColor" in item && item.fillColor) {
+      sample = item.fillColor;
+    } else if ("strokeColor" in item && item.strokeColor) {
+      sample = item.strokeColor;
+    }
+    if (!sample) return;
 
     const toHex = (channel: number) =>
       Math.round(Math.max(0, Math.min(1, channel)) * 255)
         .toString(16)
         .padStart(2, "0");
-    const pickedColor = `#${toHex(fillColor.red)}${toHex(fillColor.green)}${toHex(fillColor.blue)}`;
+    const pickedColor = `#${toHex(sample.red)}${toHex(sample.green)}${toHex(sample.blue)}`;
 
-    prevColorStore.set(colorStore.get());
     colorStore.set(pickedColor);
+    prevColorStore.set(pickedColor);
   }
 
   private pixelToViewport(point: Point): Point {
@@ -620,7 +634,8 @@ class App {
   // ============================================================
 
   private onInputToolChange(tool: ToolId) {
-    // Tool changed via hotkey - update store (panels subscribe to it)
+    // Keep hotkey-driven tool changes consistent with panel-driven changes.
+    this.onToolChange(tool);
     toolStore.set(tool);
   }
 

@@ -528,7 +528,11 @@ export class UnifiedInputManager {
     if (this.lastPinchDistance !== null) {
       const zoomFactor = currentDistance / this.lastPinchDistance;
       if (Math.abs(zoomFactor - 1) > 0.01) {
-        bus.emit(Events.CAMERA_ZOOM, { factor: zoomFactor, x: currentCenter.x, y: currentCenter.y });
+        bus.emit(Events.CAMERA_ZOOM, {
+          factor: zoomFactor,
+          x: currentCenter.x,
+          y: currentCenter.y,
+        });
         this.lastPinchDistance = currentDistance;
       }
     } else {

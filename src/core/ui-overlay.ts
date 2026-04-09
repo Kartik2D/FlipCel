@@ -6,17 +6,22 @@
  * Key responsibilities:
  * - Displays cursor/pen position indicator during drawing
  * - Shows crosshair for precision feedback
+ * - Draws world-space alignment grid (pan/zoom/rotate with camera)
  * - Draws world origin axes (X/Y at 0,0)
+ * - Optionally highlights the left and bottom viewport edges
  * - Maps pixel coordinates back to viewport for display
  *
  * Visual elements:
+ * - World grid (spacing either follows zoom or stays fixed in world units; see view prefs)
  * - Circular cursor indicator (sized to max brush size, semi-transparent)
  * - Crosshair lines (10px length) for precise positioning
- * - X-axis (red) and Y-axis (green) at world origin
+ * - X-axis and Y-axis at world origin
+ * - Optional bottom/right screen-size guides in world space
  * - All drawn in viewport coordinates (not pixel coordinates)
  */
 import type { Point, CanvasConfig } from "./types";
 import type { Camera } from "./camera";
+import type { ViewOverlaySettings } from "./stores";
 
 export class UIOverlay {
   private ctx: CanvasRenderingContext2D;
@@ -24,6 +29,12 @@ export class UIOverlay {
   private camera: Camera | null = null;
   private currentCursor: Point | null = null;
   private cursorEnabled = true;
+  private gridEnabled = true;
+  private originEnabled = true;
+  private screenSizeEnabled = false;
+  private gridLiveWhileZooming = false;
+  /** When live zoom is off, grid uses this world step until live is turned on or grid is hidden. */
+  private lockedGridStep: number | null = null;
   private isDrawing = false;
   private isMobile = false;
   private maxBrushSize = 4; // Default max brush size in pixel canvas units
@@ -71,6 +82,24 @@ export class UIOverlay {
     this.draw();
   }
 
+  setViewOverlayPrefs(prefs: ViewOverlaySettings) {
+    const wasLive = this.gridLiveWhileZooming;
+    this.gridEnabled = prefs.gridEnabled;
+    this.originEnabled = prefs.originEnabled;
+    this.screenSizeEnabled = prefs.screenSizeEnabled;
+    this.gridLiveWhileZooming = prefs.gridLiveWhileZooming;
+
+    if (!this.gridEnabled) {
+      this.lockedGridStep = null;
+    } else if (this.gridLiveWhileZooming) {
+      this.lockedGridStep = null;
+    } else if (wasLive) {
+      // Live off: lock world step to whatever zoom shows on the next draw
+      this.lockedGridStep = null;
+    }
+    this.draw();
+  }
+
   updateCursor(point: Point) {
     this.currentCursor = point;
     this.draw();
@@ -114,70 +143,181 @@ export class UIOverlay {
   }
 
   /**
+   * Round to a “nice” step in world units (1–2–5 × 10^n) for grid spacing.
+   */
+  private niceWorldStep(approx: number): number {
+    if (!Number.isFinite(approx) || approx <= 0) return 1;
+    const exp = Math.floor(Math.log10(approx));
+    const pow = 10 ** exp;
+    const f = approx / pow;
+    const nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+    return nf * pow;
+  }
+
+  /**
+   * World-aligned grid: when “grid follows zoom” is on, spacing retargets ~48px on screen;
+   * when off, world step stays locked until that option or visibility changes.
+   */
+  private drawGrid() {
+    if (!this.gridEnabled || !this.camera) return;
+
+    const ctx = this.ctx;
+    const bounds = this.camera.getWorldBounds();
+    const midY = this.config.viewportHeight / 2;
+
+    const a = this.camera.screenToWorld(0, midY);
+    const b = this.camera.screenToWorld(48, midY);
+    const approx = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    let step = this.niceWorldStep(approx);
+
+    const maxLinePairs = 100;
+    while (
+      bounds.width / step + bounds.height / step > maxLinePairs * 2 &&
+      step < 1e15
+    ) {
+      step *= 2;
+    }
+
+    if (!this.gridLiveWhileZooming) {
+      if (this.lockedGridStep !== null) {
+        step = this.lockedGridStep;
+      } else {
+        this.lockedGridStep = step;
+      }
+    } else {
+      this.lockedGridStep = null;
+    }
+
+    const pad = step;
+    const x0 = bounds.x - pad;
+    const y0 = bounds.y - pad;
+    const x1 = bounds.x + bounds.width + pad;
+    const y1 = bounds.y + bounds.height + pad;
+
+    const startX = Math.floor(x0 / step) * step;
+    const endX = Math.ceil(x1 / step) * step;
+    const startY = Math.floor(y0 / step) * step;
+    const endY = Math.ceil(y1 / step) * step;
+
+    ctx.save();
+    ctx.lineWidth = 1;
+
+    const drawLine = (sx: number, sy: number, ex: number, ey: number, major: boolean) => {
+      ctx.strokeStyle = major ? "rgba(255, 255, 255, 0.14)" : "rgba(255, 255, 255, 0.06)";
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+    };
+
+    for (let wx = startX; wx <= endX + 1e-9; wx += step) {
+      const major = Math.round(wx / step) % 5 === 0;
+      const p0 = this.worldToScreen(wx, y0);
+      const p1 = this.worldToScreen(wx, y1);
+      drawLine(p0.x, p0.y, p1.x, p1.y, major);
+    }
+
+    for (let wy = startY; wy <= endY + 1e-9; wy += step) {
+      const major = Math.round(wy / step) % 5 === 0;
+      const p0 = this.worldToScreen(x0, wy);
+      const p1 = this.worldToScreen(x1, wy);
+      drawLine(p0.x, p0.y, p1.x, p1.y, major);
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * Draw an infinite world-space line clipped to the viewport.
+   */
+  private drawInfiniteWorldLine(
+    worldX: number,
+    worldY: number,
+    dirX: number,
+    dirY: number,
+    color: string,
+    lineWidth: number,
+  ) {
+    const screenW = this.config.viewportWidth;
+    const screenH = this.config.viewportHeight;
+    const point = this.worldToScreen(worldX, worldY);
+    const directionPoint = this.worldToScreen(worldX + dirX, worldY + dirY);
+    const line = this.lineScreenIntersection(
+      point,
+      { x: directionPoint.x - point.x, y: directionPoint.y - point.y },
+      screenW,
+      screenH,
+    );
+
+    if (!line) return;
+
+    this.ctx.strokeStyle = color;
+    this.ctx.lineWidth = lineWidth;
+    this.ctx.beginPath();
+    this.ctx.moveTo(line.start.x, line.start.y);
+    this.ctx.lineTo(line.end.x, line.end.y);
+    this.ctx.stroke();
+  }
+
+  /**
    * Draw the X and Y axes at world origin (0,0)
    * Lines extend infinitely by calculating screen edge intersections
    */
   private drawAxes() {
-    if (!this.camera) return;
+    if (!this.camera || !this.originEnabled) return;
 
-    const ctx = this.ctx;
-    const axisWidth = 2;
-    const screenW = this.config.viewportWidth;
-    const screenH = this.config.viewportHeight;
-
-    // Get origin and a second point on each axis in screen space
-    // We use these to define the direction of each axis on screen
     const origin = this.worldToScreen(0, 0);
-    const xDir = this.worldToScreen(1, 0);
-    const yDir = this.worldToScreen(0, 1);
 
-    ctx.save();
-    ctx.lineWidth = axisWidth;
+    this.ctx.save();
 
-    // Draw X axis (red) - line through origin with direction (xDir - origin)
-    const xAxisPoints = this.lineScreenIntersection(
-      origin,
-      { x: xDir.x - origin.x, y: xDir.y - origin.y },
-      screenW,
-      screenH,
-    );
-    if (xAxisPoints) {
-      ctx.strokeStyle = "rgba(0, 255, 255, 0.5)";
-      ctx.beginPath();
-      ctx.moveTo(xAxisPoints.start.x, xAxisPoints.start.y);
-      ctx.lineTo(xAxisPoints.end.x, xAxisPoints.end.y);
-      ctx.stroke();
-    }
+    // Draw X axis - line through origin with direction (xDir - origin)
+    this.drawInfiniteWorldLine(0, 0, 1, 0, "rgba(0, 255, 255, 0.5)", 2);
 
-    // Draw Y axis (green) - line through origin with direction (yDir - origin)
-    const yAxisPoints = this.lineScreenIntersection(
-      origin,
-      { x: yDir.x - origin.x, y: yDir.y - origin.y },
-      screenW,
-      screenH,
-    );
-    if (yAxisPoints) {
-      ctx.strokeStyle = "rgba(255, 0, 255, 0.5)";
-      ctx.beginPath();
-      ctx.moveTo(yAxisPoints.start.x, yAxisPoints.start.y);
-      ctx.lineTo(yAxisPoints.end.x, yAxisPoints.end.y);
-      ctx.stroke();
-    }
+    // Draw Y axis - line through origin with direction (yDir - origin)
+    this.drawInfiniteWorldLine(0, 0, 0, 1, "rgba(255, 255, 0, 0.55)", 2);
 
     // Draw origin circle if visible on screen
     if (
       origin.x >= -10 &&
-      origin.x <= screenW + 10 &&
+      origin.x <= this.config.viewportWidth + 10 &&
       origin.y >= -10 &&
-      origin.y <= screenH + 10
+      origin.y <= this.config.viewportHeight + 10
     ) {
-      ctx.fillStyle = "rgba(100, 100, 100, 0.5)";
-      ctx.beginPath();
-      ctx.arc(origin.x, origin.y, 5, 0, Math.PI * 2);
-      ctx.fill();
+      this.ctx.fillStyle = "rgba(100, 100, 100, 0.5)";
+      this.ctx.beginPath();
+      this.ctx.arc(origin.x, origin.y, 5, 0, Math.PI * 2);
+      this.ctx.fill();
     }
 
-    ctx.restore();
+    this.ctx.restore();
+  }
+
+  /**
+   * Draw bottom/right guides for a viewport-sized world-space rectangle from the origin.
+   * With the default camera, these coincide with the current screen bounds.
+   */
+  private drawScreenSizeGuides() {
+    if (!this.screenSizeEnabled) return;
+
+    this.ctx.save();
+    // UI layer is drawn with difference blending, so magenta renders as green on white.
+    this.drawInfiniteWorldLine(
+      this.config.viewportWidth,
+      0,
+      0,
+      1,
+      "rgba(255, 0, 255, 0.65)",
+      2,
+    );
+    this.drawInfiniteWorldLine(
+      0,
+      this.config.viewportHeight,
+      1,
+      0,
+      "rgba(255, 0, 255, 0.65)",
+      2,
+    );
+    this.ctx.restore();
   }
 
   /**
@@ -250,6 +390,12 @@ export class UIOverlay {
       this.config.viewportWidth,
       this.config.viewportHeight,
     );
+
+    // World grid (behind axes)
+    this.drawGrid();
+
+    // Visible viewport extents
+    this.drawScreenSizeGuides();
 
     // Draw world axes
     this.drawAxes();

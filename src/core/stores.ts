@@ -9,6 +9,7 @@
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { CanvasConfig, Modifiers } from "./types";
 import { type ToolId, type AllToolSettings, buildDefaultSettings } from "./tools";
+import { type ColorSpaceId, getColorSpaceAdapter } from "../ui/color-utils";
 
 type Listener<T> = (value: T) => void;
 
@@ -130,10 +131,87 @@ export const colorStore = new Store<string>("#037ffc");
  */
 export const prevColorStore = new Store<string>("#000000");
 
+// ============================================================
+// Color Panel UI Preferences
+// ============================================================
+
+export type PickerGeometry = "square" | "circle";
+
+export interface ColorPanelPrefs {
+  space: ColorSpaceId;
+  geometry: PickerGeometry;
+  planeX: string;
+  planeY: string;
+}
+
+export function normalizeColorPanelPrefs(prefs: ColorPanelPrefs): ColorPanelPrefs {
+  const adapter = getColorSpaceAdapter(prefs.space);
+  const ids = new Set(adapter.channels.map((c) => c.id));
+
+  let { planeX, planeY } = prefs;
+  if (!ids.has(planeX) || !ids.has(planeY) || planeX === planeY) {
+    planeX = adapter.defaultPlaneX;
+    planeY = adapter.defaultPlaneY;
+  }
+
+  return {
+    space: prefs.space,
+    geometry: prefs.geometry === "circle" ? "circle" : "square",
+    planeX,
+    planeY,
+  };
+}
+
+export function colorPanelPrefsForSpace(
+  space: ColorSpaceId,
+  geometry: PickerGeometry,
+): ColorPanelPrefs {
+  const adapter = getColorSpaceAdapter(space);
+  return normalizeColorPanelPrefs({
+    space,
+    geometry,
+    planeX: adapter.defaultPlaneX,
+    planeY: adapter.defaultPlaneY,
+  });
+}
+
+export const colorPanelPrefsStore = new Store<ColorPanelPrefs>(
+  normalizeColorPanelPrefs({
+    space: "hsv",
+    geometry: "square",
+    planeX: "s",
+    planeY: "v",
+  })
+);
+
 /**
  * Current active tool
  */
 export const toolStore = new Store<ToolId>("brush");
+
+/**
+ * View overlay preferences (grid, etc.) — Settings panel + UI canvas
+ */
+export interface ViewOverlaySettings {
+  /** When false, the alignment grid is hidden. */
+  gridEnabled: boolean;
+  /** When true, draw the world origin axes and origin marker. */
+  originEnabled: boolean;
+  /** When true, draw left and bottom viewport-edge guides. */
+  screenSizeEnabled: boolean;
+  /**
+   * When true, grid spacing is recomputed from zoom so line density stays ~even on screen.
+   * When false, world-space spacing stays fixed while you zoom (pan/rotate still apply).
+   */
+  gridLiveWhileZooming: boolean;
+}
+
+export const viewOverlayStore = new Store<ViewOverlaySettings>({
+  gridEnabled: true,
+  originEnabled: true,
+  screenSizeEnabled: false,
+  gridLiveWhileZooming: false,
+});
 
 /**
  * Canvas configuration (dimensions)

@@ -366,3 +366,204 @@ export function rgbToOkhsl(r: number, g: number, b: number): [number, number, nu
   return [h * 360, Math.min(Math.max(s, 0), 1) * 100, l * 100];
 }
 
+// ============================================================
+// OKHSV Color Space (Björn Ottosson)
+// ============================================================
+
+export function okhsvToRgb(h: number, s: number, v: number): [number, number, number] {
+  h = h / 360;
+  s = s / 100;
+  v = v / 100;
+
+  if (v <= 0) return [0, 0, 0];
+
+  const a_ = Math.cos(2 * Math.PI * h);
+  const b_ = Math.sin(2 * Math.PI * h);
+
+  const [L_cusp, C_cusp] = findCusp(a_, b_);
+  const S_max = L_cusp > 0 ? C_cusp / L_cusp : 1;
+  const T_max = (1 - L_cusp) > 0 ? C_cusp / (1 - L_cusp) : 1;
+  const S_0 = 0.5;
+  const k = 1 - S_0 / S_max;
+
+  const denom = S_0 + T_max - T_max * k * s;
+  const l = denom > 0 ? 1 - s * S_0 / denom : 1;
+  const c = denom > 0 ? s * T_max * S_0 / denom : 0;
+
+  let L = v * l;
+  let C = v * c;
+
+  const L_vt = toeInv(l);
+  const C_vt = l > 0 ? c * L_vt / l : 0;
+
+  const L_new = toeInv(L);
+  C = L > 0 ? C * L_new / L : 0;
+  L = L_new;
+
+  const [rs, gs, bs] = oklabToLinearSrgb(L_vt, a_ * C_vt, b_ * C_vt);
+  const scale_L = Math.cbrt(1 / Math.max(rs, gs, bs, 1e-10));
+
+  L *= scale_L;
+  C *= scale_L;
+
+  const [r_lin, g_lin, b_lin] = oklabToLinearSrgb(L, C * a_, C * b_);
+  return [
+    Math.round(Math.max(0, Math.min(1, linearToSrgb(r_lin))) * 255),
+    Math.round(Math.max(0, Math.min(1, linearToSrgb(g_lin))) * 255),
+    Math.round(Math.max(0, Math.min(1, linearToSrgb(b_lin))) * 255),
+  ];
+}
+
+export function rgbToOkhsv(r: number, g: number, b: number): [number, number, number] {
+  const r_lin = srgbToLinear(r / 255);
+  const g_lin = srgbToLinear(g / 255);
+  const b_lin = srgbToLinear(b / 255);
+
+  const [L_raw, a, b_val] = linearSrgbToOklab(r_lin, g_lin, b_lin);
+
+  let C = Math.sqrt(a * a + b_val * b_val);
+  let L = L_raw;
+  const h = 0.5 + 0.5 * Math.atan2(-b_val, -a) / Math.PI;
+
+  if (C < 0.0001) {
+    return [h * 360, 0, toe(L) * 100];
+  }
+
+  const a_ = a / C;
+  const b_ = b_val / C;
+
+  const [L_cusp, C_cusp] = findCusp(a_, b_);
+  const S_max = L_cusp > 0 ? C_cusp / L_cusp : 1;
+  const T_max = (1 - L_cusp) > 0 ? C_cusp / (1 - L_cusp) : 1;
+  const S_0 = 0.5;
+  const k = 1 - S_0 / S_max;
+
+  const t_denom = C + L * T_max;
+  const t = t_denom > 0 ? T_max / t_denom : 0;
+  const L_v = t * L;
+  const C_v = t * C;
+
+  const L_vt = toeInv(L_v);
+  const C_vt = L_v > 0 ? C_v * L_vt / L_v : 0;
+
+  const [rs, gs, bs] = oklabToLinearSrgb(L_vt, a_ * C_vt, b_ * C_vt);
+  const scale_L = Math.cbrt(1 / Math.max(rs, gs, bs, 1e-10));
+
+  L /= scale_L;
+  C /= scale_L;
+
+  C = L > 0 ? C * toe(L) / L : 0;
+  L = toe(L);
+
+  const v = L_v > 0 ? L / L_v : 0;
+  const s_denom = T_max * S_0 + T_max * k * C_v;
+  const s = s_denom > 0 ? (S_0 + T_max) * C_v / s_denom : 0;
+
+  return [
+    h * 360,
+    Math.max(0, Math.min(1, s)) * 100,
+    Math.max(0, Math.min(1, v)) * 100,
+  ];
+}
+
+// ============================================================
+// Color-space adapter layer (generic picker)
+// ============================================================
+
+export type ColorSpaceId = "hsv" | "hsl" | "okhsl" | "okhsv";
+
+export interface ChannelMeta {
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+  cyclic?: boolean;
+}
+
+export type ChannelValues = Record<string, number>;
+
+export interface ColorSpaceAdapter {
+  id: ColorSpaceId;
+  label: string;
+  channels: ChannelMeta[];
+  defaultPlaneX: string;
+  defaultPlaneY: string;
+  fromHex(hex: string): ChannelValues;
+  toRgb(values: ChannelValues): [number, number, number];
+}
+
+export function clampChannelValues(adapter: ColorSpaceAdapter, values: ChannelValues): ChannelValues {
+  const out: ChannelValues = {};
+  for (const ch of adapter.channels) {
+    let v = values[ch.id] ?? (ch.min + ch.max) / 2;
+    if (ch.cyclic && ch.min === 0 && ch.max === 360) {
+      v = ((v % 360) + 360) % 360;
+    } else {
+      v = Math.max(ch.min, Math.min(ch.max, v));
+    }
+    out[ch.id] = v;
+  }
+  return out;
+}
+
+export function valuesToHex(adapter: ColorSpaceAdapter, values: ChannelValues): string {
+  const [r, g, b] = adapter.toRgb(clampChannelValues(adapter, values));
+  return rgbToHex(r, g, b);
+}
+
+export const hsvAdapter: ColorSpaceAdapter = {
+  id: "hsv", label: "HSV",
+  channels: [
+    { id: "h", label: "Hue", min: 0, max: 360, cyclic: true },
+    { id: "s", label: "Saturation", min: 0, max: 100 },
+    { id: "v", label: "Value", min: 0, max: 100 },
+  ],
+  defaultPlaneX: "s", defaultPlaneY: "v",
+  fromHex(hex) { const rgb = hexToRgb(hex); const [h, s, v] = rgbToHsv(...rgb); return { h, s, v }; },
+  toRgb(v) { return hsvToRgb(v.h ?? 0, v.s ?? 0, v.v ?? 0); },
+};
+
+export const hslAdapter: ColorSpaceAdapter = {
+  id: "hsl", label: "HSL",
+  channels: [
+    { id: "h", label: "Hue", min: 0, max: 360, cyclic: true },
+    { id: "s", label: "Saturation", min: 0, max: 100 },
+    { id: "l", label: "Lightness", min: 0, max: 100 },
+  ],
+  defaultPlaneX: "h", defaultPlaneY: "l",
+  fromHex(hex) { const rgb = hexToRgb(hex); const [h, s, l] = rgbToHsl(...rgb); return { h, s, l }; },
+  toRgb(v) { return hslToRgb(v.h ?? 0, v.s ?? 0, v.l ?? 0); },
+};
+
+export const okhslAdapter: ColorSpaceAdapter = {
+  id: "okhsl", label: "OKHSL",
+  channels: [
+    { id: "h", label: "Hue", min: 0, max: 360, cyclic: true },
+    { id: "s", label: "Saturation", min: 0, max: 100 },
+    { id: "l", label: "Lightness", min: 0, max: 100 },
+  ],
+  defaultPlaneX: "h", defaultPlaneY: "l",
+  fromHex(hex) { const rgb = hexToRgb(hex); const [h, s, l] = rgbToOkhsl(...rgb); return { h, s, l }; },
+  toRgb(v) { return okhslToRgb(v.h ?? 0, v.s ?? 0, v.l ?? 0); },
+};
+
+export const okhsvAdapter: ColorSpaceAdapter = {
+  id: "okhsv", label: "OKHSV",
+  channels: [
+    { id: "h", label: "Hue", min: 0, max: 360, cyclic: true },
+    { id: "s", label: "Saturation", min: 0, max: 100 },
+    { id: "v", label: "Value", min: 0, max: 100 },
+  ],
+  defaultPlaneX: "h", defaultPlaneY: "v",
+  fromHex(hex) { const rgb = hexToRgb(hex); const [h, s, v] = rgbToOkhsv(...rgb); return { h, s, v }; },
+  toRgb(v) { return okhsvToRgb(v.h ?? 0, v.s ?? 0, v.v ?? 0); },
+};
+
+export const COLOR_SPACE_ADAPTERS: Record<ColorSpaceId, ColorSpaceAdapter> = {
+  hsv: hsvAdapter, hsl: hslAdapter, okhsl: okhslAdapter, okhsv: okhsvAdapter,
+};
+
+export function getColorSpaceAdapter(id: ColorSpaceId): ColorSpaceAdapter {
+  return COLOR_SPACE_ADAPTERS[id];
+}
+

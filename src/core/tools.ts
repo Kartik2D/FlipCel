@@ -217,7 +217,13 @@ export const lasso: ToolDefinition<typeof lassoSettings> = {
 // Select Tool
 // ============================================================
 
-const selectSettings = {} as const satisfies SettingsSchema;
+const selectSettings = {
+  shape: {
+    type: "toggle",
+    options: ["rect", "lasso"] as const,
+    default: "rect",
+  },
+} as const satisfies SettingsSchema;
 
 export const select: ToolDefinition<typeof selectSettings> = {
   id: "select",

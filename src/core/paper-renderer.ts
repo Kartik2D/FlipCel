@@ -17,6 +17,15 @@ import RBush from "rbush";
 import type { CanvasConfig } from "./types";
 import type { Camera } from "./camera";
 
+export type SelectionHandleId =
+  | "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "rotate";
+
+export interface SelectionHandle {
+  id: SelectionHandleId;
+  x: number;
+  y: number;
+}
+
 interface SpatialIndexEntry {
   minX: number;
   minY: number;
@@ -893,13 +902,21 @@ export class PaperRenderer {
     if (!hit) return null;
     let cur: paper.Item | null = hit;
     const layer = paper.project.activeLayer;
+    let root: paper.PathItem | null = null;
     while (cur) {
       if (cur instanceof paper.Path || cur instanceof paper.CompoundPath) {
-        if (cur.layer === layer) return cur;
+        if (cur.layer === layer) root = cur;
       }
       cur = cur.parent;
     }
-    return null;
+    return root;
+  }
+
+  /**
+   * Resolve any hit-tested child back to the selectable root shape on the active layer.
+   */
+  resolveSelectableItem(hit: paper.Item | null): paper.PathItem | null {
+    return this.hitToClipPathItem(hit);
   }
 
   /**
@@ -1253,6 +1270,25 @@ export class PaperRenderer {
     );
   }
 
+  getCombinedBounds(items: paper.Item[]): paper.Rectangle | null {
+    if (items.length === 0) return null;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const item of items) {
+      const b = item.bounds;
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.width);
+      maxY = Math.max(maxY, b.y + b.height);
+    }
+
+    return new paper.Rectangle(minX, minY, maxX - minX, maxY - minY);
+  }
+
   /**
    * Get the bounding box of all content in world space
    */
@@ -1287,11 +1323,139 @@ export class PaperRenderer {
   }
 
   movePath(item: paper.Item, delta: { x: number; y: number }) {
-    // Delta is already in world coordinates (converted by App)
     item.position = item.position.add(new paper.Point(delta.x, delta.y));
-    // Keep spatial index in sync for interactive dragging
     if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
-      // If index is dirty, we'll rebuild it later (avoid rebuilding during drag)
+      if (!this.indexDirty && this.indexEntries.has(item.id)) {
+        this.indexUpsert(item);
+      }
+    }
+    paper.view.update();
+  }
+
+  extractSelectionFromScreenRect(
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+  ): paper.PathItem[] {
+    const worldStart = this.screenToWorld(start.x, start.y);
+    const worldEnd = this.screenToWorld(end.x, end.y);
+    const rect = new paper.Path.Rectangle({
+      from: new paper.Point(worldStart.x, worldStart.y),
+      to: new paper.Point(worldEnd.x, worldEnd.y),
+      insert: false,
+    });
+    const selectedItems = this.extractSelectionFromPath(rect);
+    rect.remove();
+    return selectedItems;
+  }
+
+  extractSelectionFromScreenLasso(points: Array<{ x: number; y: number }>): paper.PathItem[] {
+    if (points.length < 3) return [];
+
+    const worldPoints = points.map((point) => this.screenToWorld(point.x, point.y));
+    const lasso = new paper.Path({
+      segments: worldPoints.map((point) => new paper.Point(point.x, point.y)),
+      closed: true,
+      insert: false,
+    });
+    const selectedItems = this.extractSelectionFromPath(lasso);
+    lasso.remove();
+    return selectedItems;
+  }
+
+  private extractSelectionFromPath(selectionPath: paper.Path): paper.PathItem[] {
+    if (selectionPath.isEmpty()) return [];
+
+    this.ensureSpatialIndex();
+
+    const layer = paper.project.activeLayer;
+    const layerOrder = new Map<number, number>();
+    for (let i = 0; i < layer.children.length; i++) {
+      const child = layer.children[i];
+      if (child instanceof paper.Path || child instanceof paper.CompoundPath) {
+        layerOrder.set(child.id, i);
+      }
+    }
+
+    const candidates = this.queryByBounds(selectionPath.bounds)
+      .filter((item) => item.layer === layer && item.parent)
+      .sort((a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0));
+
+    const selectedItems: paper.PathItem[] = [];
+    const changedItems: paper.PathItem[] = [];
+
+    for (const candidate of candidates) {
+      const fill = candidate.fillColor;
+
+      try {
+        const selectedPiece = this.normalizeBooleanResult(
+          candidate.intersect(selectionPath) as paper.PathItem | null,
+        );
+        if (!selectedPiece || selectedPiece.isEmpty()) {
+          selectedPiece?.remove();
+          continue;
+        }
+
+        this.forceEvenOdd(selectedPiece);
+        this.applyPathStyle(selectedPiece, fill);
+
+        const remainder = this.normalizeBooleanResult(
+          candidate.subtract(selectionPath) as paper.PathItem | null,
+        );
+
+        this.indexRemove(candidate);
+
+        if (remainder && !remainder.isEmpty()) {
+          this.forceEvenOdd(remainder);
+          this.applyPathStyle(remainder, fill);
+          candidate.replaceWith(remainder);
+          this.indexInsert(remainder);
+          changedItems.push(remainder);
+        } else {
+          remainder?.remove();
+          candidate.remove();
+        }
+
+        layer.addChild(selectedPiece);
+        this.indexInsert(selectedPiece);
+        selectedItems.push(selectedPiece);
+      } catch {
+        // Leave candidate untouched if boolean extraction fails.
+      }
+    }
+
+    if (changedItems.length || selectedItems.length) {
+      this.normalizeAfterLocalEdit([...changedItems, ...selectedItems]);
+      for (const item of selectedItems) {
+        if (item.parent) item.bringToFront();
+      }
+      paper.view.update();
+    }
+
+    return selectedItems.filter((item) => item.parent != null);
+  }
+
+  scalePath(
+    item: paper.Item,
+    sx: number,
+    sy: number,
+    anchor: { x: number; y: number },
+  ): void {
+    item.scale(sx, sy, new paper.Point(anchor.x, anchor.y));
+    if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
+      if (!this.indexDirty && this.indexEntries.has(item.id)) {
+        this.indexUpsert(item);
+      }
+    }
+    paper.view.update();
+  }
+
+  rotatePath(
+    item: paper.Item,
+    degrees: number,
+    center: { x: number; y: number },
+  ): void {
+    item.rotate(degrees, new paper.Point(center.x, center.y));
+    if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
       if (!this.indexDirty && this.indexEntries.has(item.id)) {
         this.indexUpsert(item);
       }
@@ -1343,35 +1507,40 @@ export class PaperRenderer {
   }
 
   /**
-   * Draw selection indicator, accounting for camera transformation (including rotation)
-   * Draws all four corners as a polygon to properly show rotation
+   * Draw selection indicator with transform handles.
+   * Returns screen-space handle positions for hit-testing.
    */
-  drawSelection(item: paper.Item | null, ctx: CanvasRenderingContext2D) {
-    if (!item) return;
+  drawSelection(
+    item: paper.Item | paper.Item[] | null,
+    ctx: CanvasRenderingContext2D,
+    rotatingCursor?: { x: number; y: number } | null,
+  ): SelectionHandle[] {
+    if (!item) return [];
 
-    const b = item.bounds;
-    // Padding in world space - scale by inverse zoom so it appears constant on screen
+    const items = Array.isArray(item) ? item : [item];
+    const bounds = this.getCombinedBounds(items);
+    if (!bounds) return [];
+
+    const b = bounds;
     const worldPadding = this.camera ? 4 / this.camera.zoom : 4;
 
-    // Get all four corners of the bounding box in world space
     const worldCorners = [
-      { x: b.x - worldPadding, y: b.y - worldPadding }, // top-left
-      { x: b.x + b.width + worldPadding, y: b.y - worldPadding }, // top-right
-      { x: b.x + b.width + worldPadding, y: b.y + b.height + worldPadding }, // bottom-right
-      { x: b.x - worldPadding, y: b.y + b.height + worldPadding }, // bottom-left
+      { x: b.x - worldPadding, y: b.y - worldPadding },
+      { x: b.x + b.width + worldPadding, y: b.y - worldPadding },
+      { x: b.x + b.width + worldPadding, y: b.y + b.height + worldPadding },
+      { x: b.x - worldPadding, y: b.y + b.height + worldPadding },
     ];
 
-    // Convert all corners to screen space
     const screenCorners = worldCorners.map((corner) =>
       this.worldToScreen(corner.x, corner.y),
     );
 
-    // Draw as a polygon path
     ctx.save();
+
+    // Dashed bounding box
     ctx.strokeStyle = "#ff9900";
     ctx.lineWidth = 2;
     ctx.setLineDash([5, 5]);
-
     ctx.beginPath();
     ctx.moveTo(screenCorners[0].x, screenCorners[0].y);
     ctx.lineTo(screenCorners[1].x, screenCorners[1].y);
@@ -1379,7 +1548,97 @@ export class PaperRenderer {
     ctx.lineTo(screenCorners[3].x, screenCorners[3].y);
     ctx.closePath();
     ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Screen-space handle positions
+    const mid = (a: { x: number; y: number }, b: { x: number; y: number }) => ({
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+    });
+
+    const nw = screenCorners[0];
+    const ne = screenCorners[1];
+    const se = screenCorners[2];
+    const sw = screenCorners[3];
+    const n = mid(nw, ne);
+    const s = mid(sw, se);
+    const e = mid(ne, se);
+    const w = mid(nw, sw);
+
+    // Rotation handle: offset outward from top-center
+    const topCenter = n;
+    const boxCenter = {
+      x: (nw.x + ne.x + se.x + sw.x) / 4,
+      y: (nw.y + ne.y + se.y + sw.y) / 4,
+    };
+    const outX = topCenter.x - boxCenter.x;
+    const outY = topCenter.y - boxCenter.y;
+    const outLen = Math.sqrt(outX * outX + outY * outY);
+    const rotateOffset = 30;
+    const rotate =
+      outLen > 0.001
+        ? {
+            x: topCenter.x + (outX / outLen) * rotateOffset,
+            y: topCenter.y + (outY / outLen) * rotateOffset,
+          }
+        : { x: topCenter.x, y: topCenter.y - rotateOffset };
+
+    const handles: SelectionHandle[] = [
+      { id: "nw", x: nw.x, y: nw.y },
+      { id: "n", x: n.x, y: n.y },
+      { id: "ne", x: ne.x, y: ne.y },
+      { id: "e", x: e.x, y: e.y },
+      { id: "se", x: se.x, y: se.y },
+      { id: "s", x: s.x, y: s.y },
+      { id: "sw", x: sw.x, y: sw.y },
+      { id: "w", x: w.x, y: w.y },
+      { id: "rotate", x: rotate.x, y: rotate.y },
+    ];
+
+    if (rotatingCursor) {
+      // Active rotation: draw line from center to cursor
+      ctx.strokeStyle = "#ff9900";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(boxCenter.x, boxCenter.y);
+      ctx.lineTo(rotatingCursor.x, rotatingCursor.y);
+      ctx.stroke();
+
+      ctx.fillStyle = "#ff9900";
+      ctx.beginPath();
+      ctx.arc(boxCenter.x, boxCenter.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // Idle: rotation handle stem + circle
+      ctx.strokeStyle = "#ff9900";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(topCenter.x, topCenter.y);
+      ctx.lineTo(rotate.x, rotate.y);
+      ctx.stroke();
+
+      ctx.fillStyle = "white";
+      ctx.strokeStyle = "#ff9900";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(rotate.x, rotate.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Resize handles (filled squares)
+    const handleSize = 8;
+    const half = handleSize / 2;
+    for (const h of handles) {
+      if (h.id === "rotate") continue;
+      ctx.fillStyle = "white";
+      ctx.strokeStyle = "#ff9900";
+      ctx.lineWidth = 2;
+      ctx.fillRect(h.x - half, h.y - half, handleSize, handleSize);
+      ctx.strokeRect(h.x - half, h.y - half, handleSize, handleSize);
+    }
 
     ctx.restore();
+    return handles;
   }
 }

@@ -7,8 +7,27 @@
 import { LitElement, html, css, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { tools, type ToolId, type SettingsSchema, type SettingDef, getTool } from "../core/tools";
-import { rgbToHex, hexToRgb, rgbToHsv, hsvToRgb, rgbToHsl, hslToRgb, okhslToRgb, rgbToOkhsl } from "./color-utils";
-import { colorStore, prevColorStore, toolStore, modifiersStore, toolSettingsStore, StoreController } from "../core/stores";
+import {
+  getColorSpaceAdapter,
+  valuesToHex,
+  clampChannelValues,
+  type ColorSpaceId,
+  type ColorSpaceAdapter,
+  type ChannelValues,
+} from "./color-utils";
+import {
+  colorStore,
+  prevColorStore,
+  colorPanelPrefsStore,
+  normalizeColorPanelPrefs,
+  toolStore,
+  modifiersStore,
+  toolSettingsStore,
+  viewOverlayStore,
+  StoreController,
+  type ColorPanelPrefs,
+  type PickerGeometry,
+} from "../core/stores";
 import { historyStateStore } from "../core/history";
 
 // ============================================================
@@ -628,849 +647,279 @@ export class BlockyButton extends Block {
 
 
 // ============================================================
-// HSV Wheel Component
+// Generic Configurable Color Picker
 // ============================================================
 
-@customElement("hsv-wheel")
-export class HSVWheel extends LitElement {
-  @property({ type: String }) color = "#037ffc";
+@customElement("generic-color-picker")
+export class GenericColorPicker extends BaseColorPicker {
+  @property({ type: Object }) prefs!: ColorPanelPrefs;
 
-  private h = 0;
-  private s = 0;
-  private v = 100;
-
-  static styles = css`
-    :host {
-      --hsv-ring-thickness: 12%;
-      --hsv-border-width: 2px;
-      --hsv-border-color: var(--block-border, #9f9f9f);
-      --hsv-handle-size: 12px;
-      --hsv-mask-bg: var(--block-face-bg, white);
-      --hsv-inner-diameter: calc(100% - 2 * var(--hsv-ring-thickness));
-      --hsv-sv-box-size: calc(var(--hsv-inner-diameter) * 0.707);
-      --hsv-handle-position: calc(
-        100% - var(--hsv-ring-thickness) - var(--hsv-border-width) / 2
-      );
-
-      display: block;
-      width: 100%;
-      /* Safari-compatible 1:1 aspect ratio */
-      height: 0;
-      padding-bottom: 100%;
-      position: relative;
-    }
-
-    .hsv-container {
-      position: absolute;
-      inset: 0;
-      user-select: none;
-    }
-
-    .hue-ring {
-      position: absolute;
-      inset: 0;
-      border-radius: 50%;
-      background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red);
-      cursor: pointer;
-      border: var(--hsv-border-width) solid var(--hsv-border-color);
-      box-sizing: border-box;
-    }
-
-    .hue-ring-mask {
-      position: absolute;
-      top: var(--hsv-ring-thickness);
-      left: var(--hsv-ring-thickness);
-      right: var(--hsv-ring-thickness);
-      bottom: var(--hsv-ring-thickness);
-      background: var(--hsv-mask-bg);
-      border-radius: 50%;
-      pointer-events: none;
-      border: var(--hsv-border-width) solid var(--hsv-border-color);
-      box-sizing: border-box;
-    }
-
-    .hue-handle-arm {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      width: 50%;
-      height: 0;
-      transform-origin: 0 0;
-      pointer-events: none;
-    }
-
-    .hue-handle,
-    .sv-handle {
-      position: absolute;
-      width: var(--hsv-handle-size);
-      height: var(--hsv-handle-size);
-      border-radius: 50%;
-      border: var(--hsv-border-width) solid white;
-      box-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
-      background: transparent;
-      transform: translate(-50%, -50%);
-      box-sizing: border-box;
-      pointer-events: none;
-    }
-
-    .hue-handle {
-      left: var(--hsv-handle-position);
-      top: 0;
-    }
-
-    .sv-box-wrapper {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: var(--hsv-sv-box-size);
-      height: var(--hsv-sv-box-size);
-    }
-
-    .sv-box {
-      position: relative;
-      width: 100%;
-      height: 100%;
-      cursor: crosshair;
-      border-radius: 2px;
-      overflow: hidden;
-      border: var(--hsv-border-width) solid var(--hsv-border-color);
-      box-sizing: border-box;
-    }
-
-    canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-  `;
-
-  private canvas!: HTMLCanvasElement;
-  private ctx!: CanvasRenderingContext2D;
-
-  firstUpdated() {
-    this.canvas = this.renderRoot.querySelector("canvas")!;
-    this.ctx = this.canvas.getContext("2d")!;
-    this.syncFromColor(this.color);
-    this.drawSVBox();
-  }
-
-  updated(changed: Map<string, unknown>) {
-    if (changed.has("color")) {
-      const currentRGB = hsvToRgb(this.h, this.s, this.v);
-      if (rgbToHex(currentRGB[0], currentRGB[1], currentRGB[2]) !== this.color) {
-        this.syncFromColor(this.color);
-        this.drawSVBox();
-      }
-    }
-  }
-
-  private syncFromColor(hex: string) {
-    const rgb = hexToRgb(hex);
-    const hsv = rgbToHsv(rgb[0], rgb[1], rgb[2]);
-    this.h = hsv[0];
-    this.s = hsv[1];
-    this.v = hsv[2];
-  }
-
-  private drawSVBox() {
-    if (!this.ctx) return;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    const imgData = this.ctx.createImageData(w, h);
-    const data = imgData.data;
-
-    for (let y = 0; y < h; y++) {
-      const v = 100 - (y / h) * 100;
-      for (let x = 0; x < w; x++) {
-        const s = (x / w) * 100;
-        const [r, g, b] = hsvToRgb(this.h, s, v);
-        const index = (y * w + x) * 4;
-        data[index] = r;
-        data[index + 1] = g;
-        data[index + 2] = b;
-        data[index + 3] = 255;
-      }
-    }
-    this.ctx.putImageData(imgData, 0, 0);
-  }
-
-  private handleRingDown(e: PointerEvent) {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-
-    const update = (e: PointerEvent) => {
-      const x = e.clientX - cx;
-      const y = e.clientY - cy;
-      let angleDeg = Math.atan2(y, x) * (180 / Math.PI) + 90;
-      if (angleDeg < 0) angleDeg += 360;
-      this.h = angleDeg;
-      this.emitChange();
-    };
-
-    update(e);
-    const move = (e: PointerEvent) => update(e);
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      this.emitChangeEnd();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  private handleBoxDown(e: PointerEvent) {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-
-    const update = (e: PointerEvent) => {
-      const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      this.s = x * 100;
-      this.v = (1 - y) * 100;
-      this.emitChange();
-    };
-
-    update(e);
-    const move = (e: PointerEvent) => update(e);
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      this.emitChangeEnd();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  private emitChange() {
-    const [r, g, b] = hsvToRgb(this.h, this.s, this.v);
-    this.color = rgbToHex(r, g, b);
-    this.dispatchEvent(
-      new CustomEvent("input", {
-        detail: { value: this.color },
-        bubbles: true,
-        composed: true,
-      })
-    );
-    this.drawSVBox();
-    this.requestUpdate();
-  }
-
-  private emitChangeEnd() {
-    this.dispatchEvent(
-      new CustomEvent("change", {
-        detail: { value: this.color },
-        bubbles: true,
-        composed: true,
-      })
-    );
-  }
-
-  render() {
-    const boxX = this.s;
-    const boxY = 100 - this.v;
-
-    return html`
-      <div class="hsv-container">
-        <div class="hue-ring" data-interactive @pointerdown=${this.handleRingDown}></div>
-        <div class="hue-ring-mask"></div>
-        <div
-          class="hue-handle-arm"
-          style="transform: rotate(${this.h - 90}deg)"
-        >
-          <div class="hue-handle"></div>
-        </div>
-        <div class="sv-box-wrapper">
-          <div class="sv-box" data-interactive @pointerdown=${this.handleBoxDown}>
-            <canvas width="100" height="100"></canvas>
-            <div
-              class="sv-handle"
-              style="left: ${boxX}%; top: ${boxY}%;"
-            ></div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-}
-
-// ============================================================
-// HSL Picker Component
-// ============================================================
-
-@customElement("hsl-picker")
-export class HSLPicker extends BaseColorPicker {
-  private h = 0;
-  private s = 100;
-  private l = 50;
+  private values: ChannelValues = {};
+  private canvas: HTMLCanvasElement | null = null;
+  private ctx: CanvasRenderingContext2D | null = null;
 
   static styles = [pickerVars, handleStyles, sliderColumnStyles, css`
-    :host {
-      display: block;
-      height: 100%;
+    :host { display: block; height: 100%; }
+
+    .picker-main { display: flex; gap: var(--picker-gap); width: 100%; align-items: stretch; }
+    .plane-area { flex: 1; min-width: 0; }
+
+    .plane-square { position: relative; width: 100%; height: 0; padding-bottom: 100%; }
+    .plane-square-inner {
+      position: absolute; inset: 0; cursor: crosshair; border-radius: 2px; overflow: hidden;
+      border: var(--picker-border-width) solid var(--picker-border-color); box-sizing: border-box;
     }
 
-    .hsl-container {
-      display: flex;
-      gap: var(--picker-gap);
-      width: 100%;
-      height: 100%;
-      user-select: none;
+    .plane-circle-wrap { position: relative; width: 100%; height: 0; padding-bottom: 100%; }
+    .plane-circle-inner { position: absolute; inset: 0; cursor: crosshair; }
+    .circle-disk {
+      position: absolute; inset: 0; border-radius: 50%; overflow: hidden;
+      outline: var(--picker-border-width) solid var(--picker-border-color);
+      outline-offset: calc(-1 * var(--picker-border-width));
     }
 
-    .hl-box {
-      flex: 1;
-      position: relative;
-      cursor: crosshair;
-      border-radius: 2px;
-      overflow: hidden;
-      border: var(--picker-border-width) solid var(--picker-border-color);
-      box-sizing: border-box;
-    }
-
-    .hl-box canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-    
-    .hl-handle { /* extends .handle */ }
+    canvas { display: block; width: 100%; height: 100%; }
+    .slider-column { flex-shrink: 0; }
+    .sliders-stack { flex: 1; display: flex; flex-direction: column; gap: 6px; min-height: 48px; }
+    .sliders-stack .s-slider { flex: 1; min-height: 36px; }
   `];
 
-  private canvas!: HTMLCanvasElement;
-  private ctx!: CanvasRenderingContext2D;
-  private sliderEl!: HTMLElement;
+  private getAdapter(): ColorSpaceAdapter { return getColorSpaceAdapter(this.prefs.space); }
+  private channelMeta(id: string) { return this.getAdapter().channels.find((c) => c.id === id); }
 
   firstUpdated() {
-    this.canvas = this.renderRoot.querySelector("canvas")!;
-    this.ctx = this.canvas.getContext("2d")!;
-    this.sliderEl = this.renderRoot.querySelector(".s-gradient")!;
+    this.ensureCanvas();
     this.syncFromColor(this.color);
-    this.drawHLBox();
-    this.updateSaturationGradient();
+    this.drawPlane();
   }
 
   updated(changed: Map<string, unknown>) {
+    this.ensureCanvas();
     if (changed.has("color")) {
-      const currentRGB = hslToRgb(this.h, this.s, this.l);
-      if (rgbToHex(currentRGB[0], currentRGB[1], currentRGB[2]) !== this.color) {
-        this.syncFromColor(this.color);
-        this.drawHLBox();
-        this.updateSaturationGradient();
-      }
+      this.syncFromColor(this.color);
+    }
+    if (changed.has("prefs")) this.syncFromColor(this.color);
+    if (changed.has("color") || changed.has("prefs")) {
+      this.drawPlane();
+    }
+  }
+
+  private ensureCanvas() {
+    const c = this.renderRoot.querySelector("canvas");
+    if (c && c instanceof HTMLCanvasElement && c !== this.canvas) {
+      this.canvas = c;
+      this.ctx = c.getContext("2d");
     }
   }
 
   protected syncFromColor(hex: string) {
-    const rgb = hexToRgb(hex);
-    const hsl = rgbToHsl(rgb[0], rgb[1], rgb[2]);
-    this.h = hsl[0];
-    this.s = hsl[1];
-    this.l = hsl[2];
+    const adapter = this.getAdapter();
+    this.values = clampChannelValues(adapter, adapter.fromHex(hex));
   }
 
   protected getColorFromState(): string {
-    const [r, g, b] = hslToRgb(this.h, this.s, this.l);
-    return rgbToHex(r, g, b);
+    return valuesToHex(this.getAdapter(), this.values);
   }
 
-  private drawHLBox() {
-    if (!this.ctx) return;
+  // --- 2D plane rendering ---
+
+  private drawPlane() {
+    if (!this.ctx || !this.canvas) return;
+    const adapter = this.getAdapter();
+    const { planeX, planeY, geometry } = this.prefs;
+    const mx = this.channelMeta(planeX);
+    const my = this.channelMeta(planeY);
+    if (!mx || !my) return;
+
     const w = this.canvas.width;
     const h = this.canvas.height;
     const imgData = this.ctx.createImageData(w, h);
     const data = imgData.data;
+    const base = { ...this.values };
 
-    // X = Hue (0-360), Y = Lightness (100-0)
-    for (let y = 0; y < h; y++) {
-      const lightness = 100 - (y / h) * 100;
-      for (let x = 0; x < w; x++) {
-        const hue = (x / w) * 360;
-        const [r, g, b] = hslToRgb(hue, this.s, lightness);
-        const index = (y * w + x) * 4;
-        data[index] = r;
-        data[index + 1] = g;
-        data[index + 2] = b;
-        data[index + 3] = 255;
+    if (geometry === "square") {
+      for (let y = 0; y < h; y++) {
+        const vy = my.max - (y / h) * (my.max - my.min);
+        for (let x = 0; x < w; x++) {
+          const vx = mx.min + (x / w) * (mx.max - mx.min);
+          const [r, g, b] = adapter.toRgb(clampChannelValues(adapter, { ...base, [planeX]: vx, [planeY]: vy }));
+          const i = (y * w + x) * 4;
+          data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
+        }
       }
-    }
-    this.ctx.putImageData(imgData, 0, 0);
-  }
-
-  private updateSaturationGradient() {
-    if (!this.sliderEl) return;
-    // Gradient from full saturation (S=100) to no saturation (S=0) at current H,L
-    const [r1, g1, b1] = hslToRgb(this.h, 100, this.l);
-    const [r2, g2, b2] = hslToRgb(this.h, 0, this.l);
-    this.sliderEl.style.background = `linear-gradient(to bottom, 
-      rgb(${r1}, ${g1}, ${b1}), 
-      rgb(${r2}, ${g2}, ${b2}))`;
-  }
-
-  private handleSliderDown(e: PointerEvent) {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-
-    const update = (e: PointerEvent) => {
-      const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      this.s = (1 - y) * 100;
-      this.emitChange();
-      this.drawHLBox();
-    };
-
-    update(e);
-    const move = (e: PointerEvent) => update(e);
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      this.emitChangeEnd();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  private handleBoxDown(e: PointerEvent) {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-
-    const update = (e: PointerEvent) => {
-      const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      this.h = x * 360;
-      this.l = (1 - y) * 100;
-      this.emitChange();
-      this.updateSaturationGradient();
-    };
-
-    update(e);
-    const move = (e: PointerEvent) => update(e);
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      this.emitChangeEnd();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  render() {
-    const hlX = (this.h / 360) * 100;
-    const hlY = 100 - this.l;
-    const sY = (1 - this.s / 100) * 100;
-
-    return html`
-      <div class="hsl-container">
-        <div class="hl-box" data-interactive @pointerdown=${this.handleBoxDown}>
-          <canvas width="100" height="100"></canvas>
-          <div class="handle" style="left: ${hlX}%; top: ${hlY}%;"></div>
-        </div>
-        <div class="slider-column">
-          <div class="color-preview">
-            <div class="color-half" style="background: ${this.prevColor}"></div>
-            <div class="color-half" style="background: ${this.color}"></div>
-          </div>
-          <div class="s-slider" data-interactive @pointerdown=${this.handleSliderDown}>
-            <div class="s-gradient"></div>
-            <div class="s-handle" style="top: ${sY}%;"></div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-}
-
-// ============================================================
-// OKHSL Rectangular Picker Component
-// ============================================================
-
-@customElement("okhsl-rect-picker")
-export class OKHSLRectPicker extends BaseColorPicker {
-
-  private h = 0;
-  private s = 100;
-  private l = 50;
-
-  static styles = [pickerVars, handleStyles, sliderColumnStyles, css`
-    :host {
-      display: block;
-      height: 100%;
-    }
-
-    .okhsl-container {
-      display: flex;
-      gap: var(--picker-gap);
-      width: 100%;
-      height: 100%;
-      user-select: none;
-    }
-
-    .hl-box {
-      flex: 1;
-      position: relative;
-      cursor: crosshair;
-      border-radius: 2px;
-      overflow: hidden;
-      border: var(--picker-border-width) solid var(--picker-border-color);
-      box-sizing: border-box;
-    }
-
-    .hl-box canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-  `];
-
-  private canvas!: HTMLCanvasElement;
-  private ctx!: CanvasRenderingContext2D;
-  private sliderEl!: HTMLElement;
-
-  firstUpdated() {
-    this.canvas = this.renderRoot.querySelector("canvas")!;
-    this.ctx = this.canvas.getContext("2d")!;
-    this.sliderEl = this.renderRoot.querySelector(".s-gradient")!;
-    this.syncFromColor(this.color);
-    this.drawHLBox();
-    this.updateSaturationGradient();
-  }
-
-  updated(changed: Map<string, unknown>) {
-    if (changed.has("color")) {
-      const currentRGB = okhslToRgb(this.h, this.s, this.l);
-      if (rgbToHex(currentRGB[0], currentRGB[1], currentRGB[2]) !== this.color) {
-        this.syncFromColor(this.color);
-        this.drawHLBox();
-        this.updateSaturationGradient();
-      }
-    }
-  }
-
-  protected syncFromColor(hex: string) {
-    const rgb = hexToRgb(hex);
-    const okhsl = rgbToOkhsl(rgb[0], rgb[1], rgb[2]);
-    this.h = okhsl[0];
-    this.s = okhsl[1];
-    this.l = okhsl[2];
-  }
-
-  protected getColorFromState(): string {
-    const [r, g, b] = okhslToRgb(this.h, this.s, this.l);
-    return rgbToHex(r, g, b);
-  }
-
-  private drawHLBox() {
-    if (!this.ctx) return;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    const imgData = this.ctx.createImageData(w, h);
-    const data = imgData.data;
-
-    // X = Hue (0-360), Y = Lightness (100-0)
-    for (let y = 0; y < h; y++) {
-      const lightness = 100 - (y / h) * 100;
-      for (let x = 0; x < w; x++) {
-        const hue = (x / w) * 360;
-        const [r, g, b] = okhslToRgb(hue, this.s, lightness);
-        const index = (y * w + x) * 4;
-        data[index] = r;
-        data[index + 1] = g;
-        data[index + 2] = b;
-        data[index + 3] = 255;
-      }
-    }
-    this.ctx.putImageData(imgData, 0, 0);
-  }
-
-  private updateSaturationGradient() {
-    if (!this.sliderEl) return;
-    // Gradient from full saturation (S=100) to no saturation (S=0) at current H,L
-    const [r1, g1, b1] = okhslToRgb(this.h, 100, this.l);
-    const [r2, g2, b2] = okhslToRgb(this.h, 0, this.l);
-    this.sliderEl.style.background = `linear-gradient(to bottom, 
-      rgb(${r1}, ${g1}, ${b1}), 
-      rgb(${r2}, ${g2}, ${b2}))`;
-  }
-
-  private handleSliderDown(e: PointerEvent) {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-
-    const update = (e: PointerEvent) => {
-      const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      this.s = (1 - y) * 100;
-      this.emitChange();
-      this.drawHLBox();
-    };
-
-    update(e);
-    const move = (e: PointerEvent) => update(e);
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      this.emitChangeEnd();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  private handleBoxDown(e: PointerEvent) {
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-
-    const update = (e: PointerEvent) => {
-      const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      this.h = x * 360;
-      this.l = (1 - y) * 100;
-      this.emitChange();
-      this.updateSaturationGradient();
-    };
-
-    update(e);
-    const move = (e: PointerEvent) => update(e);
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      this.emitChangeEnd();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }
-
-  render() {
-    const hlX = (this.h / 360) * 100;
-    const hlY = 100 - this.l;
-    const sY = (1 - this.s / 100) * 100;
-
-    return html`
-      <div class="okhsl-container">
-        <div class="hl-box" data-interactive @pointerdown=${this.handleBoxDown}>
-          <canvas width="100" height="100"></canvas>
-          <div class="handle" style="left: ${hlX}%; top: ${hlY}%;"></div>
-        </div>
-        <div class="slider-column">
-          <div class="color-preview">
-            <div class="color-half" style="background: ${this.prevColor}"></div>
-            <div class="color-half" style="background: ${this.color}"></div>
-          </div>
-          <div class="s-slider" data-interactive @pointerdown=${this.handleSliderDown}>
-            <div class="s-gradient"></div>
-            <div class="s-handle" style="top: ${sY}%;"></div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-}
-
-// ============================================================
-// OKHSL Picker Component (Circular)
-// ============================================================
-
-@customElement("okhsl-picker")
-export class OKHSLPicker extends BaseColorPicker {
-  // Lightness curve exponent: lower = more white, higher = more black, 1 = linear
-  @property({ type: Number }) lightnessCurve = 0.5;
-
-  private h = 0;
-  private s = 100;
-  private l = 50;
-
-  static styles = [pickerVars, handleStyles, sliderColumnStyles, css`
-    :host {
-      display: block;
-    }
-
-    .okhsl-container {
-      display: flex;
-      gap: var(--picker-gap);
-      width: 100%;
-      user-select: none;
-    }
-
-    .hl-circle-wrapper {
-      position: relative;
-      /* Safari-compatible 1:1 aspect ratio - square based on available width */
-      width: calc(100% - var(--picker-slider-width) - var(--picker-gap));
-      height: 0;
-      padding-bottom: calc(100% - var(--picker-slider-width) - var(--picker-gap));
-    }
-
-    .hl-circle {
-      position: absolute;
-      inset: 0;
-      cursor: crosshair;
-      border-radius: 50%;
-      overflow: hidden;
-      border: var(--picker-border-width) solid var(--picker-border-color);
-      box-sizing: border-box;
-    }
-
-    .hl-circle canvas {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-  `];
-
-  private canvas!: HTMLCanvasElement;
-  private ctx!: CanvasRenderingContext2D;
-  private sliderEl!: HTMLElement;
-
-  firstUpdated() {
-    this.canvas = this.renderRoot.querySelector("canvas")!;
-    this.ctx = this.canvas.getContext("2d")!;
-    this.sliderEl = this.renderRoot.querySelector(".s-gradient")!;
-    this.syncFromColor(this.color);
-    this.drawHLCircle();
-    this.updateSaturationGradient();
-  }
-
-  updated(changed: Map<string, unknown>) {
-    if (changed.has("color")) {
-      const currentRGB = okhslToRgb(this.h, this.s, this.l);
-      if (rgbToHex(currentRGB[0], currentRGB[1], currentRGB[2]) !== this.color) {
-        this.syncFromColor(this.color);
-        this.drawHLCircle();
-        this.updateSaturationGradient();
-      }
-    }
-    if (changed.has("lightnessCurve")) {
-      this.drawHLCircle();
-    }
-  }
-
-  protected syncFromColor(hex: string) {
-    const rgb = hexToRgb(hex);
-    const okhsl = rgbToOkhsl(rgb[0], rgb[1], rgb[2]);
-    this.h = okhsl[0];
-    this.s = okhsl[1];
-    this.l = okhsl[2];
-  }
-
-  protected getColorFromState(): string {
-    const [r, g, b] = okhslToRgb(this.h, this.s, this.l);
-    return rgbToHex(r, g, b);
-  }
-
-  private drawHLCircle() {
-    if (!this.ctx) return;
-    const size = this.canvas.width;
-    const cx = size / 2;
-    const cy = size / 2;
-    const radius = size / 2;
-    const imgData = this.ctx.createImageData(size, size);
-    const data = imgData.data;
-
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const dx = x - cx;
-        const dy = y - cy;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        if (dist <= radius) {
-          // Angle = Hue (0-360), Distance = Lightness (center=0, edge=100)
-          let angle = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
-          if (angle < 0) angle += 360;
-          // Perceptual mapping: adjustable curve for lightness distribution
-          const lightness = Math.pow(dist / radius, this.lightnessCurve) * 100;
-
-          const [r, g, b] = okhslToRgb(angle, this.s, lightness);
-          const index = (y * size + x) * 4;
-        data[index] = r;
-        data[index + 1] = g;
-        data[index + 2] = b;
-        data[index + 3] = 255;
+    } else {
+      const cx = w / 2, cy = h / 2, radius = Math.min(cx, cy);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const dx = x - cx, dy = y - cy;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const i = (y * w + x) * 4;
+          if (dist > radius) continue;
+          let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
+          if (angleDeg < 0) angleDeg += 360;
+          const t = radius > 0 ? dist / radius : 0;
+          const vx = mx.cyclic ? angleDeg : mx.min + (angleDeg / 360) * (mx.max - mx.min);
+          const vy = my.min + t * (my.max - my.min);
+          const [r, g, b] = adapter.toRgb(clampChannelValues(adapter, { ...base, [planeX]: vx, [planeY]: vy }));
+          data[i] = r; data[i+1] = g; data[i+2] = b; data[i+3] = 255;
         }
       }
     }
     this.ctx.putImageData(imgData, 0, 0);
   }
 
-  private updateSaturationGradient() {
-    if (!this.sliderEl) return;
-    // Gradient from full saturation to no saturation at current H,L
-    const [r1, g1, b1] = okhslToRgb(this.h, 100, this.l);
-    const [r2, g2, b2] = okhslToRgb(this.h, 0, this.l);
-    this.sliderEl.style.background = `linear-gradient(to bottom, 
-      rgb(${r1}, ${g1}, ${b1}), 
-      rgb(${r2}, ${g2}, ${b2}))`;
+  private sliderId(): string | null {
+    return this.getAdapter().channels.find(
+      (channel) => channel.id !== this.prefs.planeX && channel.id !== this.prefs.planeY
+    )?.id ?? null;
   }
 
-  private handleSliderDown(e: PointerEvent) {
+  private sliderGradient(sid: string): string {
+    const adapter = this.getAdapter();
+    const m = this.channelMeta(sid);
+    if (!m) return "";
+
+    if (m.cyclic) {
+      const base: ChannelValues = {};
+      for (const ch of adapter.channels) {
+        if (ch.id === sid) continue;
+        base[ch.id] = ch.id === "l" ? (ch.min + ch.max) / 2 : ch.max;
+      }
+      const stops: string[] = [];
+      const n = 7;
+      for (let j = 0; j <= n; j++) {
+        const v = m.max - (j / n) * (m.max - m.min);
+        const [r, g, b] = adapter.toRgb(clampChannelValues(adapter, { ...base, [sid]: v }));
+        stops.push(`rgb(${r},${g},${b})`);
+      }
+      return `linear-gradient(to bottom, ${stops.join(", ")})`;
+    }
+
+    const [r1, g1, b1] = adapter.toRgb(clampChannelValues(adapter, { ...this.values, [sid]: m.max }));
+    const [r2, g2, b2] = adapter.toRgb(clampChannelValues(adapter, { ...this.values, [sid]: m.min }));
+    return `linear-gradient(to bottom, rgb(${r1},${g1},${b1}), rgb(${r2},${g2},${b2}))`;
+  }
+
+  // --- Interaction ---
+
+  private handleSquareDown(e: PointerEvent) {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-
-    const update = (e: PointerEvent) => {
-      const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      this.s = (1 - y) * 100;
-      this.emitChange();
-      this.drawHLCircle();
+    const adapter = this.getAdapter();
+    const { planeX, planeY } = this.prefs;
+    const mx = this.channelMeta(planeX)!, my = this.channelMeta(planeY)!;
+    const update = (ev: PointerEvent) => {
+      const u = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+      const v = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height));
+      this.values = clampChannelValues(adapter, {
+        ...this.values,
+        [planeX]: mx.min + u * (mx.max - mx.min),
+        [planeY]: my.max - v * (my.max - my.min),
+      });
+      this.emitChange(); this.drawPlane();
     };
-
-    update(e);
-    const move = (e: PointerEvent) => update(e);
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      this.emitChangeEnd();
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    this.startDrag(e, update);
   }
 
   private handleCircleDown(e: PointerEvent) {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const cx = rect.width / 2;
-    const cy = rect.height / 2;
-    const radius = Math.min(cx, cy);
-
-    const update = (e: PointerEvent) => {
-      const x = e.clientX - rect.left - cx;
-      const y = e.clientY - rect.top - cy;
+    const adapter = this.getAdapter();
+    const { planeX, planeY } = this.prefs;
+    const mx = this.channelMeta(planeX)!, my = this.channelMeta(planeY)!;
+    const cx = rect.width / 2, cy = rect.height / 2, radius = Math.min(cx, cy);
+    const update = (ev: PointerEvent) => {
+      const x = ev.clientX - rect.left - cx, y = ev.clientY - rect.top - cy;
       const dist = Math.min(Math.sqrt(x * x + y * y), radius);
-
-      let angle = Math.atan2(y, x) * (180 / Math.PI) + 90;
-      if (angle < 0) angle += 360;
-
-      this.h = angle;
-      // Perceptual mapping: use same curve as drawing
-      this.l = Math.pow(dist / radius, this.lightnessCurve) * 100;
-      this.emitChange();
-      this.updateSaturationGradient();
+      let angleDeg = Math.atan2(y, x) * (180 / Math.PI) + 90;
+      if (angleDeg < 0) angleDeg += 360;
+      const t = radius > 0 ? dist / radius : 0;
+      const vx = mx.cyclic ? angleDeg : mx.min + (angleDeg / 360) * (mx.max - mx.min);
+      const vy = my.min + t * (my.max - my.min);
+      this.values = clampChannelValues(adapter, { ...this.values, [planeX]: vx, [planeY]: vy });
+      this.emitChange(); this.drawPlane();
     };
+    this.startDrag(e, update);
+  }
 
-    update(e);
-    const move = (e: PointerEvent) => update(e);
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      this.emitChangeEnd();
+  private handleSliderDown(e: PointerEvent) {
+    const sid = this.sliderId(); if (!sid) return;
+    const m = this.channelMeta(sid); if (!m) return;
+    const adapter = this.getAdapter();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const update = (ev: PointerEvent) => {
+      const v = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height));
+      this.values = clampChannelValues(adapter, { ...this.values, [sid]: m.max - v * (m.max - m.min) });
+      this.emitChange(); this.drawPlane();
     };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    this.startDrag(e, update);
+  }
+
+  // --- Handle positioning ---
+
+  private squareHandle(): { left: number; top: number } {
+    const mx = this.channelMeta(this.prefs.planeX)!;
+    const my = this.channelMeta(this.prefs.planeY)!;
+    const sx = mx.max - mx.min, sy = my.max - my.min;
+    return {
+      left: sx > 0 ? ((this.values[this.prefs.planeX] ?? mx.min) - mx.min) / sx * 100 : 0,
+      top: sy > 0 ? (my.max - (this.values[this.prefs.planeY] ?? my.min)) / sy * 100 : 0,
+    };
+  }
+
+  private circleHandle(): { left: number; top: number } {
+    const mx = this.channelMeta(this.prefs.planeX)!;
+    const my = this.channelMeta(this.prefs.planeY)!;
+    const vx = this.values[this.prefs.planeX] ?? mx.min;
+    const vy = this.values[this.prefs.planeY] ?? my.min;
+    const angleDeg = mx.cyclic ? vx : (mx.max - mx.min > 0 ? ((vx - mx.min) / (mx.max - mx.min)) * 360 : 0);
+    const sy = my.max - my.min;
+    const t = sy > 0 ? Math.max(0, Math.min(1, (vy - my.min) / sy)) : 0;
+    const rad = ((angleDeg - 90) * Math.PI) / 180;
+    return { left: 50 + t * 50 * Math.cos(rad), top: 50 + t * 50 * Math.sin(rad) };
+  }
+
+  private sliderTop(sid: string): number {
+    const m = this.channelMeta(sid); if (!m) return 0;
+    const span = m.max - m.min;
+    return span > 0 ? (1 - ((this.values[sid] ?? m.min) - m.min) / span) * 100 : 0;
   }
 
   render() {
-    // Calculate handle position from H (angle) and L (radius)
-    const angleRad = ((this.h - 90) * Math.PI) / 180;
-    // Inverse of curve mapping: use 1/curve exponent to get distance from lightness
-    const dist = Math.pow(this.l / 100, 1 / this.lightnessCurve);
-    const handleX = 50 + dist * 50 * Math.cos(angleRad);
-    const handleY = 50 + dist * 50 * Math.sin(angleRad);
-    const sY = (1 - this.s / 100) * 100;
-
+    const { geometry } = this.prefs;
+    const h = geometry === "square" ? this.squareHandle() : this.circleHandle();
+    const sid = this.sliderId();
     return html`
-      <div class="okhsl-container">
-        <div class="hl-circle-wrapper">
-          <div class="hl-circle" data-interactive @pointerdown=${this.handleCircleDown}>
-            <canvas width="100" height="100"></canvas>
-            <div class="handle" style="left: ${handleX}%; top: ${handleY}%;"></div>
-          </div>
+      <div class="picker-main">
+        <div class="plane-area">
+          ${geometry === "square" ? html`
+            <div class="plane-square">
+              <div class="plane-square-inner" data-interactive @pointerdown=${this.handleSquareDown}>
+                <canvas width="100" height="100"></canvas>
+                <div class="handle" style="left:${h.left}%;top:${h.top}%;"></div>
+              </div>
+            </div>
+          ` : html`
+            <div class="plane-circle-wrap">
+              <div class="plane-circle-inner">
+                <div class="circle-disk" data-interactive @pointerdown=${this.handleCircleDown}>
+                  <canvas width="100" height="100"></canvas>
+                  <div class="handle" style="left:${h.left}%;top:${h.top}%;"></div>
+                </div>
+              </div>
+            </div>
+          `}
         </div>
         <div class="slider-column">
           <div class="color-preview">
-            <div class="color-half" style="background: ${this.prevColor}"></div>
-            <div class="color-half" style="background: ${this.color}"></div>
+            <div class="color-half" style="background:${this.prevColor}"></div>
+            <div class="color-half" style="background:${this.color}"></div>
           </div>
-          <div class="s-slider" data-interactive @pointerdown=${this.handleSliderDown}>
-            <div class="s-gradient"></div>
-            <div class="s-handle" style="top: ${sY}%;"></div>
+          <div class="sliders-stack">
+            ${sid ? html`
+              <div class="s-slider" data-interactive @pointerdown=${(ev: PointerEvent) => this.handleSliderDown(ev)}>
+                <div class="s-gradient" style="background:${this.sliderGradient(sid)}"></div>
+                <div class="s-handle" style="top:${this.sliderTop(sid)}%;"></div>
+              </div>
+            ` : ""}
           </div>
         </div>
       </div>
@@ -1645,14 +1094,22 @@ export class FloatingPanel extends Block {
 }
 
 // ============================================================
-// Color Panel
+// Color Panel (generic configurable picker)
 // ============================================================
+
+const COLOR_SPACE_OPTIONS: { id: ColorSpaceId; label: string }[] = [
+  { id: "hsv", label: "HSV" },
+  { id: "hsl", label: "HSL" },
+  { id: "okhsv", label: "OKHSV" },
+  { id: "okhsl", label: "OKHSL" },
+];
 
 @customElement("inkwell-color-panel")
 export class InkwellColorPanel extends FloatingPanel {
   @property({ type: String }) color = "#037ffc";
   @state() private prevColor = "#000000";
 
+  private pickerPrefs = new StoreController(this, colorPanelPrefsStore);
   private unsubscribeColor?: () => void;
   private unsubscribePrevColor?: () => void;
 
@@ -1660,297 +1117,32 @@ export class InkwellColorPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      --block-radius: 50% 15% 50% 50%;
       --block-face-padding: 10px;
-      --panel-width: 180px;
-    }
-
-    .block {
-      overflow: hidden;
+      --panel-width: 240px;
     }
 
     .face {
-      padding: var(--block-face-padding);
-      border-radius: var(--block-radius);
-      position: relative;
-    }
-
-    .color-preview {
-      position: absolute;
-      top: 5%;
-      right: 5%;
-      width: 12%;
-      height: 12%;
-      border-radius: 50%;
-      border: 2px solid var(--block-border);
-      box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.2);
-      pointer-events: none;
-      overflow: hidden;
-    }
-
-    .color-half {
-      position: absolute;
-      top: 0;
-      width: 50%;
-      height: 100%;
-    }
-
-    .color-half.prev {
-      left: 0;
-    }
-
-    .color-half.current {
-      right: 0;
-    }
-  `;
-
-  connectedCallback() {
-    super.connectedCallback();
-    this.unsubscribeColor = colorStore.subscribe((color) => {
-      if (this.color !== color) {
-        this.color = color;
-      }
-    });
-    this.unsubscribePrevColor = prevColorStore.subscribe((prev) => {
-      this.prevColor = prev;
-    });
-  }
-
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    this.unsubscribeColor?.();
-    this.unsubscribePrevColor?.();
-  }
-
-  private emit(name: string, detail?: unknown) {
-    this.dispatchEvent(
-      new CustomEvent(name, { detail, bubbles: true, composed: true })
-    );
-  }
-
-  render() {
-    return html`
-      ${this.renderPinnedClose()}
-      <div class="block">
-        <div class="face">
-          <hsv-wheel
-            .color=${this.color}
-            @input=${(e: CustomEvent) => {
-              this.color = e.detail.value;
-              colorStore.set(this.color);
-              this.emit("color-change", this.color);
-            }}
-            @change=${() => {
-              prevColorStore.set(this.color);
-            }}
-          ></hsv-wheel>
-          <div class="color-preview">
-            <div class="color-half prev" style="background: ${this.prevColor}"></div>
-            <div class="color-half current" style="background: ${this.color}"></div>
-          </div>
-        </div>
-        ${this.resizable
-          ? html`
-              <div class="resize-left"></div>
-              <div class="resize-right"></div>
-            `
-          : ""}
-      </div>
-    `;
-  }
-}
-
-// ============================================================
-// HSL Panel
-// ============================================================
-
-@customElement("inkwell-hsl-panel")
-export class InkwellHSLPanel extends FloatingPanel {
-  @property({ type: String }) color = "#037ffc";
-  @state() private prevColor = "#000000";
-
-  private unsubscribeColor?: () => void;
-  private unsubscribePrevColor?: () => void;
-
-  static styles = css`
-    ${FloatingPanel.styles}
-    :host {
-      --panel-width: 180px;
-    }
-  `;
-
-  connectedCallback() {
-    super.connectedCallback();
-    this.unsubscribeColor = colorStore.subscribe((color) => {
-      if (this.color !== color) {
-        this.color = color;
-      }
-    });
-    this.unsubscribePrevColor = prevColorStore.subscribe((prev) => {
-      this.prevColor = prev;
-    });
-  }
-
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    this.unsubscribeColor?.();
-    this.unsubscribePrevColor?.();
-  }
-
-  private emit(name: string, detail?: unknown) {
-    this.dispatchEvent(
-      new CustomEvent(name, { detail, bubbles: true, composed: true })
-    );
-  }
-
-  render() {
-    return html`
-      ${this.renderPinnedClose()}
-      <div class="block">
-        <div class="face">
-          <hsl-picker
-            .color=${this.color}
-            .prevColor=${this.prevColor}
-            @input=${(e: CustomEvent) => {
-              this.color = e.detail.value;
-              colorStore.set(this.color);
-              this.emit("color-change", this.color);
-            }}
-            @change=${() => {
-              prevColorStore.set(this.color);
-            }}
-          ></hsl-picker>
-        </div>
-        ${this.resizable
-          ? html`
-              <div class="resize-left"></div>
-              <div class="resize-right"></div>
-            `
-          : ""}
-      </div>
-    `;
-  }
-}
-
-// ============================================================
-// OKHSL Rect Panel (rectangular layout like HSL)
-// ============================================================
-
-@customElement("inkwell-okhsl-rect-panel")
-export class InkwellOKHSLRectPanel extends FloatingPanel {
-  @property({ type: String }) color = "#037ffc";
-  @state() private prevColor = "#000000";
-
-  private unsubscribeColor?: () => void;
-  private unsubscribePrevColor?: () => void;
-
-  static styles = css`
-    ${FloatingPanel.styles}
-    :host {
-      --panel-width: 180px;
-    }
-  `;
-
-  connectedCallback() {
-    super.connectedCallback();
-    this.unsubscribeColor = colorStore.subscribe((color) => {
-      if (this.color !== color) {
-        this.color = color;
-      }
-    });
-    this.unsubscribePrevColor = prevColorStore.subscribe((prev) => {
-      this.prevColor = prev;
-    });
-  }
-
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    this.unsubscribeColor?.();
-    this.unsubscribePrevColor?.();
-  }
-
-  private emit(name: string, detail?: unknown) {
-    this.dispatchEvent(
-      new CustomEvent(name, { detail, bubbles: true, composed: true })
-    );
-  }
-
-  render() {
-    return html`
-      ${this.renderPinnedClose()}
-      <div class="block">
-        <div class="face">
-          <okhsl-rect-picker
-            .color=${this.color}
-            .prevColor=${this.prevColor}
-            @input=${(e: CustomEvent) => {
-              this.color = e.detail.value;
-              colorStore.set(this.color);
-              this.emit("color-change", this.color);
-            }}
-            @change=${() => {
-              prevColorStore.set(this.color);
-            }}
-          ></okhsl-rect-picker>
-        </div>
-        ${this.resizable
-          ? html`
-              <div class="resize-left"></div>
-              <div class="resize-right"></div>
-            `
-          : ""}
-      </div>
-    `;
-  }
-}
-
-// ============================================================
-// OKHSL Panel (circular layout)
-// ============================================================
-
-@customElement("inkwell-okhsl-panel")
-export class InkwellOKHSLPanel extends FloatingPanel {
-  @property({ type: String }) color = "#037ffc";
-  @state() private prevColor = "#000000";
-  @state() private lightnessCurve = 0.5;
-
-  private unsubscribeColor?: () => void;
-  private unsubscribePrevColor?: () => void;
-
-  static styles = css`
-    ${FloatingPanel.styles}
-    :host {
-      --panel-width: 200px;
-    }
-
-    .curve-control {
-      margin-top: 8px;
       display: flex;
-      align-items: center;
+      flex-direction: column;
       gap: 8px;
     }
 
-    .curve-control span {
-      font-size: 10px;
-      color: #666;
-      min-width: 28px;
+    .color-config {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 11px;
     }
-
-    .curve-control input {
-      flex: 1;
-    }
+    .color-config label { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+    .color-config select { width: 100%; font: inherit; padding: 2px 4px; }
+    .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .picker-wrap { min-height: 140px; flex-shrink: 0; }
   `;
 
   connectedCallback() {
     super.connectedCallback();
-    this.unsubscribeColor = colorStore.subscribe((color) => {
-      if (this.color !== color) {
-        this.color = color;
-      }
-    });
-    this.unsubscribePrevColor = prevColorStore.subscribe((prev) => {
-      this.prevColor = prev;
-    });
+    this.unsubscribeColor = colorStore.subscribe((c) => { if (this.color !== c) this.color = c; });
+    this.unsubscribePrevColor = prevColorStore.subscribe((p) => { this.prevColor = p; });
   }
 
   disconnectedCallback() {
@@ -1960,50 +1152,93 @@ export class InkwellOKHSLPanel extends FloatingPanel {
   }
 
   private emit(name: string, detail?: unknown) {
-    this.dispatchEvent(
-      new CustomEvent(name, { detail, bubbles: true, composed: true })
-    );
+    this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
+  }
+
+  private onSpaceChange(e: Event) {
+    const newSpace = (e.target as HTMLSelectElement).value as ColorSpaceId;
+    const cur = this.pickerPrefs.value;
+    const oldAdapter = getColorSpaceAdapter(cur.space);
+    const newAdapter = getColorSpaceAdapter(newSpace);
+    const xIdx = oldAdapter.channels.findIndex((c) => c.id === cur.planeX);
+    const yIdx = oldAdapter.channels.findIndex((c) => c.id === cur.planeY);
+    const newX = xIdx >= 0 && xIdx < newAdapter.channels.length ? newAdapter.channels[xIdx].id : newAdapter.defaultPlaneX;
+    const newY = yIdx >= 0 && yIdx < newAdapter.channels.length ? newAdapter.channels[yIdx].id : newAdapter.defaultPlaneY;
+    colorPanelPrefsStore.set(normalizeColorPanelPrefs({ space: newSpace, geometry: cur.geometry, planeX: newX, planeY: newY }));
+  }
+
+  private onGeometryChange(g: PickerGeometry) {
+    colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...this.pickerPrefs.value, geometry: g }));
+  }
+
+  private onGeometrySelectChange(e: Event) {
+    this.onGeometryChange((e.target as HTMLSelectElement).value as PickerGeometry);
+  }
+
+  private onPlaneAxisChange(axis: "planeX" | "planeY", e: Event) {
+    const newId = (e.target as HTMLSelectElement).value;
+    const cur = { ...this.pickerPrefs.value };
+    const other = axis === "planeX" ? "planeY" : "planeX";
+    if (newId === cur[other]) {
+      cur[other] = cur[axis];
+    }
+    cur[axis] = newId;
+    colorPanelPrefsStore.set(normalizeColorPanelPrefs(cur));
   }
 
   render() {
+    const prefs = this.pickerPrefs.value;
+    const adapter = getColorSpaceAdapter(prefs.space);
+    const channelOpts = adapter.channels;
+
     return html`
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-          <okhsl-picker
-            .color=${this.color}
-            .prevColor=${this.prevColor}
-            .lightnessCurve=${this.lightnessCurve}
-            @input=${(e: CustomEvent) => {
-              this.color = e.detail.value;
-              colorStore.set(this.color);
-              this.emit("color-change", this.color);
-            }}
-            @change=${() => {
-              prevColorStore.set(this.color);
-            }}
-          ></okhsl-picker>
-          <div class="curve-control">
-            <span>Light</span>
-            <input
-              type="range"
-              min="0.2"
-              max="1.5"
-              step="0.05"
-              .value=${String(this.lightnessCurve)}
-              @input=${(e: Event) => {
-                this.lightnessCurve = parseFloat((e.target as HTMLInputElement).value);
+          <div class="picker-wrap">
+            <generic-color-picker
+              .color=${this.color}
+              .prevColor=${this.prevColor}
+              .prefs=${prefs}
+              @input=${(e: CustomEvent<{ value: string }>) => {
+                this.color = e.detail.value;
+                colorStore.set(this.color);
+                this.emit("color-change", this.color);
               }}
-            />
-            <span>Dark</span>
+              @change=${() => { prevColorStore.set(this.color); }}
+            ></generic-color-picker>
+          </div>
+          <div class="color-config" data-interactive>
+            <label>
+              <span>Color space</span>
+              <select @change=${this.onSpaceChange}>
+                ${COLOR_SPACE_OPTIONS.map((o) => html`<option value=${o.id} .selected=${o.id === prefs.space}>${o.label}</option>`)}
+              </select>
+            </label>
+            <label>
+              <span>Shape</span>
+              <select @change=${this.onGeometrySelectChange}>
+                <option value="square" .selected=${prefs.geometry === "square"}>Square</option>
+                <option value="circle" .selected=${prefs.geometry === "circle"}>Circle</option>
+              </select>
+            </label>
+            <div class="row-2">
+              <label>
+                <span>X / angle</span>
+                <select @change=${(e: Event) => this.onPlaneAxisChange("planeX", e)}>
+                  ${channelOpts.map((c) => html`<option value=${c.id} .selected=${c.id === prefs.planeX}>${c.label}</option>`)}
+                </select>
+              </label>
+              <label>
+                <span>Y / radius</span>
+                <select @change=${(e: Event) => this.onPlaneAxisChange("planeY", e)}>
+                  ${channelOpts.map((c) => html`<option value=${c.id} .selected=${c.id === prefs.planeY}>${c.label}</option>`)}
+                </select>
+              </label>
+            </div>
           </div>
         </div>
-        ${this.resizable
-          ? html`
-              <div class="resize-left"></div>
-              <div class="resize-right"></div>
-            `
-          : ""}
+        ${this.resizable ? html`<div class="resize-left"></div><div class="resize-right"></div>` : ""}
       </div>
     `;
   }
@@ -2169,6 +1404,9 @@ export class InkwellToolsPanel extends FloatingPanel {
           toolSettings[key]
         )
       )}
+      ${currentToolId === "select"
+        ? html`<p class="hint">Drag a rectangle or freeform lasso to extract a selection.</p>`
+        : ""}
       ${this.renderPixelRes()}
     `;
   }
@@ -2401,9 +1639,7 @@ interface PanelVisibility {
 type ToggleablePanel = FloatingPanel & HTMLElement;
 
 const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
-  { id: "color-panel", label: "HSV", visible: false },
-  { id: "hsl-panel", label: "HSL", visible: false },
-  { id: "okhsl-rect-panel", label: "OKHSL", visible: false },
+  { id: "color-panel", label: "Color", visible: false },
   { id: "tools-panel", label: "Tools", visible: false },
   { id: "universal-panel", label: "Settings", visible: false },
   { id: "layers-panel", label: "Layers", visible: false },
@@ -2590,13 +1826,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
                 >
               `,
             )}
-            <blocky-button
-              @click=${() =>
-                this.dispatchEvent(
-                  new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
-                )}
-              >Export view to SVG</blocky-button
-            >
           </div>
         </div>
       </div>
@@ -2612,6 +1841,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
   @property({ type: Boolean }) aliasFixEnabled = true;
 
   private history = new StoreController(this, historyStateStore);
+  private viewOverlay = new StoreController(this, viewOverlayStore);
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -2649,6 +1879,54 @@ export class InkwellUniversalPanel extends FloatingPanel {
                 @change=${(e: Event) => {
                   this.aliasFixEnabled = (e.target as HTMLInputElement).checked;
                   this.emit("alias-fix-toggle", this.aliasFixEnabled);
+                }}
+              />
+            </div>
+
+            <div class="toggle">
+              <span>Show grid</span>
+              <input
+                type="checkbox"
+                .checked=${this.viewOverlay.value.gridEnabled}
+                @change=${(e: Event) => {
+                  const checked = (e.target as HTMLInputElement).checked;
+                  this.viewOverlay.update((v) => ({ ...v, gridEnabled: checked }));
+                }}
+              />
+            </div>
+
+            <div class="toggle">
+              <span>Show origin</span>
+              <input
+                type="checkbox"
+                .checked=${this.viewOverlay.value.originEnabled}
+                @change=${(e: Event) => {
+                  const checked = (e.target as HTMLInputElement).checked;
+                  this.viewOverlay.update((v) => ({ ...v, originEnabled: checked }));
+                }}
+              />
+            </div>
+
+            <div class="toggle">
+              <span>Show screen size</span>
+              <input
+                type="checkbox"
+                .checked=${this.viewOverlay.value.screenSizeEnabled}
+                @change=${(e: Event) => {
+                  const checked = (e.target as HTMLInputElement).checked;
+                  this.viewOverlay.update((v) => ({ ...v, screenSizeEnabled: checked }));
+                }}
+              />
+            </div>
+
+            <div class="toggle">
+              <span>Grid follows zoom</span>
+              <input
+                type="checkbox"
+                .checked=${this.viewOverlay.value.gridLiveWhileZooming}
+                @change=${(e: Event) => {
+                  const checked = (e.target as HTMLInputElement).checked;
+                  this.viewOverlay.update((v) => ({ ...v, gridLiveWhileZooming: checked }));
                 }}
               />
             </div>
@@ -2702,6 +1980,16 @@ export class InkwellUniversalPanel extends FloatingPanel {
               >
               <blocky-button danger @click=${() => this.emit("clear")}
                 >Clear</blocky-button
+              >
+            </div>
+
+            <div class="row">
+              <blocky-button
+                @click=${() =>
+                  this.dispatchEvent(
+                    new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
+                  )}
+                >Export view to SVG</blocky-button
               >
             </div>
 
@@ -2960,14 +2248,8 @@ export class InkwellLayersPanel extends FloatingPanel {
 declare global {
   interface HTMLElementTagNameMap {
     "blocky-button": BlockyButton;
-    "hsv-wheel": HSVWheel;
-    "hsl-picker": HSLPicker;
-    "okhsl-picker": OKHSLPicker;
-    "okhsl-rect-picker": OKHSLRectPicker;
+    "generic-color-picker": GenericColorPicker;
     "inkwell-color-panel": InkwellColorPanel;
-    "inkwell-hsl-panel": InkwellHSLPanel;
-    "inkwell-okhsl-rect-panel": InkwellOKHSLRectPanel;
-    "inkwell-okhsl-panel": InkwellOKHSLPanel;
     "inkwell-top-bar-panel": InkwellTopBarPanel;
     "inkwell-tools-panel": InkwellToolsPanel;
     "inkwell-tool-settings-panel": InkwellToolSettingsPanel;
