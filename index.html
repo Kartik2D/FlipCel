@@ -2,7 +2,7 @@
   Entry Point - HTML Structure
 
   Defines three canvas elements stacked with z-index layering:
-  - UI Canvas (z-index: 3): Receives ALL input events, displays cursor/overlays
+  - UI Canvas (z-index: 3): Receives ALL input events; brush-size ring + grid/axes (pointer cursor via CSS)
   - Pixel Canvas (z-index: 2): Low-resolution pixel drawing (temporary, cleared after tracing)
   - Paper Canvas (z-index: 1): Final vector paths rendered with Paper.js
 
@@ -137,12 +137,11 @@
             #ui-canvas {
                 z-index: 3;
                 pointer-events: auto;
-                cursor: crosshair;
                 mix-blend-mode: difference;
             }
 
         </style>
-      <script type="module" crossorigin src="/inkwell/assets/index-V9O3qhdv.js"></script>
+      <script type="module" crossorigin src="/inkwell/assets/index-BcnJ0x1u.js"></script>
     </head>
     <body>
         <div id="canvas-container">
@@ -156,6 +155,6 @@
         <inkwell-tools-panel id="tools-panel" draggable resizable style="--panel-top: 28%; --panel-right: 1%; display: none;"></inkwell-tools-panel>
         <inkwell-universal-panel id="universal-panel" draggable resizable style="--panel-top: 50%; --panel-left: 1%; display: none;"></inkwell-universal-panel>
         <inkwell-layers-panel id="layers-panel" draggable resizable style="--panel-bottom: 2%; --panel-right: 1%; display: none;"></inkwell-layers-panel>
-        
+
     </body>
 </html>
