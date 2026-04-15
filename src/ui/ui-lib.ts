@@ -245,13 +245,9 @@ export class Block extends LitElement {
 
   private _snapBackClearTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  /** Element running snap-back (inner `.block`); Safari ignores shadow @keyframes on the host. */
-  private _snapBackEl: HTMLElement | null = null;
-
   private _onSnapBackAnimationEnd = (e: AnimationEvent) => {
-    const el = this._snapBackEl;
-    if (!el || e.target !== el) return;
     if (e.animationName !== INKWELL_PANEL_SNAP_BACK_KEYFRAMES) return;
+    this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
     this._finishSnapBackAnimationCleanup();
   };
 
@@ -511,18 +507,11 @@ export class Block extends LitElement {
 
   private _finishSnapBackAnimationCleanup() {
     this._clearSnapBackTimeout();
-    const el = this._snapBackEl;
-    if (el) {
-      el.removeEventListener("animationend", this._onSnapBackAnimationEnd);
-    } else {
-      this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
-    }
-    const target = el ?? this;
-    target.style.removeProperty("animation");
-    target.style.removeProperty("transform");
-    target.style.removeProperty("--inkwell-snap-x");
-    target.style.removeProperty("--inkwell-snap-y");
-    this._snapBackEl = null;
+    this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
+    this.style.removeProperty("animation");
+    this.style.removeProperty("transform");
+    this.style.removeProperty("--inkwell-snap-x");
+    this.style.removeProperty("--inkwell-snap-y");
   }
 
   private _restorePreDragLayout(
@@ -575,17 +564,14 @@ export class Block extends LitElement {
     const sx = rectBefore.left - rectAfter.left;
     const sy = rectBefore.top - rectAfter.top;
 
-    const snapEl =
-      (this.renderRoot.querySelector(".block") as HTMLElement | null) ?? this;
-    this._snapBackEl = snapEl;
-    snapEl.style.setProperty("--inkwell-snap-x", `${sx}px`);
-    snapEl.style.setProperty("--inkwell-snap-y", `${sy}px`);
+    this.style.setProperty("--inkwell-snap-x", `${sx}px`);
+    this.style.setProperty("--inkwell-snap-y", `${sy}px`);
 
-    snapEl.removeEventListener("animationend", this._onSnapBackAnimationEnd);
-    snapEl.addEventListener("animationend", this._onSnapBackAnimationEnd);
+    this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
+    this.addEventListener("animationend", this._onSnapBackAnimationEnd);
 
     requestAnimationFrame(() => {
-      snapEl.style.animation = INKWELL_PANEL_SNAP_ANIMATION;
+      this.style.animation = INKWELL_PANEL_SNAP_ANIMATION;
     });
 
     this._clearSnapBackTimeout();
