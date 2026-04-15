@@ -219,70 +219,7 @@ export const viewOverlayStore = new Store<ViewOverlaySettings>({
 
 export type ThemeMode = "light" | "dark";
 
-const THEME_STORAGE_KEY = "inkwell-theme-mode";
-const FOLLOW_SYSTEM_STORAGE_KEY = "inkwell-follow-system-theme";
-
-function getSystemThemeMode(): ThemeMode {
-  if (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: light)").matches
-  ) {
-    return "light";
-  }
-  return "dark";
-}
-
-function getStoredFollowSystem(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(FOLLOW_SYSTEM_STORAGE_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function getStoredThemeMode(): ThemeMode {
-  if (typeof window === "undefined") return "dark";
-
-  if (getStoredFollowSystem()) return getSystemThemeMode();
-
-  try {
-    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (stored === "light" || stored === "dark") return stored;
-  } catch {
-    // Ignore storage access failures and fall back to default.
-  }
-
-  return "dark";
-}
-
-export const followSystemThemeStore = new Store<boolean>(getStoredFollowSystem());
-export const themeModeStore = new Store<ThemeMode>(getStoredThemeMode());
-
-followSystemThemeStore.subscribe((follow) => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(FOLLOW_SYSTEM_STORAGE_KEY, String(follow));
-  } catch { /* ignore */ }
-  if (follow) themeModeStore.set(getSystemThemeMode());
-});
-
-if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-    if (followSystemThemeStore.get()) themeModeStore.set(getSystemThemeMode());
-  });
-}
-
-themeModeStore.subscribe((mode) => {
-  if (typeof window === "undefined") return;
-
-  try {
-    window.localStorage.setItem(THEME_STORAGE_KEY, mode);
-  } catch {
-    // Ignore storage access failures so theme switching still works in memory.
-  }
-});
+export const themeModeStore = new Store<ThemeMode>("dark");
 
 /**
  * Canvas configuration (dimensions)

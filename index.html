@@ -25,22 +25,8 @@
             rel="stylesheet"
         />
         <script>
-            (() => {
-                try {
-                    const stored = localStorage.getItem("inkwell-theme-mode");
-                    const mode =
-                        stored === "light" || stored === "dark"
-                            ? stored
-                            : window.matchMedia("(prefers-color-scheme: dark)").matches
-                              ? "dark"
-                              : "light";
-                    document.documentElement.dataset.theme = mode;
-                    document.documentElement.style.colorScheme = mode;
-                } catch {
-                    document.documentElement.dataset.theme = "light";
-                    document.documentElement.style.colorScheme = "light";
-                }
-            })();
+            document.documentElement.dataset.theme = "dark";
+            document.documentElement.style.colorScheme = "dark";
         </script>
         <style>
             :root {

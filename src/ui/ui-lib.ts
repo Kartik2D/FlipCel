@@ -26,7 +26,6 @@ import {
   toolSettingsStore,
   viewOverlayStore,
   themeModeStore,
-  followSystemThemeStore,
   StoreController,
   type ColorPanelPrefs,
   type PickerGeometry,
@@ -2455,7 +2454,6 @@ export class InkwellUniversalPanel extends FloatingPanel {
   private history = new StoreController(this, historyStateStore);
   private viewOverlay = new StoreController(this, viewOverlayStore);
   private themeMode = new StoreController(this, themeModeStore);
-  private followSystem = new StoreController(this, followSystemThemeStore);
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -2508,21 +2506,9 @@ export class InkwellUniversalPanel extends FloatingPanel {
               <input
                 type="checkbox"
                 .checked=${this.themeMode.value === "dark"}
-                .disabled=${this.followSystem.value}
                 @change=${(e: Event) => {
                   const checked = (e.target as HTMLInputElement).checked;
                   this.themeMode.set(checked ? "dark" : "light");
-                }}
-              />
-            </div>
-
-            <div class="toggle">
-              <span>Follow system theme</span>
-              <input
-                type="checkbox"
-                .checked=${this.followSystem.value}
-                @change=${(e: Event) => {
-                  this.followSystem.set((e.target as HTMLInputElement).checked);
                 }}
               />
             </div>
