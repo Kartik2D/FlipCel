@@ -230,6 +230,10 @@ class App {
       const orderedTopToBottom = (e as CustomEvent<string[]>).detail;
       this.onLayerReorder(orderedTopToBottom);
     });
+    this.layersPanel.addEventListener("layer-rename", (e: Event) => {
+      const { id, name } = (e as CustomEvent<{ id: string; name: string }>).detail;
+      this.onLayerRename(id, name);
+    });
   }
 
   private calculateConfig(): CanvasConfig {
@@ -792,6 +796,19 @@ class App {
     
     // Clear selection when switching layers
     this.selectionController.clearSelection();
+  }
+
+  private onLayerRename(layerId: string, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const state = layerStore.get();
+    if (!state.layers.some((l) => l.id === layerId)) return;
+    if (!this.paperRenderer.setLayerName(layerId, trimmed)) return;
+    layerStore.update((s) => ({
+      ...s,
+      layers: s.layers.map((l) => (l.id === layerId ? { ...l, name: trimmed } : l)),
+    }));
+    this.historyManager.snapshot();
   }
 
   private onLayerVisibilityToggle(layerId: string) {

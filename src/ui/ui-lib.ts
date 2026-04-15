@@ -2968,6 +2968,9 @@ export class InkwellLayersPanel extends FloatingPanel {
   private layers = new StoreController(this, layerStore);
   @state() private draggedLayerId: string | null = null;
   @state() private dropTargetLayerId: string | null = null;
+  @state() private editingLayerId: string | null = null;
+  @state() private editingName = "";
+  private layerDragGhost: HTMLElement | null = null;
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -2986,6 +2989,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-width: 0;
     }
 
+    /* Match flat blocky-button: depth face + border-colored label; active = accent + contrast text */
     .layer-item {
       display: flex;
       align-items: center;
@@ -2993,18 +2997,18 @@ export class InkwellLayersPanel extends FloatingPanel {
       padding: 6px 8px;
       border-radius: var(--panel-control-radius, 8px);
       cursor: pointer;
-      transition: background-color 100ms ease, color 100ms ease;
-      background: var(--block-depth-color, #bcbcbc);
+      transition: background-color 100ms ease, color 100ms ease, filter 100ms ease;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
       border: none;
-      color: var(--block-border, #555555);
+      color: var(--block-border, var(--inkwell-panel-border));
     }
 
     .layer-item:hover:not(.active) {
-      background: color-mix(in srgb, var(--block-border, #555555) 8%, var(--block-depth-color, #bcbcbc));
+      filter: brightness(0.97);
     }
 
     .layer-item.active {
-      background: var(--panel-accent, #4a6fb5);
+      background: var(--inkwell-accent, var(--panel-accent, #4a6fb5));
       color: var(--inkwell-danger-contrast, #ffffff);
     }
 
@@ -3017,27 +3021,82 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .layer-item.drop-target {
-      background: color-mix(in srgb, var(--panel-accent, #4a6fb5) 35%, var(--block-depth-color, #bcbcbc));
+      background: color-mix(
+        in srgb,
+        var(--inkwell-accent, var(--panel-accent, #4a6fb5)) 38%,
+        var(--block-depth-color, var(--inkwell-panel-depth))
+      );
     }
 
     .layer-item.active.drop-target {
       background: color-mix(
         in srgb,
-        var(--panel-accent, #4a6fb5) 85%,
-        var(--block-face-bg, white)
+        var(--inkwell-accent, var(--panel-accent, #4a6fb5)) 88%,
+        var(--inkwell-panel-surface, white)
       );
+    }
+
+    .layer-drag-handle {
+      flex-shrink: 0;
+      width: 12px;
+      height: 22px;
+      cursor: grab;
+      touch-action: none;
+      border-radius: 999px;
+      align-self: center;
+      background: color-mix(
+        in srgb,
+        var(--inkwell-text-muted) 32%,
+        var(--block-depth-color, var(--inkwell-panel-depth))
+      );
+      box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--inkwell-panel-border) 22%, transparent);
+    }
+
+    .layer-drag-handle:active {
+      cursor: grabbing;
+    }
+
+    .layer-drag-ghost {
+      box-shadow: var(--inkwell-shadow-soft, 0 6px 18px rgba(0, 0, 0, 0.18));
     }
 
     .layer-name {
       flex: 1;
-      font-size: 12px;
+      font-family: var(--inkwell-font-display, system-ui, sans-serif);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      min-width: 0;
     }
 
     .layer-item.active .layer-name {
       color: var(--inkwell-danger-contrast, #ffffff);
+    }
+
+    .layer-name-input {
+      flex: 1;
+      min-width: 0;
+      margin: 0;
+      box-sizing: border-box;
+      font-family: var(--inkwell-font-display, system-ui, sans-serif);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      line-height: 1.25;
+      color: inherit;
+      background: color-mix(in srgb, var(--inkwell-panel-surface) 55%, transparent);
+      border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+      border-radius: 4px;
+      padding: 2px 5px;
+    }
+
+    .layer-item.active .layer-name-input {
+      background: color-mix(in srgb, var(--inkwell-danger-contrast, #fff) 14%, transparent);
+      border-color: color-mix(in srgb, var(--inkwell-danger-contrast, #fff) 42%, transparent);
     }
 
     .visibility-btn,
@@ -3049,12 +3108,12 @@ export class InkwellLayersPanel extends FloatingPanel {
       width: 26px;
       height: 26px;
       padding: 0;
-      border: none;
       cursor: pointer;
       border-radius: var(--panel-control-radius, 8px);
-      background: color-mix(in srgb, var(--block-border, #555555) 12%, var(--block-face-bg, white));
-      color: var(--block-border, #555555);
-      transition: background-color 100ms ease, filter 100ms ease, opacity 100ms ease, color 100ms ease;
+      border: none;
+      background: transparent;
+      color: inherit;
+      transition: background-color 100ms ease, color 100ms ease, filter 100ms ease, opacity 100ms ease;
     }
 
     .visibility-btn svg,
@@ -3062,33 +3121,33 @@ export class InkwellLayersPanel extends FloatingPanel {
       display: block;
     }
 
-    .visibility-btn:hover {
-      filter: brightness(1.12);
+    .layer-item:not(.active) .visibility-btn:hover:not(:disabled) {
+      filter: brightness(0.95);
     }
 
-    .delete-btn:hover:not(:disabled) {
+    .layer-item:not(.active) .delete-btn:hover:not(:disabled) {
       background: var(--inkwell-danger, #9a4545);
       color: var(--inkwell-danger-contrast, #ffffff);
       filter: none;
     }
 
     .visibility-btn.dim {
-      opacity: 0.75;
+      opacity: 0.72;
     }
 
-    .layer-item.active .visibility-btn,
-    .layer-item.active .delete-btn {
-      background: var(--inkwell-panel-active-overlay, rgba(255, 255, 255, 0.22));
-      color: var(--inkwell-danger-contrast, #ffffff);
+    .layer-item.active .visibility-btn:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--inkwell-danger-contrast, #fff) 14%, transparent);
+      filter: none;
     }
 
     .layer-item.active .delete-btn:hover:not(:disabled) {
-      background: var(--inkwell-panel-active-danger, rgba(255, 100, 100, 0.55));
+      background: var(--inkwell-danger, #9a4545);
       color: var(--inkwell-danger-contrast, #ffffff);
+      filter: none;
     }
 
     .delete-btn:disabled {
-      opacity: 0.35;
+      opacity: 0.45;
       cursor: not-allowed;
     }
 
@@ -3105,6 +3164,52 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   private selectLayer(layerId: string) {
     this.emit("layer-select", layerId);
+  }
+
+  updated(changedProperties: Map<string, unknown>) {
+    super.updated(changedProperties);
+    if (!changedProperties.has("editingLayerId") || !this.editingLayerId) return;
+    void this.updateComplete.then(() => {
+      const input = this.renderRoot.querySelector<HTMLInputElement>(
+        `[data-layer-edit="${this.editingLayerId}"]`,
+      );
+      input?.focus();
+      input?.select();
+    });
+  }
+
+  private startLayerRename(layerId: string, currentName: string, e: Event) {
+    e.stopPropagation();
+    this.editingLayerId = layerId;
+    this.editingName = currentName;
+  }
+
+  private commitLayerRename(layerId: string) {
+    if (this.editingLayerId !== layerId) return;
+    const prev =
+      this.layers.value.layers.find((l) => l.id === layerId)?.name ?? "";
+    const next = this.editingName.trim();
+    this.editingLayerId = null;
+    this.editingName = "";
+    if (!next || next === prev) return;
+    this.emit("layer-rename", { id: layerId, name: next });
+  }
+
+  private onRenameKeydown(_layerId: string, e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      (e.target as HTMLInputElement).blur();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      this.editingLayerId = null;
+      this.editingName = "";
+    }
+  }
+
+  private cancelLayerRename() {
+    this.editingLayerId = null;
+    this.editingName = "";
   }
 
   private toggleVisibility(layerId: string, e: Event) {
@@ -3125,13 +3230,54 @@ export class InkwellLayersPanel extends FloatingPanel {
     this.emit("layer-add", { id: newId, name: `Layer ${layerNumber}` });
   }
 
+  private clearLayerDragGhost() {
+    if (this.layerDragGhost?.isConnected) {
+      this.layerDragGhost.remove();
+    }
+    this.layerDragGhost = null;
+  }
+
   private onLayerDragStart(layerId: string, e: DragEvent) {
+    this.cancelLayerRename();
     this.draggedLayerId = layerId;
     this.dropTargetLayerId = null;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", layerId);
+    const dt = e.dataTransfer;
+    if (dt) {
+      dt.effectAllowed = "move";
+      dt.setData("text/plain", layerId);
     }
+
+    const handle = e.currentTarget as HTMLElement | null;
+    const row = handle?.closest(".layer-item") as HTMLElement | null;
+    if (!row || !dt || typeof dt.setDragImage !== "function") return;
+
+    this.clearLayerDragGhost();
+    const ghost = row.cloneNode(true) as HTMLElement;
+    ghost.classList.add("layer-drag-ghost");
+    ghost.classList.remove("dragging", "drop-target");
+    ghost.querySelectorAll<HTMLElement>(".layer-drag-handle").forEach((el) => {
+      el.removeAttribute("draggable");
+    });
+
+    const rect = row.getBoundingClientRect();
+    ghost.style.cssText = `
+      box-sizing: border-box;
+      width: ${rect.width}px;
+      position: fixed;
+      left: -9999px;
+      top: 0;
+      pointer-events: none;
+      opacity: 0.96;
+      z-index: 2147483647;
+    `;
+
+    this.renderRoot.appendChild(ghost);
+    this.layerDragGhost = ghost;
+    void ghost.offsetWidth;
+
+    const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const offsetY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+    dt.setDragImage(ghost, offsetX, offsetY);
   }
 
   private onLayerDragOver(layerId: string, e: DragEvent) {
@@ -3173,6 +3319,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   }
 
   private onLayerDragEnd() {
+    this.clearLayerDragGhost();
     this.draggedLayerId = null;
     this.dropTargetLayerId = null;
   }
@@ -3195,13 +3342,46 @@ export class InkwellLayersPanel extends FloatingPanel {
                 <div
                   class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""} ${this.draggedLayerId === layer.id ? "dragging" : ""} ${this.dropTargetLayerId === layer.id ? "drop-target" : ""}"
                   data-interactive
-                  draggable="true"
                   @click=${() => this.selectLayer(layer.id)}
-                  @dragstart=${(e: DragEvent) => this.onLayerDragStart(layer.id, e)}
                   @dragover=${(e: DragEvent) => this.onLayerDragOver(layer.id, e)}
                   @drop=${(e: DragEvent) => this.onLayerDrop(layer.id, e)}
-                  @dragend=${() => this.onLayerDragEnd()}
                 >
+                  <span
+                    class="layer-drag-handle"
+                    draggable="true"
+                    title="Drag to reorder"
+                    role="img"
+                    aria-label="Drag to reorder layer"
+                    @dragstart=${(e: DragEvent) => this.onLayerDragStart(layer.id, e)}
+                    @dragend=${() => this.onLayerDragEnd()}
+                  ></span>
+                  ${this.editingLayerId === layer.id
+                    ? html`
+                        <input
+                          type="text"
+                          class="layer-name-input"
+                          data-layer-edit=${layer.id}
+                          .value=${this.editingName}
+                          aria-label="Layer name"
+                          @input=${(e: Event) => {
+                            this.editingName = (e.target as HTMLInputElement).value;
+                          }}
+                          @keydown=${(e: KeyboardEvent) =>
+                            this.onRenameKeydown(layer.id, e)}
+                          @blur=${() => this.commitLayerRename(layer.id)}
+                          @click=${(e: Event) => e.stopPropagation()}
+                          @pointerdown=${(e: Event) => e.stopPropagation()}
+                        />
+                      `
+                    : html`
+                        <span
+                          class="layer-name"
+                          title="Double-click to rename"
+                          @dblclick=${(e: Event) =>
+                            this.startLayerRename(layer.id, layer.name, e)}
+                          >${layer.name}</span
+                        >
+                      `}
                   <button
                     type="button"
                     class="visibility-btn ${!layer.visible ? "dim" : ""}"
@@ -3210,7 +3390,6 @@ export class InkwellLayersPanel extends FloatingPanel {
                   >
                     ${phosphorIcon(layer.visible ? "eye" : "eye-slash", 14)}
                   </button>
-                  <span class="layer-name">${layer.name}</span>
                   <button
                     type="button"
                     class="delete-btn"

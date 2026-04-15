@@ -432,6 +432,17 @@ export class PaperRenderer {
   }
 
   /**
+   * Rename a logical layer (Paper.js layer name).
+   */
+  setLayerName(id: string, name: string): boolean {
+    const layer = this.layerMap.get(id);
+    if (!layer) return false;
+    layer.name = name;
+    paper.view.update();
+    return true;
+  }
+
+  /**
    * Get layer visibility
    */
   getLayerVisibility(id: string): boolean {
