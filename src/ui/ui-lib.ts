@@ -4,7 +4,7 @@
  * A minimal UI component library using CSS custom properties for inheritance.
  * Uses 3-layer structure: Host (BlockHolder) > Block (shell) > Face (surface)
  */
-import { LitElement, html, css, type TemplateResult } from "lit";
+import { LitElement, html, css, nothing, type TemplateResult, type PropertyValues } from "lit";
 import { unsafeSVG } from "lit/directives/unsafe-svg.js";
 import { customElement, property, state } from "lit/decorators.js";
 import { tools, type ToolId, type SettingsSchema, type SettingDef, getTool } from "../core/tools";
@@ -16,6 +16,11 @@ import {
   type ColorSpaceAdapter,
   type ChannelValues,
 } from "./color-utils";
+import {
+  INKWELL_MOTION_BOUNCE_MS,
+  INKWELL_PANEL_SNAP_ANIMATION,
+  INKWELL_PANEL_SNAP_BACK_KEYFRAMES,
+} from "./inkwell-motion";
 import {
   colorStore,
   prevColorStore,
@@ -52,6 +57,15 @@ const PHOSPHOR_ICONS: Record<string, string> = {
     '<path d="M200,56V208a8,8,0,0,1-8,8H64a8,8,0,0,1-8-8V56Z" opacity="0.2"/><path d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z"/>',
   x:
     '<path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/>',
+  "arrow-counter-clockwise":
+    '<path d="M216,128a88,88,0,1,1-88-88A88,88,0,0,1,216,128Z" opacity="0.2"/><path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/>',
+  "arrow-clockwise":
+    '<path d="M216,128a88,88,0,1,1-88-88A88,88,0,0,1,216,128Z" opacity="0.2"/><path d="M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z"/>',
+  /** Regular weight (single path) — dock undo/redo */
+  "arrow-counter-clockwise-regular":
+    '<path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/>',
+  "arrow-clockwise-regular":
+    '<path d="M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z"/>',
 };
 
 const PANEL_ICON_MAP: Record<string, string> = {
@@ -238,6 +252,14 @@ export class Block extends LitElement {
     zIndex: string;
   } | null = null;
 
+  private _snapBackClearTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  private _onSnapBackAnimationEnd = (e: AnimationEvent) => {
+    if (e.animationName !== INKWELL_PANEL_SNAP_BACK_KEYFRAMES) return;
+    this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
+    this._finishSnapBackAnimationCleanup();
+  };
+
   // Resize state (protected for subclass override)
   protected _isResizing = false;
   protected _resizeCorner: ResizeCorner = null;
@@ -319,6 +341,28 @@ export class Block extends LitElement {
       cursor: nwse-resize;
       border-bottom-right-radius: calc(var(--block-radius) - 2px);
     }
+
+    /* Same timing breakpoints as .floating-close (0 / 55 / 78 / 100%) — overshoot + settle on translate */
+    @keyframes inkwell-panel-snap-back {
+      0% {
+        transform: translate(var(--inkwell-snap-x, 0px), var(--inkwell-snap-y, 0px));
+      }
+      55% {
+        transform: translate(
+          calc(var(--inkwell-snap-x, 0px) * -0.1),
+          calc(var(--inkwell-snap-y, 0px) * -0.1)
+        );
+      }
+      78% {
+        transform: translate(
+          calc(var(--inkwell-snap-x, 0px) * 0.04),
+          calc(var(--inkwell-snap-y, 0px) * 0.04)
+        );
+      }
+      100% {
+        transform: translate(0, 0);
+      }
+    }
   `;
 
   connectedCallback() {
@@ -331,6 +375,7 @@ export class Block extends LitElement {
     super.disconnectedCallback();
     this.removeEventListener("pointerdown", this._onPointerDown);
     this.removeEventListener("pointermove", this._onPointerHover);
+    this._finishSnapBackAnimationCleanup();
     this._cleanupDrag();
     this._cleanupResize();
   }
@@ -462,9 +507,31 @@ export class Block extends LitElement {
     this.style.bottom = "auto";
   };
 
-  private _restorePreDragLayout() {
-    const snap = this._dragStyleSnapshot;
-    if (!snap) return;
+  private _clearSnapBackTimeout() {
+    if (this._snapBackClearTimeout !== null) {
+      clearTimeout(this._snapBackClearTimeout);
+      this._snapBackClearTimeout = null;
+    }
+  }
+
+  private _finishSnapBackAnimationCleanup() {
+    this._clearSnapBackTimeout();
+    this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
+    this.style.removeProperty("animation");
+    this.style.removeProperty("transform");
+    this.style.removeProperty("--inkwell-snap-x");
+    this.style.removeProperty("--inkwell-snap-y");
+  }
+
+  private _restorePreDragLayout(
+    snap: {
+      left: string;
+      top: string;
+      right: string;
+      bottom: string;
+      zIndex: string;
+    },
+  ) {
     const apply = (prop: "left" | "top" | "right" | "bottom" | "zIndex", val: string) => {
       const css = prop === "zIndex" ? "z-index" : prop;
       if (val.trim()) this.style.setProperty(css, val);
@@ -478,6 +545,8 @@ export class Block extends LitElement {
   }
 
   private _onDragEnd = () => {
+    const snapshot = this._dragStyleSnapshot;
+
     const dx = this._dragLastClient.x - this._dragPointerStart.x;
     const dy = this._dragLastClient.y - this._dragPointerStart.y;
     const useMoveThreshold = this.dragUsesMinimumMovementThreshold();
@@ -485,15 +554,40 @@ export class Block extends LitElement {
       !useMoveThreshold ||
       Math.hypot(dx, dy) >= Block.DRAG_COMMIT_MIN_PX;
 
+    this._dragStyleSnapshot = null;
+
     if (movedEnough) {
       this._applyPercentagePosition();
       this.onDragCommitted();
-    } else {
-      this._restorePreDragLayout();
+      this._cleanupDrag();
+      return;
     }
 
-    this._dragStyleSnapshot = null;
     this._cleanupDrag();
+
+    if (!snapshot) return;
+
+    const rectBefore = this.getBoundingClientRect();
+    this._restorePreDragLayout(snapshot);
+    const rectAfter = this.getBoundingClientRect();
+    const sx = rectBefore.left - rectAfter.left;
+    const sy = rectBefore.top - rectAfter.top;
+
+    this.style.setProperty("--inkwell-snap-x", `${sx}px`);
+    this.style.setProperty("--inkwell-snap-y", `${sy}px`);
+
+    this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
+    this.addEventListener("animationend", this._onSnapBackAnimationEnd);
+
+    requestAnimationFrame(() => {
+      this.style.animation = INKWELL_PANEL_SNAP_ANIMATION;
+    });
+
+    this._clearSnapBackTimeout();
+    this._snapBackClearTimeout = setTimeout(() => {
+      this._snapBackClearTimeout = null;
+      this._finishSnapBackAnimationCleanup();
+    }, INKWELL_MOTION_BOUNCE_MS + 200);
   };
 
   private _applyPercentagePosition() {
@@ -701,6 +795,8 @@ export class BlockyButton extends Block {
   @property({ type: Boolean, reflect: true }) flat = false;
   @property({ type: Boolean, reflect: true }) danger = false;
   @property({ type: Boolean, reflect: true }) disabled = false;
+  /** Fill flex row width (e.g. equal-width dock toggles). */
+  @property({ type: Boolean, reflect: true }) stretch = false;
 
   connectedCallback() {
     super.connectedCallback();
@@ -740,6 +836,51 @@ export class BlockyButton extends Block {
       opacity: 0.45;
       pointer-events: none;
       cursor: not-allowed;
+    }
+
+    :host([stretch]) {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    :host([stretch]) .block {
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    /* Stretch slot children on the block cross-axis; center icon wrappers only. */
+    :host(:not([flat])) .face {
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    :host(:not([flat])) .face ::slotted(.btn-content) {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      max-width: 100%;
+      align-self: center;
+    }
+
+    :host([stretch]:not([flat])) {
+      height: 100%;
+      box-sizing: border-box;
+    }
+
+    :host([stretch]:not([flat])) .block {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    :host([stretch]:not([flat])) .face {
+      flex: 1 1 auto;
+      min-height: 0;
+      height: auto;
+      overflow: hidden;
     }
 
     .block {
@@ -1334,7 +1475,8 @@ export class FloatingPanel extends Block {
       -webkit-tap-highlight-color: transparent;
       transform: scale(1);
       transform-origin: center center;
-      animation: floating-close-bounce-in 0.38s cubic-bezier(0.34, 1.25, 0.64, 1) both;
+      animation: floating-close-bounce-in var(--inkwell-motion-bounce-duration, 380ms)
+        var(--inkwell-motion-bounce-easing, cubic-bezier(0.34, 1.25, 0.64, 1)) both;
     }
 
     .floating-close svg {
@@ -2224,10 +2366,10 @@ interface PanelVisibility {
 type ToggleablePanel = FloatingPanel & HTMLElement;
 
 const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
-  { id: "color-panel", label: "Color", visible: false },
-  { id: "tools-panel", label: "Tools", visible: false },
   { id: "universal-panel", label: "Settings", visible: false },
+  { id: "tools-panel", label: "Brush", visible: false },
   { id: "layers-panel", label: "Layers", visible: false },
+  { id: "color-panel", label: "Color", visible: false },
 ];
 
 // ============================================================
@@ -2236,10 +2378,17 @@ const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
 
 @customElement("inkwell-top-bar-panel")
 export class InkwellTopBarPanel extends FloatingPanel {
+  @property({ type: Number }) zoomLevel = 100;
+  @property({ type: Number }) rotation = 0;
+
   @state() private panelVisibility: PanelVisibility[] = PANEL_VISIBILITY_DEFAULTS.map((p) => ({
     ...p,
   }));
   private dockColor = new StoreController(this, colorStore);
+  private history = new StoreController(this, historyStateStore);
+  private tool = new StoreController(this, toolStore);
+  private settings = new StoreController(this, toolSettingsStore);
+  private modifiers = new StoreController(this, modifiersStore);
   private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
   private readonly panelVisibilityChangeHandler = (e: Event) =>
     this.onPanelVisibilityChange(e as CustomEvent<{ id: string; visible: boolean }>);
@@ -2248,26 +2397,179 @@ export class InkwellTopBarPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      --panel-top: 1%;
+      --panel-top: 8px;
       --panel-left: 50%;
-      --panel-width: max-content;
+      --panel-width: min(300px, calc(100vw - 16px));
       --panel-min-width: 0;
+      --dock-divider-color: color-mix(
+        in srgb,
+        var(--inkwell-panel-border, #555555) 22%,
+        transparent
+      );
       transform: translateX(-50%);
       z-index: 1200;
       max-width: calc(100vw - 16px);
     }
 
     .face {
-      padding: 8px 10px;
+      padding: 6px 10px 8px;
+    }
+
+    .unified-dock {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 6px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .dock-status {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .dock-cell {
+      flex: 1 1 0;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 3px;
+      box-sizing: border-box;
+      border-right: 1px solid var(--dock-divider-color);
+    }
+
+    .dock-cell:last-child {
+      border-right: none;
+      padding-right: 0;
+    }
+
+    .dock-cell:first-child {
+      padding-left: 0;
+    }
+
+    .dock-cell-actions .dock-actions {
+      width: 100%;
+    }
+
+    .dock-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--inkwell-text-primary, #222);
+      white-space: nowrap;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .dock-chip-stacked {
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1px;
+      white-space: normal;
+      text-align: center;
+    }
+
+    .dock-chip-stacked .dock-prefix {
+      line-height: 1.1;
+    }
+
+    .dock-value {
+      font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--inkwell-text-primary, #222);
+      line-height: 1.15;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .dock-prefix {
+      flex-shrink: 0;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--inkwell-text-muted, #666);
+      text-transform: lowercase;
+    }
+
+    button.dock-chip-reset {
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      font: inherit;
+      padding: 2px 4px;
+      margin: 0;
+      border-radius: 4px;
+      color: inherit;
+      max-width: 100%;
+    }
+
+    button.dock-chip-reset:hover {
+      background: color-mix(in srgb, var(--inkwell-text-primary, #222) 8%, transparent);
+    }
+
+    button.dock-chip-reset:focus-visible {
+      outline: 2px solid var(--inkwell-panel-border, #555555);
+      outline-offset: 1px;
+    }
+
+    .dock-actions {
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      gap: 4px;
+      flex: 1 1 auto;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+
+    .dock-actions blocky-button {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+
+    .dock-actions .dock-history-icon {
+      color: #fff;
+    }
+
+    .dock-actions .dock-history-icon svg {
+      display: block;
+    }
+
+    .dock-split {
+      width: 100%;
+      max-width: 100%;
+      height: 1px;
+      background: var(--dock-divider-color);
     }
 
     .bar {
       display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-      width: max-content;
-      max-width: 100%;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: 6px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .bar > blocky-button {
+      flex: 1 1 0;
+      min-width: 0;
+      height: auto;
     }
 
     .btn-content {
@@ -2276,14 +2578,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
       justify-content: center;
     }
     .btn-content svg {
-      flex-shrink: 0;
-    }
-    .dock-color-swatch {
-      width: 14px;
-      height: 14px;
-      border-radius: 50%;
-      box-sizing: border-box;
-      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
       flex-shrink: 0;
     }
   `;
@@ -2306,8 +2600,32 @@ export class InkwellTopBarPanel extends FloatingPanel {
     );
   }
 
-  firstUpdated() {
+  firstUpdated(_changed: PropertyValues<this>) {
+    super.firstUpdated(_changed);
     this.positionAllVisiblePanels();
+  }
+
+  private emitDock(name: string) {
+    this.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true }));
+  }
+
+  /** 3D chrome for dock color toggle: face = ink, depth strip = slightly darker ink. */
+  private dockColorBlockChromeStyle(): string {
+    const c = this.dockColor.value;
+    return `--block-face-bg: ${c}; --block-depth-color: color-mix(in srgb, ${c} 76%, #000000);`;
+  }
+
+  /** Matches App.getEffectiveMode for brush / lasso. */
+  private effectivePaintModeLabel(): string | null {
+    const tid = this.tool.value;
+    if (tid !== "brush" && tid !== "lasso") return null;
+    const ts = this.settings.value[tid] as { mode?: string };
+    const baseMode = (ts.mode ?? "add") as "add" | "subtract" | "inside";
+    const modeCycle: Array<"add" | "subtract" | "inside"> = ["add", "subtract", "inside"];
+    const effective = this.modifiers.value.shift
+      ? modeCycle[(modeCycle.indexOf(baseMode) + 1) % 3]
+      : baseMode;
+    return effective.charAt(0).toUpperCase() + effective.slice(1);
   }
 
   private initializeAllPanelsHidden() {
@@ -2376,12 +2694,14 @@ export class InkwellTopBarPanel extends FloatingPanel {
   }
 
   private positionAllVisiblePanels() {
-    const buttons = Array.from(this.renderRoot.querySelectorAll<HTMLElement>("blocky-button"));
-    this.panelVisibility.forEach((panel, index) => {
+    this.panelVisibility.forEach((panel) => {
       if (!panel.visible) return;
+      const trigger = this.renderRoot.querySelector<HTMLElement>(
+        `blocky-button[data-panel-trigger="${panel.id}"]`,
+      );
       const panelEl = document.getElementById(panel.id) as ToggleablePanel | null;
-      if (!panelEl) return;
-      this.positionPanelBelowTrigger(panelEl, buttons[index]);
+      if (!panelEl || !trigger) return;
+      this.positionPanelBelowTrigger(panelEl, trigger);
     });
   }
 
@@ -2417,26 +2737,106 @@ export class InkwellTopBarPanel extends FloatingPanel {
   }
 
   render() {
+    const paintMode = this.effectivePaintModeLabel();
     return html`
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-          <div class="bar">
-            ${this.panelVisibility.map(
-              (panel) => html`
-                <blocky-button
-                  title=${panel.label}
-                  ?active=${panel.visible}
-                  @click=${(e: Event) =>
-                    this.togglePanel(panel.id, e.currentTarget as HTMLElement)}
-                  ><span class="btn-content"
-                    >${panel.id === "color-panel"
-                      ? html`<span class="dock-color-swatch" style="background:${this.dockColor.value}"></span>`
-                      : phosphorIcon(PANEL_ICON_MAP[panel.id], 14)}</span
-                  ></blocky-button
+          <div class="unified-dock">
+            <div class="dock-status">
+              <div class="dock-cell">
+                <button
+                  type="button"
+                  class="dock-chip dock-chip-stacked dock-chip-reset"
+                  title="Reset zoom to 100%"
+                  aria-label="Reset zoom to 100%"
+                  data-interactive
+                  @click=${() => this.emitDock("zoom-reset")}
                 >
-              `,
-            )}
+                  <span class="dock-prefix">zoom:</span>
+                  <span class="dock-value">${this.zoomLevel}%</span>
+                </button>
+              </div>
+              <div class="dock-cell">
+                <button
+                  type="button"
+                  class="dock-chip dock-chip-stacked dock-chip-reset"
+                  title="Reset rotation to 0°"
+                  aria-label="Reset rotation to 0 degrees"
+                  data-interactive
+                  @click=${() => this.emitDock("rotate-reset")}
+                >
+                  <span class="dock-prefix">rot:</span>
+                  <span class="dock-value">${Math.round(this.rotation)}°</span>
+                </button>
+              </div>
+              <div class="dock-cell">
+                <span class="dock-chip dock-chip-stacked" title="Current tool">
+                  <span class="dock-prefix">tool</span>
+                  <span class="dock-value">${getTool(this.tool.value).name}</span>
+                </span>
+              </div>
+              ${paintMode !== null
+                ? html`
+                    <div class="dock-cell">
+                      <span class="dock-chip dock-chip-stacked" title="Paint mode">
+                        <span class="dock-prefix">mode</span>
+                        <span class="dock-value">${paintMode}</span>
+                      </span>
+                    </div>
+                  `
+                : ""}
+              <div class="dock-cell dock-cell-actions">
+                <div class="dock-actions">
+                  <blocky-button
+                    flat
+                    stretch
+                    title="Undo"
+                    aria-label="Undo"
+                    data-interactive
+                    ?disabled=${!this.history.value.canUndo}
+                    @click=${() => this.emitDock("undo")}
+                    ><span class="btn-content dock-history-icon"
+                      >${phosphorIcon("arrow-counter-clockwise-regular", 14)}</span
+                    ></blocky-button
+                  >
+                  <blocky-button
+                    flat
+                    stretch
+                    title="Redo"
+                    aria-label="Redo"
+                    data-interactive
+                    ?disabled=${!this.history.value.canRedo}
+                    @click=${() => this.emitDock("redo")}
+                    ><span class="btn-content dock-history-icon"
+                      >${phosphorIcon("arrow-clockwise-regular", 14)}</span
+                    ></blocky-button
+                  >
+                </div>
+              </div>
+            </div>
+            <div class="dock-split" aria-hidden="true"></div>
+            <div class="bar">
+              ${this.panelVisibility.map(
+                (panel) => html`
+                  <blocky-button
+                    data-panel-trigger=${panel.id}
+                    title=${panel.label}
+                    data-interactive
+                    stretch
+                    style=${panel.id === "color-panel" ? this.dockColorBlockChromeStyle() : nothing}
+                    ?active=${panel.visible}
+                    @click=${(e: Event) =>
+                      this.togglePanel(panel.id, e.currentTarget as HTMLElement)}
+                    >${panel.id === "color-panel"
+                      ? nothing
+                      : html`<span class="btn-content"
+                          >${phosphorIcon(PANEL_ICON_MAP[panel.id], 14)}</span
+                        >`}</blocky-button
+                  >
+                `,
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -2446,12 +2846,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
 @customElement("inkwell-universal-panel")
 export class InkwellUniversalPanel extends FloatingPanel {
-  @property({ type: Number }) zoomLevel = 100;
-  @property({ type: Number }) rotation = 0;
-  @property({ type: Boolean }) cursorEnabled = true;
+  @property({ type: Boolean }) brushSizeIndicatorEnabled = true;
   @property({ type: Boolean }) aliasFixEnabled = true;
 
-  private history = new StoreController(this, historyStateStore);
   private viewOverlay = new StoreController(this, viewOverlayStore);
   private themeMode = new StoreController(this, themeModeStore);
 
@@ -2478,13 +2875,13 @@ export class InkwellUniversalPanel extends FloatingPanel {
             ${this.renderDragHandlePill()}
             ${this.renderPanelTitle("Settings")}
             <div class="toggle">
-              <span>Show Cursor</span>
+              <span>Show brush size</span>
               <input
                 type="checkbox"
-                .checked=${this.cursorEnabled}
+                .checked=${this.brushSizeIndicatorEnabled}
                 @change=${(e: Event) => {
-        this.cursorEnabled = (e.target as HTMLInputElement).checked;
-        this.emit("cursor-toggle", this.cursorEnabled);
+        this.brushSizeIndicatorEnabled = (e.target as HTMLInputElement).checked;
+        this.emit("brush-size-toggle", this.brushSizeIndicatorEnabled);
       }}
               />
             </div>
@@ -2559,51 +2956,6 @@ export class InkwellUniversalPanel extends FloatingPanel {
                   this.viewOverlay.update((v) => ({ ...v, gridLiveWhileZooming: checked }));
                 }}
               />
-            </div>
-
-            <label>
-              <span>Zoom: ${this.zoomLevel}%</span>
-              <div class="row">
-                <blocky-button flat @click=${() => this.emit("zoom-out")}
-                  >−</blocky-button
-                >
-                <blocky-button flat @click=${() => this.emit("zoom-reset")}
-                  >Reset</blocky-button
-                >
-                <blocky-button flat @click=${() => this.emit("zoom-in")}
-                  >+</blocky-button
-                >
-              </div>
-            </label>
-
-            <label>
-              <span>Rotation: ${Math.round(this.rotation)}°</span>
-              <div class="row">
-                <blocky-button flat @click=${() => this.emit("rotate-ccw")}
-                  >CCW</blocky-button
-                >
-                <blocky-button flat @click=${() => this.emit("rotate-reset")}
-                  >Reset</blocky-button
-                >
-                <blocky-button flat @click=${() => this.emit("rotate-cw")}
-                  >CW</blocky-button
-                >
-              </div>
-            </label>
-
-            <div class="row">
-              <blocky-button
-                flat
-                ?disabled=${!this.history.value.canUndo}
-                @click=${() => this.emit("undo")}
-                >Undo</blocky-button
-              >
-              <blocky-button
-                flat
-                ?disabled=${!this.history.value.canRedo}
-                @click=${() => this.emit("redo")}
-                >Redo</blocky-button
-              >
             </div>
 
             <div class="row">

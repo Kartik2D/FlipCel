@@ -7,25 +7,17 @@
  * - Rotation (angle in radians)
  * - Coordinate transformations between screen and world space
  *
- * The camera transforms the Paper Canvas (main drawing surface) while
- * keeping interaction canvases (pixel, UI) fixed to window coordinates.
+ * **Smoothing:** Target vs present poses; during **two-finger pinch** the present pose eases toward
+ * target each frame. All other inputs (wheel, UI, single-pointer pan) keep present locked to target.
  *
- * Coordinate Spaces:
- * - Screen Space: Window/viewport coordinates (0,0 at top-left of window)
- * - World Space: Infinite canvas coordinates (transformed by camera)
- *
- * Transformation (screen to world):
- * 1. Translate by -viewportCenter
- * 2. Scale by 1/zoom
- * 3. Rotate by -rotation
- * 4. Translate by +cameraPosition
+ * Transformation (screen to world) uses the **present** pose so the drawn view matches picking.
  */
 
 export interface CameraState {
-  x: number; // Camera center position in world space
+  x: number;
   y: number;
-  zoom: number; // Zoom level (1.0 = 100%, 2.0 = 200%, 0.5 = 50%)
-  rotation: number; // Rotation in radians (positive = clockwise)
+  zoom: number;
+  rotation: number;
 }
 
 export interface Point2D {
@@ -33,350 +25,346 @@ export interface Point2D {
   y: number;
 }
 
+function normalizeAngle(rad: number): number {
+  return Math.atan2(Math.sin(rad), Math.cos(rad));
+}
+
+function lerpAngle(from: number, to: number, t: number): number {
+  let d = to - from;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return normalizeAngle(from + d * t);
+}
+
 export class Camera {
-  // Camera position (center of view in world coordinates)
+  /** Present — used for getTransformMatrix, screenToWorld, worldToScreen */
   private x = 0;
   private y = 0;
-
-  // Zoom level
   private _zoom = 1;
-
-  // Rotation in radians
   private _rotation = 0;
 
-  // Zoom constraints
-  private minZoom = 0.1; // 10% minimum
-  private maxZoom = 5; // 500% maximum (reduced from 1000% to avoid floating-point issues)
+  /** Target — updated immediately by pan / zoom / rotate */
+  private targetX = 0;
+  private targetY = 0;
+  private targetZoom = 1;
+  private targetRotation = 0;
 
-  // Viewport dimensions (updated on resize)
+  private minZoom = 0.1;
+  private maxZoom = 3;
+
   private viewportWidth = 0;
   private viewportHeight = 0;
+
+  /** Higher = snappier follow (1/s time constant scale). Lower = gentler pinch easing. */
+  private readonly lerpLambda = 50;
+
+  /** When true (two-finger pinch), `stepLerp` eases present toward target; otherwise present matches target. */
+  private pinchViewEasing = false;
 
   constructor(viewportWidth: number, viewportHeight: number) {
     this.viewportWidth = viewportWidth;
     this.viewportHeight = viewportHeight;
-    // Start with camera centered at origin
-    this.x = viewportWidth / 2;
-    this.y = viewportHeight / 2;
+    const cx = viewportWidth / 2;
+    const cy = viewportHeight / 2;
+    this.x = cx;
+    this.y = cy;
+    this.targetX = cx;
+    this.targetY = cy;
   }
 
-  /**
-   * Update viewport dimensions (call on window resize)
-   */
   updateViewport(width: number, height: number): void {
     this.viewportWidth = width;
     this.viewportHeight = height;
   }
 
   /**
-   * Get current zoom level
+   * Enable view easing only during multitouch pinch; disabling snaps present to target immediately.
    */
+  setPinchViewEasing(active: boolean): void {
+    this.pinchViewEasing = active;
+    if (!active) {
+      this.syncPresentToTarget();
+    }
+  }
+
   get zoom(): number {
     return this._zoom;
   }
 
-  /**
-   * Set zoom level with constraints
-   */
   set zoom(value: number) {
-    this._zoom = Math.max(this.minZoom, Math.min(this.maxZoom, value));
+    const z = Math.max(this.minZoom, Math.min(this.maxZoom, value));
+    this._zoom = z;
+    this.targetZoom = z;
   }
 
-  /**
-   * Get current rotation in radians
-   */
   get rotation(): number {
-    return this._rotation;
+    return this.targetRotation;
   }
 
-  /**
-   * Set rotation in radians
-   */
   set rotation(value: number) {
-    // Normalize to [-PI, PI]
-    this._rotation = Math.atan2(Math.sin(value), Math.cos(value));
+    const r = normalizeAngle(value);
+    this._rotation = r;
+    this.targetRotation = r;
   }
 
-  /**
-   * Get rotation in degrees
-   */
   getRotationDegrees(): number {
-    return (this._rotation * 180) / Math.PI;
+    return (this.targetRotation * 180) / Math.PI;
   }
 
-  /**
-   * Set rotation in degrees
-   */
   setRotationDegrees(degrees: number): void {
     this.rotation = (degrees * Math.PI) / 180;
   }
 
-  /**
-   * Get camera position
-   */
   getPosition(): Point2D {
     return { x: this.x, y: this.y };
   }
 
-  /**
-   * Set camera position
-   */
   setPosition(x: number, y: number): void {
     this.x = x;
     this.y = y;
+    this.targetX = x;
+    this.targetY = y;
   }
 
-  /**
-   * Get full camera state
-   */
   getState(): CameraState {
     return {
-      x: this.x,
-      y: this.y,
-      zoom: this._zoom,
-      rotation: this._rotation,
+      x: this.targetX,
+      y: this.targetY,
+      zoom: this.targetZoom,
+      rotation: this.targetRotation,
     };
   }
 
-  /**
-   * Restore camera state
-   */
   setState(state: CameraState): void {
+    const z = Math.max(this.minZoom, Math.min(this.maxZoom, state.zoom));
+    const r = normalizeAngle(state.rotation);
     this.x = state.x;
     this.y = state.y;
-    this._zoom = Math.max(this.minZoom, Math.min(this.maxZoom, state.zoom));
-    this._rotation = state.rotation;
+    this._zoom = z;
+    this._rotation = r;
+    this.targetX = state.x;
+    this.targetY = state.y;
+    this.targetZoom = z;
+    this.targetRotation = r;
   }
 
   /**
-   * Convert screen coordinates to world coordinates
-   *
-   * @param screenX - X position in screen/viewport space
-   * @param screenY - Y position in screen/viewport space
-   * @returns Position in world space
+   * Copy present pose to match target (e.g. end of a precise animation).
    */
+  syncPresentToTarget(): void {
+    this.x = this.targetX;
+    this.y = this.targetY;
+    this._zoom = this.targetZoom;
+    this._rotation = this.targetRotation;
+  }
+
+  /** Keep zoom lerping; snap pan + rotation to target (e.g. during rotation snap animation). */
+  syncPresentPanRotationFromTarget(): void {
+    this.x = this.targetX;
+    this.y = this.targetY;
+    this._rotation = this.targetRotation;
+  }
+
+  /**
+   * Exponential smoothing toward target (call once per frame).
+   */
+  stepLerp(dtSeconds: number): void {
+    if (dtSeconds <= 0 || !Number.isFinite(dtSeconds)) return;
+    if (!this.pinchViewEasing) {
+      this.syncPresentToTarget();
+      return;
+    }
+    const k = 1 - Math.exp(-this.lerpLambda * Math.min(dtSeconds, 0.25));
+    this.x += (this.targetX - this.x) * k;
+    this.y += (this.targetY - this.y) * k;
+    this._zoom += (this.targetZoom - this._zoom) * k;
+    this._rotation = lerpAngle(this._rotation, this.targetRotation, k);
+  }
+
   screenToWorld(screenX: number, screenY: number): Point2D {
-    // Step 1: Translate to viewport center
     const offsetX = screenX - this.viewportWidth / 2;
     const offsetY = screenY - this.viewportHeight / 2;
-
-    // Step 2: Apply inverse zoom
     const scaledX = offsetX / this._zoom;
     const scaledY = offsetY / this._zoom;
-
-    // Step 3: Apply inverse rotation (rotate by -rotation)
     const cos = Math.cos(-this._rotation);
     const sin = Math.sin(-this._rotation);
     const rotatedX = scaledX * cos - scaledY * sin;
     const rotatedY = scaledX * sin + scaledY * cos;
-
-    // Step 4: Translate by camera position
     return {
       x: rotatedX + this.x,
       y: rotatedY + this.y,
     };
   }
 
-  /**
-   * Convert world coordinates to screen coordinates
-   *
-   * @param worldX - X position in world space
-   * @param worldY - Y position in world space
-   * @returns Position in screen/viewport space
-   */
+  private screenToWorldWith(
+    camX: number,
+    camY: number,
+    zoom: number,
+    rot: number,
+    screenX: number,
+    screenY: number,
+  ): Point2D {
+    const offsetX = screenX - this.viewportWidth / 2;
+    const offsetY = screenY - this.viewportHeight / 2;
+    const scaledX = offsetX / zoom;
+    const scaledY = offsetY / zoom;
+    const cos = Math.cos(-rot);
+    const sin = Math.sin(-rot);
+    const rotatedX = scaledX * cos - scaledY * sin;
+    const rotatedY = scaledX * sin + scaledY * cos;
+    return {
+      x: rotatedX + camX,
+      y: rotatedY + camY,
+    };
+  }
+
   worldToScreen(worldX: number, worldY: number): Point2D {
-    // Step 1: Translate by negative camera position
     const offsetX = worldX - this.x;
     const offsetY = worldY - this.y;
-
-    // Step 2: Apply rotation
     const cos = Math.cos(this._rotation);
     const sin = Math.sin(this._rotation);
     const rotatedX = offsetX * cos - offsetY * sin;
     const rotatedY = offsetX * sin + offsetY * cos;
-
-    // Step 3: Apply zoom
     const scaledX = rotatedX * this._zoom;
     const scaledY = rotatedY * this._zoom;
-
-    // Step 4: Translate to viewport center
     return {
       x: scaledX + this.viewportWidth / 2,
       y: scaledY + this.viewportHeight / 2,
     };
   }
 
-  /**
-   * Convert a screen-space delta to world-space delta
-   * (useful for panning - accounts for rotation)
-   */
   screenDeltaToWorld(deltaX: number, deltaY: number): Point2D {
-    // Apply inverse zoom
     const scaledX = deltaX / this._zoom;
     const scaledY = deltaY / this._zoom;
-
-    // Apply inverse rotation
     const cos = Math.cos(-this._rotation);
     const sin = Math.sin(-this._rotation);
-
     return {
       x: scaledX * cos - scaledY * sin,
       y: scaledX * sin + scaledY * cos,
     };
   }
 
-  /**
-   * Pan the camera by a screen-space delta
-   */
   pan(screenDeltaX: number, screenDeltaY: number): void {
     const worldDelta = this.screenDeltaToWorld(screenDeltaX, screenDeltaY);
-    this.x -= worldDelta.x;
-    this.y -= worldDelta.y;
+    this.targetX -= worldDelta.x;
+    this.targetY -= worldDelta.y;
   }
 
-  /**
-   * Zoom towards a screen point (maintains point under cursor)
-   *
-   * @param factor - Zoom multiplier (>1 to zoom in, <1 to zoom out)
-   * @param screenX - X position in screen space to zoom towards
-   * @param screenY - Y position in screen space to zoom towards
-   */
   zoomAt(factor: number, screenX: number, screenY: number): void {
-    // Get world position under cursor before zoom
-    const worldBefore = this.screenToWorld(screenX, screenY);
-
-    // Apply zoom
-    const newZoom = this._zoom * factor;
-    this._zoom = Math.max(this.minZoom, Math.min(this.maxZoom, newZoom));
-
-    // Get world position under cursor after zoom
-    const worldAfter = this.screenToWorld(screenX, screenY);
-
-    // Adjust camera position to keep the point under cursor fixed
-    this.x += worldBefore.x - worldAfter.x;
-    this.y += worldBefore.y - worldAfter.y;
+    const worldBefore = this.screenToWorldWith(
+      this.targetX,
+      this.targetY,
+      this.targetZoom,
+      this.targetRotation,
+      screenX,
+      screenY,
+    );
+    let newZoom = this.targetZoom * factor;
+    newZoom = Math.max(this.minZoom, Math.min(this.maxZoom, newZoom));
+    const worldAfter = this.screenToWorldWith(
+      this.targetX,
+      this.targetY,
+      newZoom,
+      this.targetRotation,
+      screenX,
+      screenY,
+    );
+    this.targetX += worldBefore.x - worldAfter.x;
+    this.targetY += worldBefore.y - worldAfter.y;
+    this.targetZoom = newZoom;
   }
 
-  /**
-   * Zoom towards viewport center
-   */
   zoomCenter(factor: number): void {
     this.zoomAt(factor, this.viewportWidth / 2, this.viewportHeight / 2);
   }
 
-  /**
-   * Rotate around a screen point (maintains point under cursor)
-   *
-   * @param deltaRadians - Rotation amount in radians (positive = clockwise)
-   * @param screenX - X position in screen space to rotate around
-   * @param screenY - Y position in screen space to rotate around
-   */
   rotateAt(deltaRadians: number, screenX: number, screenY: number): void {
-    // Get world position under cursor before rotation
-    const worldBefore = this.screenToWorld(screenX, screenY);
-
-    // Apply rotation
-    this.rotation = this._rotation + deltaRadians;
-
-    // Get world position under cursor after rotation
-    const worldAfter = this.screenToWorld(screenX, screenY);
-
-    // Adjust camera position to keep the point under cursor fixed
-    this.x += worldBefore.x - worldAfter.x;
-    this.y += worldBefore.y - worldAfter.y;
-  }
-
-  /**
-   * Rotate around viewport center
-   */
-  rotateCenter(deltaRadians: number): void {
-    this.rotateAt(
-      deltaRadians,
-      this.viewportWidth / 2,
-      this.viewportHeight / 2,
+    const worldBefore = this.screenToWorldWith(
+      this.targetX,
+      this.targetY,
+      this.targetZoom,
+      this.targetRotation,
+      screenX,
+      screenY,
     );
+    const newRot = normalizeAngle(this.targetRotation + deltaRadians);
+    const worldAfter = this.screenToWorldWith(
+      this.targetX,
+      this.targetY,
+      this.targetZoom,
+      newRot,
+      screenX,
+      screenY,
+    );
+    this.targetX += worldBefore.x - worldAfter.x;
+    this.targetY += worldBefore.y - worldAfter.y;
+    this.targetRotation = newRot;
   }
 
-  /**
-   * Rotate by degrees around viewport center
-   */
+  rotateCenter(deltaRadians: number): void {
+    this.rotateAt(deltaRadians, this.viewportWidth / 2, this.viewportHeight / 2);
+  }
+
   rotateCenterDegrees(deltaDegrees: number): void {
     this.rotateCenter((deltaDegrees * Math.PI) / 180);
   }
 
-  /**
-   * Reset camera to default state (centered, 100% zoom, no rotation)
-   */
   reset(): void {
-    this.x = this.viewportWidth / 2;
-    this.y = this.viewportHeight / 2;
+    const cx = this.viewportWidth / 2;
+    const cy = this.viewportHeight / 2;
+    this.x = cx;
+    this.y = cy;
     this._zoom = 1;
     this._rotation = 0;
+    this.targetX = cx;
+    this.targetY = cy;
+    this.targetZoom = 1;
+    this.targetRotation = 0;
   }
 
-  /**
-   * Reset only rotation to 0
-   */
   resetRotation(): void {
     this._rotation = 0;
+    this.targetRotation = 0;
   }
 
-  /**
-   * Fit camera to show a bounding box in world space
-   *
-   * @param bounds - Bounding box { x, y, width, height } in world space
-   * @param padding - Optional padding ratio (0.1 = 10% padding)
-   */
   fitToBounds(
     bounds: { x: number; y: number; width: number; height: number },
     padding = 0.1,
   ): void {
-    // Center camera on bounds center
-    this.x = bounds.x + bounds.width / 2;
-    this.y = bounds.y + bounds.height / 2;
-
-    // Calculate zoom to fit bounds in viewport
+    const cx = bounds.x + bounds.width / 2;
+    const cy = bounds.y + bounds.height / 2;
     const paddedWidth = bounds.width * (1 + padding * 2);
     const paddedHeight = bounds.height * (1 + padding * 2);
-
     const zoomX = this.viewportWidth / paddedWidth;
     const zoomY = this.viewportHeight / paddedHeight;
-
-    this._zoom = Math.max(
-      this.minZoom,
-      Math.min(this.maxZoom, Math.min(zoomX, zoomY)),
-    );
-
-    // Reset rotation when fitting to bounds
+    const z = Math.max(this.minZoom, Math.min(this.maxZoom, Math.min(zoomX, zoomY)));
+    this.x = cx;
+    this.y = cy;
+    this._zoom = z;
     this._rotation = 0;
+    this.targetX = cx;
+    this.targetY = cy;
+    this.targetZoom = z;
+    this.targetRotation = 0;
   }
 
-  /**
-   * Get the visible bounds in world space (axis-aligned bounding box)
-   * Note: When rotated, this returns the AABB of the rotated viewport
-   */
   getWorldBounds(): { x: number; y: number; width: number; height: number } {
-    // Get all four corners of the viewport in world space
     const corners = [
       this.screenToWorld(0, 0),
       this.screenToWorld(this.viewportWidth, 0),
       this.screenToWorld(this.viewportWidth, this.viewportHeight),
       this.screenToWorld(0, this.viewportHeight),
     ];
-
-    // Find AABB
     let minX = Infinity,
       minY = Infinity,
       maxX = -Infinity,
       maxY = -Infinity;
-
     for (const corner of corners) {
       minX = Math.min(minX, corner.x);
       minY = Math.min(minY, corner.y);
       maxX = Math.max(maxX, corner.x);
       maxY = Math.max(maxY, corner.y);
     }
-
     return {
       x: minX,
       y: minY,
@@ -385,85 +373,35 @@ export class Camera {
     };
   }
 
-  /**
-   * Get the transformation matrix for canvas rendering
-   * Returns [a, b, c, d, e, f] for ctx.setTransform(a, b, c, d, e, f)
-   *
-   * This matrix transforms world coordinates to screen coordinates.
-   */
   getTransformMatrix(): [number, number, number, number, number, number] {
-    // World to screen transformation:
-    // 1. Translate by -camera position
-    // 2. Rotate
-    // 3. Scale
-    // 4. Translate to viewport center
-
     const cos = Math.cos(this._rotation);
     const sin = Math.sin(this._rotation);
     const z = this._zoom;
-
-    // Combined matrix:
-    // | z*cos  -z*sin  tx |
-    // | z*sin   z*cos  ty |
-    // |   0       0     1 |
-
     const a = z * cos;
     const b = z * sin;
     const c = -z * sin;
     const d = z * cos;
-
-    // Translation: first translate by -camera, then rotate+scale, then translate to center
-    // tx = -x*a - y*c + centerX
-    // ty = -x*b - y*d + centerY
     const tx = -this.x * a - this.y * c + this.viewportWidth / 2;
     const ty = -this.x * b - this.y * d + this.viewportHeight / 2;
-
     return [a, b, c, d, tx, ty];
   }
 
-  /**
-   * Get the inverse transformation matrix (screen to world)
-   * Returns [a, b, c, d, e, f] for transforming screen coords to world coords
-   */
-  getInverseTransformMatrix(): [
-    number,
-    number,
-    number,
-    number,
-    number,
-    number,
-  ] {
+  getInverseTransformMatrix(): [number, number, number, number, number, number] {
     const cos = Math.cos(-this._rotation);
     const sin = Math.sin(-this._rotation);
     const invZ = 1 / this._zoom;
-
-    // Inverse transformation:
-    // 1. Translate by -viewport center
-    // 2. Scale by 1/zoom
-    // 3. Rotate by -rotation
-    // 4. Translate by camera position
-
     const a = invZ * cos;
     const b = invZ * sin;
     const c = -invZ * sin;
     const d = invZ * cos;
-
-    // The translation needs to account for all steps
     const centerX = this.viewportWidth / 2;
     const centerY = this.viewportHeight / 2;
-
-    // tx = -centerX * a - centerY * c + cameraX
-    // ty = -centerX * b - centerY * d + cameraY
     const tx = -centerX * a - centerY * c + this.x;
     const ty = -centerX * b - centerY * d + this.y;
-
     return [a, b, c, d, tx, ty];
   }
 
-  /**
-   * Get zoom percentage for display
-   */
   getZoomPercent(): number {
-    return Math.round(this._zoom * 100);
+    return Math.round(this.targetZoom * 100);
   }
 }

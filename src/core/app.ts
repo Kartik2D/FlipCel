@@ -32,6 +32,7 @@ import type { ToolId, AllToolSettings } from "./tools";
 import type {
   InkwellToolsPanel,
   InkwellUniversalPanel,
+  InkwellTopBarPanel,
   InkwellLayersPanel,
 } from "../ui/ui-lib";
 import "../ui/ui-lib"; // Register Lit components
@@ -47,6 +48,18 @@ import {
   themeModeStore,
   type ThemeMode,
 } from "./stores";
+
+/**
+ * Snap to 0° when |view rotation| is strictly inside this bound (degrees), i.e. |θ| < 15°.
+ * Uses strict inequality so a single 15° UI step from 0 does not immediately snap back.
+ */
+const SNAP_ROTATION_TO_ZERO_WITHIN_DEG = 15;
+
+const ROTATION_SNAP_TO_ZERO_MS = 280;
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+}
 
 class App {
   private paperCanvas: HTMLCanvasElement;
@@ -64,6 +77,7 @@ class App {
   private historyManager: HistoryManager;
   private toolsPanel: InkwellToolsPanel;
   private universalPanel: InkwellUniversalPanel;
+  private topBarPanel: InkwellTopBarPanel;
   private layersPanel: InkwellLayersPanel;
   private camera: Camera;
   private isInitialized = false;
@@ -71,6 +85,10 @@ class App {
 
   /** Inside mode only: clip to path under pointer, or null for full viewport ("paint behind"). */
   private insideClipForStroke: paper.PathItem | null | undefined = undefined;
+
+  private rotationSnapRaf: number | null = null;
+
+  private cameraLoopLastMs = performance.now();
 
   constructor() {
     // Get canvas elements
@@ -118,6 +136,7 @@ class App {
     // Get panel Lit elements
     this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
+    this.topBarPanel = document.getElementById("top-bar-panel") as InkwellTopBarPanel;
     this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
     this.setupPanelEvents();
 
@@ -142,6 +161,14 @@ class App {
       this.onCameraZoom(d.factor, d.x, d.y),
     );
     bus.on(Events.CAMERA_ROTATE, (d: { delta: number; x: number; y: number }) => this.onCameraRotate(d.delta, d.x, d.y));
+    bus.on(Events.PINCH_GESTURE_START, () => {
+      this.cancelRotationSnapAnimation();
+      this.camera.setPinchViewEasing(true);
+    });
+    bus.on(Events.PINCH_GESTURE_END, () => {
+      this.camera.setPinchViewEasing(false);
+      this.maybeSnapRotationToZero();
+    });
     bus.on(Events.TOOL_CHANGE, (tool: ToolId) => this.onInputToolChange(tool));
     bus.on(Events.MODIFIERS_CHANGE, (m: Modifiers) => this.onModifiersChange(m));
     bus.on(Events.UNDO, () => this.onUndo());
@@ -167,20 +194,16 @@ class App {
     });
 
     // Universal panel events
-    this.universalPanel.addEventListener("cursor-toggle", (e: Event) => {
-      this.uiOverlay.setCursorEnabled((e as CustomEvent<boolean>).detail);
+    this.universalPanel.addEventListener("brush-size-toggle", (e: Event) => {
+      this.uiOverlay.setBrushSizeIndicatorEnabled((e as CustomEvent<boolean>).detail);
     });
 
-    this.universalPanel.addEventListener("zoom-in", () => this.onZoomIn());
-    this.universalPanel.addEventListener("zoom-out", () => this.onZoomOut());
-    this.universalPanel.addEventListener("zoom-reset", () => this.onZoomReset());
-    this.universalPanel.addEventListener("rotate-cw", () => this.onRotateCW());
-    this.universalPanel.addEventListener("rotate-ccw", () => this.onRotateCCW());
-    this.universalPanel.addEventListener("rotate-reset", () => this.onRotateReset());
     this.universalPanel.addEventListener("flatten", () => this.onFlatten());
     this.universalPanel.addEventListener("clear", () => this.onClear());
-    this.universalPanel.addEventListener("undo", () => this.onUndo());
-    this.universalPanel.addEventListener("redo", () => this.onRedo());
+    this.topBarPanel.addEventListener("undo", () => this.onUndo());
+    this.topBarPanel.addEventListener("redo", () => this.onRedo());
+    this.topBarPanel.addEventListener("zoom-reset", () => this.onDockZoomReset());
+    this.topBarPanel.addEventListener("rotate-reset", () => this.onDockRotationReset());
     this.universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {
       this.onAliasFixToggle((e as CustomEvent<boolean>).detail);
     });
@@ -286,7 +309,26 @@ class App {
     // Take initial history snapshot (empty canvas state)
     this.historyManager.snapshot();
 
+    this.startCameraFrameLoop();
+
     console.log("App initialized with Lit UI components and stores");
+  }
+
+  /**
+   * Smooth camera follow: targets update on input; present pose lerps each frame for Paper + UI.
+   */
+  private startCameraFrameLoop() {
+    const step = (now: number) => {
+      const dt = Math.min(0.05, (now - this.cameraLoopLastMs) / 1000);
+      this.cameraLoopLastMs = now;
+      this.camera.stepLerp(dt);
+      this.paperRenderer.applyCamera();
+      this.selectionController.drawUI();
+      this.updateDisplays();
+      requestAnimationFrame(step);
+    };
+    this.cameraLoopLastMs = performance.now();
+    requestAnimationFrame(step);
   }
 
   private setupStoreSubscriptions() {
@@ -311,9 +353,10 @@ class App {
       }
     });
 
-    // Tool store - sync with inputManager
-    toolStore.subscribe((tool) => {
+    // Tool store - sync with inputManager + overlay (brush ring only when brush is active)
+    toolStore.subscribeImmediate((tool) => {
       this.inputManager.setTool(tool);
+      this.uiOverlay.setActiveTool(tool);
     });
 
     themeModeStore.subscribeImmediate((mode) => {
@@ -333,8 +376,10 @@ class App {
   // ============================================================
 
   private updateDisplays() {
-    this.universalPanel.zoomLevel = this.camera.getZoomPercent();
-    this.universalPanel.rotation = this.camera.getRotationDegrees();
+    const zoom = this.camera.getZoomPercent();
+    const rotation = this.camera.getRotationDegrees();
+    this.topBarPanel.zoomLevel = zoom;
+    this.topBarPanel.rotation = rotation;
   }
 
   // ============================================================
@@ -343,64 +388,77 @@ class App {
 
   private onCameraPan(deltaX: number, deltaY: number) {
     this.camera.pan(deltaX, deltaY);
-    this.paperRenderer.applyCamera();
-    this.selectionController.drawUI();
   }
 
   private onCameraZoom(factor: number, centerX: number, centerY: number) {
     this.camera.zoomAt(factor, centerX, centerY);
-    this.paperRenderer.applyCamera();
-    this.updateDisplays();
-    this.selectionController.drawUI();
   }
 
   private onCameraRotate(deltaRadians: number, centerX: number, centerY: number) {
+    this.cancelRotationSnapAnimation();
     this.camera.rotateAt(deltaRadians, centerX, centerY);
-    this.paperRenderer.applyCamera();
-    this.updateDisplays();
-    this.selectionController.drawUI();
   }
 
-  private onZoomIn() {
-    this.camera.zoomCenter(1.25);
-    this.paperRenderer.applyCamera();
-    this.updateDisplays();
-    this.selectionController.drawUI();
+  private cancelRotationSnapAnimation() {
+    if (this.rotationSnapRaf !== null) {
+      cancelAnimationFrame(this.rotationSnapRaf);
+      this.rotationSnapRaf = null;
+    }
   }
 
-  private onZoomOut() {
-    this.camera.zoomCenter(0.8);
-    this.paperRenderer.applyCamera();
-    this.updateDisplays();
-    this.selectionController.drawUI();
+  /**
+   * If view rotation is within ±15° of 0 (strictly inside), ease to exactly 0°.
+   */
+  private maybeSnapRotationToZero() {
+    const deg = this.camera.getRotationDegrees();
+    if (Math.abs(deg) >= SNAP_ROTATION_TO_ZERO_WITHIN_DEG || Math.abs(deg) < 1e-6) {
+      return;
+    }
+
+    this.cancelRotationSnapAnimation();
+    const fromRot = this.camera.rotation;
+    const targetRot = 0;
+    let delta = targetRot - fromRot;
+    while (delta > Math.PI) delta -= 2 * Math.PI;
+    while (delta < -Math.PI) delta += 2 * Math.PI;
+    if (Math.abs(delta) < 1e-6) return;
+
+    const cx = this.config.viewportWidth / 2;
+    const cy = this.config.viewportHeight / 2;
+    const start = performance.now();
+
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / ROTATION_SNAP_TO_ZERO_MS);
+      const e = easeInOutCubic(t);
+      const desired = fromRot + delta * e;
+      let step = desired - this.camera.rotation;
+      while (step > Math.PI) step -= 2 * Math.PI;
+      while (step < -Math.PI) step += 2 * Math.PI;
+
+      this.camera.rotateAt(step, cx, cy);
+      this.camera.syncPresentPanRotationFromTarget();
+
+      if (t < 1) {
+        this.rotationSnapRaf = requestAnimationFrame(tick);
+      } else {
+        this.rotationSnapRaf = null;
+        this.camera.syncPresentPanRotationFromTarget();
+      }
+    };
+
+    this.rotationSnapRaf = requestAnimationFrame(tick);
   }
 
-  private onZoomReset() {
-    this.camera.reset();
-    this.paperRenderer.applyCamera();
-    this.updateDisplays();
-    this.selectionController.drawUI();
+  private onDockZoomReset() {
+    const cx = this.config.viewportWidth / 2;
+    const cy = this.config.viewportHeight / 2;
+    this.camera.setPosition(cx, cy);
+    this.camera.zoom = 1;
   }
 
-  private onRotateCW() {
-    this.camera.rotateCenterDegrees(15);
-    this.paperRenderer.applyCamera();
-    this.updateDisplays();
-    this.selectionController.drawUI();
-  }
-
-  private onRotateCCW() {
-    this.camera.rotateCenterDegrees(-15);
-    this.paperRenderer.applyCamera();
-    this.updateDisplays();
-    this.selectionController.drawUI();
-  }
-
-  private onRotateReset() {
+  private onDockRotationReset() {
+    this.cancelRotationSnapAnimation();
     this.camera.resetRotation();
-    this.paperRenderer.applyCamera();
-    this.updateDisplays();
-    this.selectionController.drawUI();
   }
 
   // ============================================================

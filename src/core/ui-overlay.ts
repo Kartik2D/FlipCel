@@ -4,8 +4,7 @@
  * Draws UI elements and visual feedback on the top canvas layer.
  *
  * Key responsibilities:
- * - Displays cursor/pen position indicator during drawing
- * - Shows crosshair for precision feedback
+ * - Optional brush-size ring (max brush diameter) while the brush tool is active
  * - Draws world-space alignment grid (pan/zoom/rotate with camera)
  * - Draws world origin axes (X/Y at 0,0)
  * - Optionally highlights the left and bottom viewport edges
@@ -13,8 +12,7 @@
  *
  * Visual elements:
  * - World grid (spacing either follows zoom or stays fixed in world units; see view prefs)
- * - Circular cursor indicator (sized to max brush size, semi-transparent)
- * - Crosshair lines (10px length) for precise positioning
+ * - Brush size ring only (crosshair is a CSS custom cursor on the UI canvas)
  * - X-axis and Y-axis at world origin
  * - Optional bottom/right screen-size guides in world space
  * - All drawn in viewport coordinates (not pixel coordinates)
@@ -22,13 +20,15 @@
 import type { Point, CanvasConfig } from "./types";
 import type { Camera } from "./camera";
 import type { ViewOverlaySettings } from "./stores";
+import type { ToolId } from "./tools";
 
 export class UIOverlay {
   private ctx: CanvasRenderingContext2D;
   private config: CanvasConfig;
   private camera: Camera | null = null;
   private currentCursor: Point | null = null;
-  private cursorEnabled = true;
+  private brushSizeIndicatorEnabled = true;
+  private activeTool: ToolId = "brush";
   private gridEnabled = true;
   private originEnabled = true;
   private screenSizeEnabled = false;
@@ -61,8 +61,13 @@ export class UIOverlay {
     this.camera = camera;
   }
 
-  setCursorEnabled(enabled: boolean) {
-    this.cursorEnabled = enabled;
+  setBrushSizeIndicatorEnabled(enabled: boolean) {
+    this.brushSizeIndicatorEnabled = enabled;
+    this.draw();
+  }
+
+  setActiveTool(tool: ToolId) {
+    this.activeTool = tool;
     this.draw();
   }
 
@@ -111,8 +116,7 @@ export class UIOverlay {
   }
 
   /**
-   * Force a redraw of the cursor (and clear canvas)
-   * Useful when other UI elements need the canvas cleared
+   * Force a full overlay redraw (grid, brush ring, guides, axes).
    */
   redraw() {
     this.draw();
@@ -128,14 +132,12 @@ export class UIOverlay {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
-  private shouldShowCursor(): boolean {
-    // If cursor is disabled via toggle, never show
-    if (!this.cursorEnabled) return false;
+  private shouldShowBrushSizeRing(): boolean {
+    if (!this.brushSizeIndicatorEnabled || this.activeTool !== "brush") return false;
 
-    // On mobile, only show cursor while actively drawing
+    // On mobile, only show while actively drawing
     if (this.isMobile) return this.isDrawing;
 
-    // On desktop, always show cursor when available
     return true;
   }
 
@@ -410,9 +412,8 @@ export class UIOverlay {
     // Draw world axes
     this.drawAxes();
 
-    // Draw cursor
-    if (this.currentCursor && this.shouldShowCursor()) {
-      // Map pixel coordinates back to viewport coordinates
+    // Brush size ring (brush tool only; crosshair is the CSS cursor)
+    if (this.currentCursor && this.shouldShowBrushSizeRing()) {
       const viewportX =
         (this.currentCursor.x / this.config.pixelWidth) *
         this.config.viewportWidth;
@@ -420,25 +421,13 @@ export class UIOverlay {
         (this.currentCursor.y / this.config.pixelHeight) *
         this.config.viewportHeight;
 
-      // Calculate cursor radius based on max brush size, scaled to viewport
-      // Brush size is diameter (lineWidth), so divide by 2 for radius
-      // Subtract 0.5 pixel-canvas-pixels to account for rasterization on low-res canvas
       const scale = this.config.viewportWidth / this.config.pixelWidth;
       const cursorRadius = (this.maxBrushSize / 2 - 0.5) * scale;
 
-      // Draw cursor indicator
       this.ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
       this.ctx.lineWidth = 1;
       this.ctx.beginPath();
       this.ctx.arc(viewportX, viewportY, cursorRadius, 0, Math.PI * 2);
-      this.ctx.stroke();
-
-      // Draw crosshair (fixed size for precision)
-      this.ctx.beginPath();
-      this.ctx.moveTo(viewportX - 10, viewportY);
-      this.ctx.lineTo(viewportX + 10, viewportY);
-      this.ctx.moveTo(viewportX, viewportY - 10);
-      this.ctx.lineTo(viewportX, viewportY + 10);
       this.ctx.stroke();
     }
   }

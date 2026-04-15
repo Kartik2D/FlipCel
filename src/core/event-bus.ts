@@ -64,6 +64,11 @@ export const Events = {
   CAMERA_ZOOM: "camera:zoom",
   CAMERA_ROTATE: "camera:rotate",
 
+  /** Two-finger pinch began (cancel rotation snap-back, etc.). */
+  PINCH_GESTURE_START: "input:pinch-start",
+  /** Two-finger pinch ended (e.g. snap rotation near 0). */
+  PINCH_GESTURE_END: "input:pinch-end",
+
   // Tool/modifier changes
   TOOL_CHANGE: "tool:change",
   MODIFIERS_CHANGE: "modifiers:change",

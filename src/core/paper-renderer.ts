@@ -39,6 +39,7 @@ export class PaperRenderer {
   private camera: Camera | null = null;
   private aliasFixEnabled = true;
   private readonly aliasFixStrokeWidth = 0.5;
+  private nextSelectionMarkerId = 1;
 
   // Spatial index of current layer pieces (Path + CompoundPath)
   private spatialIndex = new RBush<SpatialIndexEntry>();
@@ -56,6 +57,26 @@ export class PaperRenderer {
 
   updateConfig(config: CanvasConfig) {
     this.config = config;
+  }
+
+  private createSelectionMarker(): string {
+    return `selection-${this.nextSelectionMarkerId++}`;
+  }
+
+  private getSelectionMarker(item: paper.PathItem): string | null {
+    const marker = (item.data as { selectionMarker?: unknown } | undefined)
+      ?.selectionMarker;
+    return typeof marker === "string" ? marker : null;
+  }
+
+  private setSelectionMarker(item: paper.PathItem, marker: string): void {
+    item.data = item.data ?? {};
+    (item.data as Record<string, unknown>).selectionMarker = marker;
+  }
+
+  private clearSelectionMarker(item: paper.PathItem): void {
+    if (!item.data) return;
+    delete (item.data as Record<string, unknown>).selectionMarker;
   }
 
   private makeIndexEntry(item: paper.PathItem): SpatialIndexEntry {
@@ -139,6 +160,7 @@ export class PaperRenderer {
       if (item.children.length <= 1) continue;
 
       const fillColor = item.fillColor;
+      const selectionMarker = this.getSelectionMarker(item);
       const subs = item.children as paper.Path[];
       const n = subs.length;
 
@@ -225,6 +247,7 @@ export class PaperRenderer {
           const src = subs[root];
           const newPath = new paper.Path(subData[root]);
           this.applyPathStyle(newPath, fillColor);
+          if (selectionMarker) this.setSelectionMarker(newPath, selectionMarker);
           newPath.closed = src.closed;
           this.normalizeBooleanResult(newPath);
           layer.insertChild(insertAt++, newPath);
@@ -232,6 +255,9 @@ export class PaperRenderer {
         } else {
           const newCompound = new paper.CompoundPath([]);
           this.applyPathStyle(newCompound, fillColor);
+          if (selectionMarker) {
+            this.setSelectionMarker(newCompound, selectionMarker);
+          }
           // Even-odd is robust to winding issues and preserves holes / islands correctly
           newCompound.fillRule = "evenodd";
           for (const ci of indices) {
@@ -707,7 +733,7 @@ export class PaperRenderer {
   }
 
   /**
-   * Check if two paths collide
+   * Check if two shapes genuinely overlap.
    */
   private pathsCollide(a: paper.PathItem, b: paper.PathItem): boolean {
     if (!a.bounds.intersects(b.bounds)) return false;
@@ -715,10 +741,22 @@ export class PaperRenderer {
       if (a.intersects(b)) return true;
     } catch {}
     try {
-      if (a.contains(b.bounds.center) || b.contains(a.bounds.center)) return true;
+      if (a.contains(b.bounds.center)) return true;
     } catch {}
-    // Conservative fallback: bounds intersect means "maybe collide"
-    return true;
+    try {
+      if (b.contains(a.bounds.center)) return true;
+    } catch {}
+    for (const p of this.samplePointsItem(a)) {
+      try {
+        if (b.contains(p)) return true;
+      } catch {}
+    }
+    for (const p of this.samplePointsItem(b)) {
+      try {
+        if (a.contains(p)) return true;
+      } catch {}
+    }
+    return false;
   }
 
   /**
@@ -741,6 +779,74 @@ export class PaperRenderer {
       }
     } catch {}
     return result;
+  }
+
+  private flattenForBoolean(item: paper.PathItem, flatness: number): paper.PathItem {
+    const clone = item.clone({ insert: false }) as paper.PathItem;
+    if (clone instanceof paper.Path) {
+      clone.flatten(flatness);
+    } else if (clone instanceof paper.CompoundPath) {
+      for (const child of clone.children) {
+        if (child instanceof paper.Path) child.flatten(flatness);
+      }
+    }
+    return clone;
+  }
+
+  /**
+   * Intersect two shapes using the simplest reliable path:
+   * direct boolean first, then retry on flattened clones.
+   */
+  private safeIntersect(
+    target: paper.PathItem,
+    clip: paper.PathItem,
+  ): paper.PathItem | null {
+    if (!this.pathsCollide(target, clip)) return null;
+
+    try {
+      const result = this.normalizeBooleanResult(
+        target.intersect(clip) as paper.PathItem | null,
+      );
+      if (result && !result.isEmpty()) {
+        this.forceEvenOdd(result);
+        return result;
+      }
+      result?.remove();
+    } catch {}
+
+    for (const flatness of [1, 0.5]) {
+      const flatTarget = this.flattenForBoolean(target, flatness);
+      const flatClip = this.flattenForBoolean(clip, flatness);
+      try {
+        const result = this.normalizeBooleanResult(
+          flatTarget.intersect(flatClip) as paper.PathItem | null,
+        );
+        if (result && !result.isEmpty()) {
+          this.forceEvenOdd(result);
+          flatTarget.remove();
+          flatClip.remove();
+          return result;
+        }
+        result?.remove();
+      } catch {}
+      flatTarget.remove();
+      flatClip.remove();
+    }
+
+    if (this.likelyFullyCovered(clip, target)) {
+      const clone = target.clone({ insert: false }) as paper.PathItem;
+      this.normalizeBooleanResult(clone);
+      this.forceEvenOdd(clone);
+      return clone;
+    }
+    if (this.likelyFullyCovered(target, clip)) {
+      const clone = clip.clone({ insert: false }) as paper.PathItem;
+      this.normalizeBooleanResult(clone);
+      this.forceEvenOdd(clone);
+      return clone;
+    }
+
+    return null;
   }
 
   /**
@@ -941,21 +1047,13 @@ export class PaperRenderer {
       const clip = clipPathItem.clone({ insert: false });
       try {
         for (const p of newPaths) {
-          try {
-            const ix = p.intersect(clip);
-            const cleaned = this.normalizeBooleanResult(ix);
-            p.remove();
-            if (cleaned && !cleaned.isEmpty()) {
-              this.forceEvenOdd(cleaned);
-              this.applyPathStyle(cleaned, paperColor);
-              layer.addChild(cleaned);
-              this.indexInsert(cleaned);
-              clippedPaths.push(cleaned);
-            } else {
-              cleaned?.remove();
-            }
-          } catch {
-            p.remove();
+          const clipped = this.safeIntersect(p, clip);
+          p.remove();
+          if (clipped) {
+            this.applyPathStyle(clipped, paperColor);
+            layer.addChild(clipped);
+            this.indexInsert(clipped);
+            clippedPaths.push(clipped);
           }
         }
       } finally {
@@ -973,11 +1071,6 @@ export class PaperRenderer {
           if (!remaining || !remaining.parent || !ex.parent) break;
           if (!this.pathsCollide(remaining, ex)) continue;
           try {
-            const ix = this.normalizeBooleanResult(remaining.intersect(ex));
-            const hasOverlap = !!(ix && !ix.isEmpty());
-            ix?.remove();
-            if (!hasOverlap) continue;
-
             const sub = remaining.subtract(ex) as paper.PathItem | null;
             const diff: paper.PathItem | null = this.normalizeBooleanResult(sub);
             remaining.remove();
@@ -1366,6 +1459,7 @@ export class PaperRenderer {
     if (selectionPath.isEmpty()) return [];
 
     this.ensureSpatialIndex();
+    const selectionMarker = this.createSelectionMarker();
 
     const layer = paper.project.activeLayer;
     const layerOrder = new Map<number, number>();
@@ -1384,19 +1478,15 @@ export class PaperRenderer {
     const changedItems: paper.PathItem[] = [];
 
     for (const candidate of candidates) {
+      if (!this.pathsCollide(candidate, selectionPath)) continue;
       const fill = candidate.fillColor;
 
       try {
-        const selectedPiece = this.normalizeBooleanResult(
-          candidate.intersect(selectionPath) as paper.PathItem | null,
-        );
-        if (!selectedPiece || selectedPiece.isEmpty()) {
-          selectedPiece?.remove();
-          continue;
-        }
+        const selectedPiece = this.safeIntersect(candidate, selectionPath);
+        if (!selectedPiece) continue;
 
-        this.forceEvenOdd(selectedPiece);
         this.applyPathStyle(selectedPiece, fill);
+        this.setSelectionMarker(selectedPiece, selectionMarker);
 
         const remainder = this.normalizeBooleanResult(
           candidate.subtract(selectionPath) as paper.PathItem | null,
@@ -1425,13 +1515,18 @@ export class PaperRenderer {
 
     if (changedItems.length || selectedItems.length) {
       this.normalizeAfterLocalEdit([...changedItems, ...selectedItems]);
-      for (const item of selectedItems) {
+      const survivingSelectedItems = this.getAllPaths().filter(
+        (item) => this.getSelectionMarker(item) === selectionMarker,
+      );
+      for (const item of survivingSelectedItems) {
         if (item.parent) item.bringToFront();
+        this.clearSelectionMarker(item);
       }
       paper.view.update();
+      return survivingSelectedItems;
     }
 
-    return selectedItems.filter((item) => item.parent != null);
+    return [];
   }
 
   scalePath(

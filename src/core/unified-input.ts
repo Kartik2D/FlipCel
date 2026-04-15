@@ -20,6 +20,7 @@
 import type { Point, CanvasConfig, Modifiers, PointerInfo } from "./types";
 import { type ToolId, getToolByHotkey } from "./tools";
 import { bus, Events } from "./event-bus";
+import { getDrawingCrosshairCursorCss } from "./custom-cursor";
 
 export type GestureState = "idle" | "drawing" | "panning" | "pinching";
 
@@ -66,7 +67,6 @@ export class UnifiedInputManager {
   private lastPinchDistance: number | null = null;
   private lastPinchCenter: { x: number; y: number } | null = null;
   private lastPinchAngle: number | null = null;
-
   // Pan state (for middle-click or pan tool)
   private panStartX = 0;
   private panStartY = 0;
@@ -78,6 +78,7 @@ export class UnifiedInputManager {
     this.setupKeyboardListeners();
     this.setupWheelListener();
     this.setupTouchPreventDefaults();
+    this.updateCanvasCursor();
   }
 
   // ============================================================
@@ -89,10 +90,8 @@ export class UnifiedInputManager {
   }
 
   setTool(tool: ToolId) {
-    if (this.currentTool !== tool) {
-      this.currentTool = tool;
-      this.updateCanvasCursor();
-    }
+    this.currentTool = tool;
+    this.updateCanvasCursor();
   }
 
   getTool(): ToolId {
@@ -453,6 +452,7 @@ export class UnifiedInputManager {
     this.gestureState = "idle";
     this.primaryPointerId = null;
     this.lastPressure = null;
+    this.updateCanvasCursor();
   }
 
   // ============================================================
@@ -469,6 +469,7 @@ export class UnifiedInputManager {
     this.panStartX = screenCoords.x;
     this.panStartY = screenCoords.y;
     this.canvas.setPointerCapture(pointerId);
+    this.updateCanvasCursor();
   }
 
   private updatePanning(screenCoords: { x: number; y: number }) {
@@ -489,6 +490,7 @@ export class UnifiedInputManager {
     this.safeReleasePointerCapture(pointerId);
     this.gestureState = "idle";
     this.primaryPointerId = null;
+    this.updateCanvasCursor();
   }
 
   // ============================================================
@@ -505,6 +507,7 @@ export class UnifiedInputManager {
 
     this.gestureState = "pinching";
     this.primaryPointerId = null;
+    bus.emit(Events.PINCH_GESTURE_START, undefined);
 
     // Initialize pinch state from current touches
     const touches = Array.from(this.activePointers.values());
@@ -569,10 +572,13 @@ export class UnifiedInputManager {
   }
 
   private endPinchGesture() {
+    bus.emit(Events.PINCH_GESTURE_END, undefined);
+
     this.gestureState = "idle";
     this.lastPinchDistance = null;
     this.lastPinchCenter = null;
     this.lastPinchAngle = null;
+    this.updateCanvasCursor();
   }
 
   // ============================================================
@@ -660,6 +666,7 @@ export class UnifiedInputManager {
     this.gestureState = "idle";
     this.primaryPointerId = null;
     this.lastPressure = null;
+    this.updateCanvasCursor();
   }
 
   private safeReleasePointerCapture(pointerId: number) {
@@ -767,6 +774,10 @@ export class UnifiedInputManager {
   // ============================================================
 
   private updateCanvasCursor() {
+    if (this.gestureState === "panning") {
+      this.canvas.style.cursor = "grabbing";
+      return;
+    }
     switch (this.currentTool) {
       case "pan":
         this.canvas.style.cursor = "grab";
@@ -777,8 +788,12 @@ export class UnifiedInputManager {
       case "eyedropper":
         this.canvas.style.cursor = "copy";
         break;
+      case "brush":
+      case "lasso":
+        this.canvas.style.cursor = getDrawingCrosshairCursorCss();
+        break;
       default:
-        this.canvas.style.cursor = "crosshair";
+        this.canvas.style.cursor = getDrawingCrosshairCursorCss();
     }
   }
 
