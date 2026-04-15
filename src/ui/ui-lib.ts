@@ -150,6 +150,7 @@ const sliderColumnStyles = css`
 abstract class BaseColorPicker extends LitElement {
   @property({ type: String }) color = "#037ffc";
   @property({ type: String }) prevColor = "#000000";
+  protected _isDragging = false;
 
   protected abstract syncFromColor(hex: string): void;
   protected abstract getColorFromState(): string;
@@ -181,11 +182,25 @@ abstract class BaseColorPicker extends LitElement {
     onUpdate: (e: PointerEvent) => void,
     onEnd?: () => void
   ) {
+    this._isDragging = true;
     onUpdate(e);
-    const move = (ev: PointerEvent) => onUpdate(ev);
+    let rafId = 0;
+    let lastEv: PointerEvent | null = null;
+    const move = (ev: PointerEvent) => {
+      lastEv = ev;
+      if (!rafId) {
+        rafId = requestAnimationFrame(() => {
+          rafId = 0;
+          if (lastEv) onUpdate(lastEv);
+        });
+      }
+    };
     const up = () => {
+      if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      this._isDragging = false;
+      if (lastEv) onUpdate(lastEv);
       this.emitChangeEnd();
       onEnd?.();
     };
@@ -881,11 +896,11 @@ export class GenericColorPicker extends BaseColorPicker {
       this.lastPlaneBitmapSize = { w: 0, h: 0 };
       this.setupPlaneResizeObserver();
     }
-    if (changed.has("color")) {
+    if (changed.has("color") && !this._isDragging) {
       this.syncFromColor(this.color);
     }
     if (changed.has("prefs")) this.syncFromColor(this.color);
-    if (changed.has("color") || changed.has("prefs")) {
+    if ((changed.has("color") && !this._isDragging) || changed.has("prefs")) {
       this.syncPlaneCanvasSize();
     }
   }
