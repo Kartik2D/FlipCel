@@ -1059,7 +1059,7 @@ export class GenericColorPicker extends BaseColorPicker {
         [planeX]: mx.min + u * (mx.max - mx.min),
         [planeY]: my.max - v * (my.max - my.min),
       });
-      this.emitChange(); this.drawPlane();
+      this.emitChange();
     };
     this.startDrag(e, update);
   }
@@ -1079,7 +1079,7 @@ export class GenericColorPicker extends BaseColorPicker {
       const vx = mx.cyclic ? angleDeg : mx.min + (angleDeg / 360) * (mx.max - mx.min);
       const vy = my.min + t * (my.max - my.min);
       this.values = clampChannelValues(adapter, { ...this.values, [planeX]: vx, [planeY]: vy });
-      this.emitChange(); this.drawPlane();
+      this.emitChange();
     };
     this.startDrag(e, update);
   }

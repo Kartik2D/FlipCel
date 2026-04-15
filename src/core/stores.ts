@@ -225,15 +225,15 @@ function getSystemThemeMode(): ThemeMode {
   if (
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches
+    window.matchMedia("(prefers-color-scheme: light)").matches
   ) {
-    return "dark";
+    return "light";
   }
-  return "light";
+  return "dark";
 }
 
 function getStoredThemeMode(): ThemeMode {
-  if (typeof window === "undefined") return "light";
+  if (typeof window === "undefined") return "dark";
 
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
