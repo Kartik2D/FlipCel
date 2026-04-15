@@ -26,6 +26,7 @@ import {
   toolSettingsStore,
   viewOverlayStore,
   themeModeStore,
+  followSystemThemeStore,
   StoreController,
   type ColorPanelPrefs,
   type PickerGeometry,
@@ -966,32 +967,37 @@ export class GenericColorPicker extends BaseColorPicker {
     const h = this.canvas.height;
     const imgData = this.ctx.createImageData(w, h);
     const data = imgData.data;
-    const base = { ...this.values };
+    const pix = { ...this.values };
+    const toRgb = adapter.toRgb.bind(adapter);
+    const mxRange = mx.max - mx.min;
+    const myRange = my.max - my.min;
 
     if (geometry === "square") {
       for (let y = 0; y < h; y++) {
-        const vy = my.max - (y / h) * (my.max - my.min);
+        pix[planeY] = my.max - (y / h) * myRange;
         for (let x = 0; x < w; x++) {
-          const vx = mx.min + (x / w) * (mx.max - mx.min);
-          const [r, g, b] = adapter.toRgb(clampChannelValues(adapter, { ...base, [planeX]: vx, [planeY]: vy }));
+          pix[planeX] = mx.min + (x / w) * mxRange;
+          const [r, g, b] = toRgb(pix);
           const i = (y * w + x) * 4;
           data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
         }
       }
     } else {
       const cx = w / 2, cy = h / 2, radius = Math.min(cx, cy);
+      const invRadius = radius > 0 ? 1 / radius : 0;
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const dx = x - cx, dy = y - cy;
-          const dist = Math.sqrt(dx * dx + dy * dy);
+          const distSq = dx * dx + dy * dy;
+          if (distSq > radius * radius) continue;
           const i = (y * w + x) * 4;
-          if (dist > radius) continue;
+          const dist = Math.sqrt(distSq);
           let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
           if (angleDeg < 0) angleDeg += 360;
-          const t = radius > 0 ? dist / radius : 0;
-          const vx = mx.cyclic ? angleDeg : mx.min + (angleDeg / 360) * (mx.max - mx.min);
-          const vy = my.min + t * (my.max - my.min);
-          const [r, g, b] = adapter.toRgb(clampChannelValues(adapter, { ...base, [planeX]: vx, [planeY]: vy }));
+          const t = dist * invRadius;
+          pix[planeX] = mx.cyclic ? angleDeg : mx.min + (angleDeg / 360) * mxRange;
+          pix[planeY] = my.min + t * myRange;
+          const [r, g, b] = toRgb(pix);
           data[i] = r; data[i+1] = g; data[i+2] = b; data[i+3] = 255;
         }
       }
@@ -2449,6 +2455,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
   private history = new StoreController(this, historyStateStore);
   private viewOverlay = new StoreController(this, viewOverlayStore);
   private themeMode = new StoreController(this, themeModeStore);
+  private followSystem = new StoreController(this, followSystemThemeStore);
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -2501,9 +2508,21 @@ export class InkwellUniversalPanel extends FloatingPanel {
               <input
                 type="checkbox"
                 .checked=${this.themeMode.value === "dark"}
+                .disabled=${this.followSystem.value}
                 @change=${(e: Event) => {
                   const checked = (e.target as HTMLInputElement).checked;
                   this.themeMode.set(checked ? "dark" : "light");
+                }}
+              />
+            </div>
+
+            <div class="toggle">
+              <span>Follow system theme</span>
+              <input
+                type="checkbox"
+                .checked=${this.followSystem.value}
+                @change=${(e: Event) => {
+                  this.followSystem.set((e.target as HTMLInputElement).checked);
                 }}
               />
             </div>
