@@ -18,7 +18,84 @@
             content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
         />
         <title>Inkwell - Pixel to Vector Drawing</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap"
+            rel="stylesheet"
+        />
+        <script>
+            (() => {
+                try {
+                    const stored = localStorage.getItem("inkwell-theme-mode");
+                    const mode =
+                        stored === "light" || stored === "dark"
+                            ? stored
+                            : window.matchMedia("(prefers-color-scheme: dark)").matches
+                              ? "dark"
+                              : "light";
+                    document.documentElement.dataset.theme = mode;
+                    document.documentElement.style.colorScheme = mode;
+                } catch {
+                    document.documentElement.dataset.theme = "light";
+                    document.documentElement.style.colorScheme = "light";
+                }
+            })();
+        </script>
         <style>
+            :root {
+                --inkwell-font-display: "Sora", system-ui, sans-serif;
+                --inkwell-font-body: "Instrument Sans", system-ui, sans-serif;
+
+                --inkwell-app-bg: #f3efe8;
+                --inkwell-canvas-bg: #fffdf9;
+                --inkwell-panel-surface: rgba(255, 253, 249, 0.94);
+                --inkwell-panel-depth: #d8d0c7;
+                --inkwell-panel-border: #5f584f;
+                --inkwell-text-primary: #29241e;
+                --inkwell-text-secondary: #5f584f;
+                --inkwell-text-muted: #80786d;
+                --inkwell-accent: #4d73d7;
+                --inkwell-accent-hover: #3e61bf;
+                --inkwell-accent-muted: rgba(77, 115, 215, 0.28);
+                --inkwell-track-bg: #d6cec4;
+                --inkwell-toggle-track: #d8d0c7;
+                --inkwell-toggle-border: #b3a99d;
+                --inkwell-toggle-thumb: #fffdf9;
+                --inkwell-danger: #af5b5b;
+                --inkwell-danger-hover: #924747;
+                --inkwell-danger-contrast: #ffffff;
+                --inkwell-shadow-panel: 0 16px 34px rgba(34, 24, 10, 0.18);
+                --inkwell-shadow-soft: 0 6px 18px rgba(34, 24, 10, 0.14);
+                --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.22);
+                --inkwell-panel-active-danger: rgba(255, 122, 122, 0.58);
+            }
+
+            html[data-theme="dark"] {
+                --inkwell-app-bg: #111317;
+                --inkwell-canvas-bg: #1a1e25;
+                --inkwell-panel-surface: rgba(33, 38, 47, 0.96);
+                --inkwell-panel-depth: #434c5c;
+                --inkwell-panel-border: #798498;
+                --inkwell-text-primary: #f5f7fb;
+                --inkwell-text-secondary: #d2d8e4;
+                --inkwell-text-muted: #9ea8bc;
+                --inkwell-accent: #7c9eff;
+                --inkwell-accent-hover: #97b2ff;
+                --inkwell-accent-muted: rgba(124, 158, 255, 0.35);
+                --inkwell-track-bg: #4b5567;
+                --inkwell-toggle-track: #3f4859;
+                --inkwell-toggle-border: #697386;
+                --inkwell-toggle-thumb: #f7f9ff;
+                --inkwell-danger: #c66d6d;
+                --inkwell-danger-hover: #df8080;
+                --inkwell-danger-contrast: #ffffff;
+                --inkwell-shadow-panel: 0 18px 42px rgba(0, 0, 0, 0.38);
+                --inkwell-shadow-soft: 0 10px 24px rgba(0, 0, 0, 0.32);
+                --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.15);
+                --inkwell-panel-active-danger: rgba(255, 124, 124, 0.42);
+            }
+
             *,
             *::before,
             *::after {
@@ -31,11 +108,16 @@
                 width: 100%;
                 height: 100%;
                 overflow: hidden;
-                background: #f5f5f5;
+                background:
+                    radial-gradient(circle at top, rgba(255, 255, 255, 0.1), transparent 36%),
+                    var(--inkwell-app-bg);
                 touch-action: none;
                 -webkit-touch-callout: none;
                 -webkit-user-select: none;
                 user-select: none;
+                font-family: var(--inkwell-font-body);
+                color: var(--inkwell-text-primary);
+                transition: background-color 180ms ease, color 180ms ease;
             }
 
             #canvas-container {
@@ -56,7 +138,8 @@
 
             #paper-canvas {
                 z-index: 1;
-                background: white;
+                background: var(--inkwell-canvas-bg);
+                transition: background-color 180ms ease;
             }
 
             #pixel-canvas {
@@ -73,7 +156,7 @@
             }
 
         </style>
-      <script type="module" crossorigin src="/inkwell/assets/index-CGPNCX51.js"></script>
+      <script type="module" crossorigin src="/inkwell/assets/index-ByFTBnEr.js"></script>
     </head>
     <body>
         <div id="canvas-container">
