@@ -200,8 +200,8 @@ class App {
 
     this.universalPanel.addEventListener("flatten", () => this.onFlatten());
     this.universalPanel.addEventListener("clear", () => this.onClear());
-    this.topBarPanel.addEventListener("undo", () => this.onUndo());
-    this.topBarPanel.addEventListener("redo", () => this.onRedo());
+    this.universalPanel.addEventListener("undo", () => this.onUndo());
+    this.universalPanel.addEventListener("redo", () => this.onRedo());
     this.topBarPanel.addEventListener("zoom-reset", () => this.onDockZoomReset());
     this.topBarPanel.addEventListener("rotate-reset", () => this.onDockRotationReset());
     this.universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {

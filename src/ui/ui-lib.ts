@@ -57,15 +57,6 @@ const PHOSPHOR_ICONS: Record<string, string> = {
     '<path d="M200,56V208a8,8,0,0,1-8,8H64a8,8,0,0,1-8-8V56Z" opacity="0.2"/><path d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z"/>',
   x:
     '<path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/>',
-  "arrow-counter-clockwise":
-    '<path d="M216,128a88,88,0,1,1-88-88A88,88,0,0,1,216,128Z" opacity="0.2"/><path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/>',
-  "arrow-clockwise":
-    '<path d="M216,128a88,88,0,1,1-88-88A88,88,0,0,1,216,128Z" opacity="0.2"/><path d="M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z"/>',
-  /** Regular weight (single path) — dock undo/redo */
-  "arrow-counter-clockwise-regular":
-    '<path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/>',
-  "arrow-clockwise-regular":
-    '<path d="M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z"/>',
 };
 
 const PANEL_ICON_MAP: Record<string, string> = {
@@ -254,9 +245,13 @@ export class Block extends LitElement {
 
   private _snapBackClearTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  /** Element running snap-back (inner `.block`); Safari ignores shadow @keyframes on the host. */
+  private _snapBackEl: HTMLElement | null = null;
+
   private _onSnapBackAnimationEnd = (e: AnimationEvent) => {
+    const el = this._snapBackEl;
+    if (!el || e.target !== el) return;
     if (e.animationName !== INKWELL_PANEL_SNAP_BACK_KEYFRAMES) return;
-    this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
     this._finishSnapBackAnimationCleanup();
   };
 
@@ -516,11 +511,18 @@ export class Block extends LitElement {
 
   private _finishSnapBackAnimationCleanup() {
     this._clearSnapBackTimeout();
-    this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
-    this.style.removeProperty("animation");
-    this.style.removeProperty("transform");
-    this.style.removeProperty("--inkwell-snap-x");
-    this.style.removeProperty("--inkwell-snap-y");
+    const el = this._snapBackEl;
+    if (el) {
+      el.removeEventListener("animationend", this._onSnapBackAnimationEnd);
+    } else {
+      this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
+    }
+    const target = el ?? this;
+    target.style.removeProperty("animation");
+    target.style.removeProperty("transform");
+    target.style.removeProperty("--inkwell-snap-x");
+    target.style.removeProperty("--inkwell-snap-y");
+    this._snapBackEl = null;
   }
 
   private _restorePreDragLayout(
@@ -573,14 +575,17 @@ export class Block extends LitElement {
     const sx = rectBefore.left - rectAfter.left;
     const sy = rectBefore.top - rectAfter.top;
 
-    this.style.setProperty("--inkwell-snap-x", `${sx}px`);
-    this.style.setProperty("--inkwell-snap-y", `${sy}px`);
+    const snapEl =
+      (this.renderRoot.querySelector(".block") as HTMLElement | null) ?? this;
+    this._snapBackEl = snapEl;
+    snapEl.style.setProperty("--inkwell-snap-x", `${sx}px`);
+    snapEl.style.setProperty("--inkwell-snap-y", `${sy}px`);
 
-    this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
-    this.addEventListener("animationend", this._onSnapBackAnimationEnd);
+    snapEl.removeEventListener("animationend", this._onSnapBackAnimationEnd);
+    snapEl.addEventListener("animationend", this._onSnapBackAnimationEnd);
 
     requestAnimationFrame(() => {
-      this.style.animation = INKWELL_PANEL_SNAP_ANIMATION;
+      snapEl.style.animation = INKWELL_PANEL_SNAP_ANIMATION;
     });
 
     this._clearSnapBackTimeout();
@@ -2385,7 +2390,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
     ...p,
   }));
   private dockColor = new StoreController(this, colorStore);
-  private history = new StoreController(this, historyStateStore);
   private tool = new StoreController(this, toolStore);
   private settings = new StoreController(this, toolSettingsStore);
   private modifiers = new StoreController(this, modifiersStore);
@@ -2451,10 +2455,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
     .dock-cell:first-child {
       padding-left: 0;
-    }
-
-    .dock-cell-actions .dock-actions {
-      width: 100%;
     }
 
     .dock-chip {
@@ -2524,29 +2524,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
     button.dock-chip-reset:focus-visible {
       outline: 2px solid var(--inkwell-panel-border, #555555);
       outline-offset: 1px;
-    }
-
-    .dock-actions {
-      display: flex;
-      flex-direction: row;
-      align-items: stretch;
-      gap: 4px;
-      flex: 1 1 auto;
-      min-width: 0;
-      box-sizing: border-box;
-    }
-
-    .dock-actions blocky-button {
-      flex: 1 1 0;
-      min-width: 0;
-    }
-
-    .dock-actions .dock-history-icon {
-      color: #fff;
-    }
-
-    .dock-actions .dock-history-icon svg {
-      display: block;
     }
 
     .dock-split {
@@ -2786,34 +2763,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
                     </div>
                   `
                 : ""}
-              <div class="dock-cell dock-cell-actions">
-                <div class="dock-actions">
-                  <blocky-button
-                    flat
-                    stretch
-                    title="Undo"
-                    aria-label="Undo"
-                    data-interactive
-                    ?disabled=${!this.history.value.canUndo}
-                    @click=${() => this.emitDock("undo")}
-                    ><span class="btn-content dock-history-icon"
-                      >${phosphorIcon("arrow-counter-clockwise-regular", 14)}</span
-                    ></blocky-button
-                  >
-                  <blocky-button
-                    flat
-                    stretch
-                    title="Redo"
-                    aria-label="Redo"
-                    data-interactive
-                    ?disabled=${!this.history.value.canRedo}
-                    @click=${() => this.emitDock("redo")}
-                    ><span class="btn-content dock-history-icon"
-                      >${phosphorIcon("arrow-clockwise-regular", 14)}</span
-                    ></blocky-button
-                  >
-                </div>
-              </div>
             </div>
             <div class="dock-split" aria-hidden="true"></div>
             <div class="bar">
@@ -2849,6 +2798,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
   @property({ type: Boolean }) brushSizeIndicatorEnabled = true;
   @property({ type: Boolean }) aliasFixEnabled = true;
 
+  private history = new StoreController(this, historyStateStore);
   private viewOverlay = new StoreController(this, viewOverlayStore);
   private themeMode = new StoreController(this, themeModeStore);
 
@@ -2956,6 +2906,21 @@ export class InkwellUniversalPanel extends FloatingPanel {
                   this.viewOverlay.update((v) => ({ ...v, gridLiveWhileZooming: checked }));
                 }}
               />
+            </div>
+
+            <div class="row">
+              <blocky-button
+                flat
+                ?disabled=${!this.history.value.canUndo}
+                @click=${() => this.emit("undo")}
+                >Undo</blocky-button
+              >
+              <blocky-button
+                flat
+                ?disabled=${!this.history.value.canRedo}
+                @click=${() => this.emit("redo")}
+                >Redo</blocky-button
+              >
             </div>
 
             <div class="row">
