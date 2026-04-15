@@ -2126,16 +2126,18 @@ export class InkwellToolsPanel extends FloatingPanel {
             ${this.renderDragHandlePill()}
             ${this.renderPanelTitle("Tools")}
             <div class="grid">
-              ${tools.map(
-                (t) => html`
+              ${tools
+                .filter((t) => t.id !== "pan")
+                .map(
+                  (t) => html`
                   <blocky-button
                     flat
                     ?active=${this.tool.value === t.id}
                     @click=${() => this.setTool(t.id as ToolId)}
                     >${t.name}</blocky-button
                   >
-                `
-              )}
+                `,
+                )}
             </div>
             <section>
               ${this.renderPanelTitle("Tool Settings")}
@@ -2356,10 +2358,45 @@ interface PanelVisibility {
 
 type ToggleablePanel = FloatingPanel & HTMLElement;
 
+function parseHexRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  let s = m[1];
+  if (s.length === 3) {
+    s = [...s].map((c) => c + c).join("");
+  }
+  const n = parseInt(s, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+/** WCAG relative luminance for sRGB hex (0 = black, 1 = white). */
+function hexRelativeLuminance(hex: string): number | null {
+  const rgb = parseHexRgb(hex);
+  if (!rgb) return null;
+  const lin = (u: number) => {
+    u /= 255;
+    return u <= 0.03928 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4;
+  };
+  const R = lin(rgb.r);
+  const G = lin(rgb.g);
+  const B = lin(rgb.b);
+  return 0.2126 * R + 0.7152 * G + 0.0722 * B;
+}
+
+/** 3D depth strip: mix toward black on light colors, toward white on dark colors. */
+function dockColorDepthStripColor(faceCss: string): string {
+  const lum = hexRelativeLuminance(faceCss);
+  const darkInkMaxLuminance = 0.1;
+  if (lum !== null && lum < darkInkMaxLuminance) {
+    return `color-mix(in srgb, ${faceCss} 76%, #ffffff)`;
+  }
+  return `color-mix(in srgb, ${faceCss} 76%, #000000)`;
+}
+
 const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
   { id: "universal-panel", label: "Settings", visible: false },
-  { id: "tools-panel", label: "Brush", visible: false },
   { id: "layers-panel", label: "Layers", visible: false },
+  { id: "tools-panel", label: "Brush", visible: false },
   { id: "color-panel", label: "Color", visible: false },
 ];
 
@@ -2391,11 +2428,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
       --panel-left: 50%;
       --panel-width: min(300px, calc(100vw - 16px));
       --panel-min-width: 0;
-      --dock-divider-color: color-mix(
-        in srgb,
-        var(--inkwell-panel-border, #555555) 22%,
-        transparent
-      );
       transform: translateX(-50%);
       z-index: 1200;
       max-width: calc(100vw - 16px);
@@ -2431,11 +2463,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
       justify-content: center;
       padding: 0 3px;
       box-sizing: border-box;
-      border-right: 1px solid var(--dock-divider-color);
     }
 
     .dock-cell:last-child {
-      border-right: none;
       padding-right: 0;
     }
 
@@ -2512,13 +2542,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
       outline-offset: 1px;
     }
 
-    .dock-split {
-      width: 100%;
-      max-width: 100%;
-      height: 1px;
-      background: var(--dock-divider-color);
-    }
-
     .bar {
       display: flex;
       flex-direction: row;
@@ -2572,10 +2595,10 @@ export class InkwellTopBarPanel extends FloatingPanel {
     this.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true }));
   }
 
-  /** 3D chrome for dock color toggle: face = ink, depth strip = slightly darker ink. */
+  /** 3D chrome for dock color toggle: face = ink, depth strip = slightly offset for contrast. */
   private dockColorBlockChromeStyle(): string {
     const c = this.dockColor.value;
-    return `--block-face-bg: ${c}; --block-depth-color: color-mix(in srgb, ${c} 76%, #000000);`;
+    return `--block-face-bg: ${c}; --block-depth-color: ${dockColorDepthStripColor(c)};`;
   }
 
   /** Matches App.getEffectiveMode for brush / lasso. */
@@ -2750,7 +2773,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
                   `
                 : ""}
             </div>
-            <div class="dock-split" aria-hidden="true"></div>
             <div class="bar">
               ${this.panelVisibility.map(
                 (panel) => html`
