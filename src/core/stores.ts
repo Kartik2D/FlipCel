@@ -213,6 +213,50 @@ export const viewOverlayStore = new Store<ViewOverlaySettings>({
   gridLiveWhileZooming: false,
 });
 
+// ============================================================
+// Theme
+// ============================================================
+
+export type ThemeMode = "light" | "dark";
+
+const THEME_STORAGE_KEY = "inkwell-theme-mode";
+
+function getSystemThemeMode(): ThemeMode {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+  ) {
+    return "dark";
+  }
+  return "light";
+}
+
+function getStoredThemeMode(): ThemeMode {
+  if (typeof window === "undefined") return "light";
+
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "light" || stored === "dark") return stored;
+  } catch {
+    // Ignore storage access failures and fall back to system preference.
+  }
+
+  return getSystemThemeMode();
+}
+
+export const themeModeStore = new Store<ThemeMode>(getStoredThemeMode());
+
+themeModeStore.subscribe((mode) => {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, mode);
+  } catch {
+    // Ignore storage access failures so theme switching still works in memory.
+  }
+});
+
 /**
  * Canvas configuration (dimensions)
  * Initialized with placeholder values - App.ts sets real values on init

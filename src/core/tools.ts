@@ -19,6 +19,8 @@ export interface ToggleSetting {
   /** At least two options (e.g. add / subtract / inside) */
   options: readonly string[];
   default: string;
+  /** Overrides auto-generated label from the settings key */
+  label?: string;
 }
 
 export interface RangeSetting {
@@ -27,11 +29,13 @@ export interface RangeSetting {
   max: number;
   step: number;
   default: number;
+  label?: string;
 }
 
 export interface ColorSetting {
   type: "color";
   default: string;
+  label?: string;
 }
 
 export type SettingDef = ToggleSetting | RangeSetting | ColorSetting;
@@ -80,6 +84,7 @@ export interface ToolDefinition<T extends SettingsSchema = SettingsSchema> {
 const brushSettings = {
   mode: {
     type: "toggle",
+    label: "Painting mode",
     options: ["add", "subtract", "inside"] as const,
     default: "add",
   },
@@ -157,6 +162,7 @@ export const brush: ToolDefinition<typeof brushSettings> = {
 const lassoSettings = {
   mode: {
     type: "toggle",
+    label: "Painting mode",
     options: ["add", "subtract", "inside"] as const,
     default: "add",
   },

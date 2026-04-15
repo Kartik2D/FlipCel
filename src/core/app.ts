@@ -44,6 +44,8 @@ import {
   toolSettingsStore,
   layerStore,
   viewOverlayStore,
+  themeModeStore,
+  type ThemeMode,
 } from "./stores";
 
 class App {
@@ -313,6 +315,17 @@ class App {
     toolStore.subscribe((tool) => {
       this.inputManager.setTool(tool);
     });
+
+    themeModeStore.subscribeImmediate((mode) => {
+      this.applyTheme(mode);
+    });
+  }
+
+  private applyTheme(mode: ThemeMode) {
+    document.documentElement.dataset.theme = mode;
+    document.documentElement.style.colorScheme = mode;
+    this.uiOverlay.redraw();
+    this.selectionController.drawUI();
   }
 
   // ============================================================
