@@ -28,7 +28,7 @@ import { SelectionController } from "./selection-controller";
 import { HistoryManager } from "./history";
 import { bus, Events } from "./event-bus";
 import type { CanvasConfig, Point, Modifiers } from "./types";
-import type { ToolId, AllToolSettings } from "./tools";
+import { cycleDockMode, type ToolId, type AllToolSettings } from "./tools";
 import type {
   InkwellToolsPanel,
   InkwellUniversalPanel,
@@ -40,6 +40,7 @@ import {
   colorStore,
   prevColorStore,
   toolStore,
+  prevToolStore,
   configStore,
   modifiersStore,
   toolSettingsStore,
@@ -179,8 +180,7 @@ class App {
     // Tools panel events - sync to inputManager and handle selection placement
     this.toolsPanel.addEventListener("tool-change", (e: Event) => {
       const tool = (e as CustomEvent<ToolId>).detail;
-      this.onToolChange(tool);
-      this.inputManager.setTool(tool);
+      this.switchTool(tool);
     });
 
     // Tools panel also emits settings events (merged panel)
@@ -204,6 +204,8 @@ class App {
     this.universalPanel.addEventListener("redo", () => this.onRedo());
     this.topBarPanel.addEventListener("zoom-reset", () => this.onDockZoomReset());
     this.topBarPanel.addEventListener("rotate-reset", () => this.onDockRotationReset());
+    this.topBarPanel.addEventListener("tool-cycle", () => this.onToolCycle());
+    this.topBarPanel.addEventListener("mode-cycle", () => this.onModeCycle());
     this.universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {
       this.onAliasFixToggle((e as CustomEvent<boolean>).detail);
     });
@@ -623,10 +625,27 @@ class App {
   // ============================================================
 
   private onToolChange(tool: ToolId) {
-    // Leaving the select tool should always finalize or cancel its transient UI state.
     if (tool !== "select") {
       this.selectionController.clearSelection();
     }
+  }
+
+  private onToolCycle() {
+    const current = toolStore.get();
+    const prev = prevToolStore.get();
+    this.switchTool(prev !== current ? prev : "brush");
+  }
+
+  private onModeCycle() {
+    const tid = toolStore.get();
+    const current = toolSettingsStore.get()[tid] as Record<string, unknown>;
+    const result = cycleDockMode(tid, current);
+    if (!result) return;
+    toolSettingsStore.update((s) => ({
+      ...s,
+      [tid]: { ...s[tid], [result.key]: result.value },
+    }));
+    this.onToolSettingsChange(toolSettingsStore.get());
   }
 
   private onToolSettingsChange(settings: AllToolSettings) {
@@ -710,9 +729,15 @@ class App {
   // ============================================================
 
   private onInputToolChange(tool: ToolId) {
-    // Keep hotkey-driven tool changes consistent with panel-driven changes.
-    this.onToolChange(tool);
-    toolStore.set(tool);
+    this.switchTool(tool);
+  }
+
+  private switchTool(next: ToolId) {
+    const prev = toolStore.get();
+    if (prev !== next) prevToolStore.set(prev);
+    this.onToolChange(next);
+    toolStore.set(next);
+    this.inputManager.setTool(next);
   }
 
   private onModifiersChange(modifiers: Modifiers) {

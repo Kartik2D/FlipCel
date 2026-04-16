@@ -190,6 +190,11 @@ export const colorPanelPrefsStore = new Store<ColorPanelPrefs>(
 export const toolStore = new Store<ToolId>("brush");
 
 /**
+ * Previous tool (before last switch). Used for tool-swap shortcut.
+ */
+export const prevToolStore = new Store<ToolId>("select");
+
+/**
  * View overlay preferences (grid, etc.) — Settings panel + UI canvas
  */
 export interface ViewOverlaySettings {

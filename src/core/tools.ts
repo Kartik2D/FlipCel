@@ -71,6 +71,8 @@ export interface ToolDefinition<T extends SettingsSchema = SettingsSchema> {
   name: string;
   hotkey: string;
   settings: T;
+  /** Settings key (must be a toggle) surfaced in the dock "mode" widget. */
+  dockModeSetting?: string;
 
   onStart(tc: ToolContext, point: Point, settings: InferSettings<T>): void;
   onMove(tc: ToolContext, point: Point, settings: InferSettings<T>): void;
@@ -97,6 +99,7 @@ export const brush: ToolDefinition<typeof brushSettings> = {
   name: "Brush",
   hotkey: "b",
   settings: brushSettings,
+  dockModeSetting: "mode",
 
   onStart(tc, point, settings) {
     tc.stroke.length = 0;
@@ -195,6 +198,7 @@ export const lasso: ToolDefinition<typeof lassoSettings> = {
   name: "Lasso",
   hotkey: "l",
   settings: lassoSettings,
+  dockModeSetting: "mode",
 
   onStart(tc, point) {
     tc.stroke.length = 0;
@@ -236,6 +240,7 @@ export const select: ToolDefinition<typeof selectSettings> = {
   name: "Select",
   hotkey: "v",
   settings: selectSettings,
+  dockModeSetting: "shape",
 
   onStart() {},
   onMove() {},
@@ -303,6 +308,25 @@ export function getTool(id: ToolId): ToolDefinition {
  */
 export function getToolByHotkey(key: string): ToolDefinition | undefined {
   return tools.find((t) => t.hotkey === key.toLowerCase());
+}
+
+/**
+ * Cycle a tool's dock-mode toggle to its next option.
+ * Returns the updated settings key/value, or null if the tool has no dock mode.
+ */
+export function cycleDockMode(
+  toolId: ToolId,
+  currentSettings: Record<string, unknown>,
+): { key: string; value: string } | null {
+  const tool = getTool(toolId);
+  const key = tool.dockModeSetting;
+  if (!key) return null;
+  const def = tool.settings[key];
+  if (!def || def.type !== "toggle") return null;
+  const options = def.options as readonly string[];
+  const current = String(currentSettings[key] ?? def.default);
+  const next = options[(options.indexOf(current) + 1) % options.length];
+  return { key, value: next };
 }
 
 /**

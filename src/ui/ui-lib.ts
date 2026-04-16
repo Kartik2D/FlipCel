@@ -27,6 +27,7 @@ import {
   colorPanelPrefsStore,
   normalizeColorPanelPrefs,
   toolStore,
+  prevToolStore,
   modifiersStore,
   toolSettingsStore,
   viewOverlayStore,
@@ -265,8 +266,8 @@ export class Block extends LitElement {
       --block-radius: 10px;
       --block-face-bg: var(--inkwell-panel-surface, #ffffff);
       --block-face-padding: 10px;
-      --block-font: var(--inkwell-font-body, system-ui, sans-serif);
-      --block-font-size: 13px;
+      --block-font: var(--inkwell-font, system-ui, sans-serif);
+      --block-font-size: 12px;
       --block-font-weight: 500;
       --block-font-color: var(--inkwell-text-secondary, #6b6b6b);
 
@@ -277,7 +278,6 @@ export class Block extends LitElement {
       font-size: var(--block-font-size);
       font-weight: var(--block-font-weight);
       line-height: 1.35;
-      letter-spacing: 0.01em;
       color: var(--block-font-color);
     }
 
@@ -809,7 +809,6 @@ export class BlockyButton extends Block {
     ${Block.styles}
 
     :host {
-      --block-font: var(--inkwell-font-display, system-ui, sans-serif);
       --block-font-weight: 600;
       --block-font-color: var(--inkwell-text-primary, #29241e);
       display: inline-block;
@@ -820,7 +819,6 @@ export class BlockyButton extends Block {
       touch-action: manipulation;
       user-select: none;
       -webkit-user-select: none;
-      letter-spacing: 0.02em;
     }
 
     :host([disabled]) {
@@ -923,8 +921,6 @@ export class BlockyButton extends Block {
       max-width: 100%;
       box-sizing: border-box;
       padding: 6px 5px;
-      font-size: 11px;
-      line-height: 1.25;
     }
 
     :host([flat]:hover) .face {
@@ -1389,12 +1385,8 @@ export class FloatingPanel extends Block {
     }
 
     h3 {
-      margin: 0 0 8px;
-      font-family: var(--inkwell-font-display, system-ui, sans-serif);
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.14em;
+      margin: 0;
+      font-weight: 600;
       color: var(--inkwell-text-muted, #666);
     }
 
@@ -1533,8 +1525,6 @@ export class FloatingPanel extends Block {
     }
 
     .panel-form label > span:first-child {
-      font-size: 12px;
-      line-height: 1.3;
       color: var(--inkwell-text-muted, #666);
     }
 
@@ -1544,8 +1534,6 @@ export class FloatingPanel extends Block {
       min-width: 0;
       box-sizing: border-box;
       font: inherit;
-      font-size: 12px;
-      font-weight: 500;
       padding: 6px 1.75rem 6px 10px;
       margin: 0;
       border: none;
@@ -1703,8 +1691,6 @@ export class FloatingPanel extends Block {
       color: var(--inkwell-text-muted, #666);
       font-style: italic;
       margin: 0;
-      font-size: 12px;
-      line-height: 1.4;
     }
   `;
 
@@ -1802,7 +1788,6 @@ export class InkwellColorPanel extends FloatingPanel {
       display: flex;
       flex-direction: column;
       gap: 8px;
-      font-size: 12px;
       min-width: 0;
       width: 100%;
     }
@@ -2414,6 +2399,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
   }));
   private dockColor = new StoreController(this, colorStore);
   private tool = new StoreController(this, toolStore);
+  private prevTool = new StoreController(this, prevToolStore);
   private settings = new StoreController(this, toolSettingsStore);
   private modifiers = new StoreController(this, modifiersStore);
   private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
@@ -2478,8 +2464,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
       align-items: center;
       justify-content: center;
       gap: 3px;
-      font-size: 11px;
-      line-height: 1.2;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
       color: var(--inkwell-text-primary, #222);
@@ -2498,16 +2482,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
       text-align: center;
     }
 
-    .dock-chip-stacked .dock-prefix {
-      line-height: 1.1;
-    }
-
     .dock-value {
-      font-size: 11px;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      color: var(--inkwell-text-primary, #222);
-      line-height: 1.15;
       max-width: 100%;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -2515,10 +2490,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
     .dock-prefix {
       flex-shrink: 0;
-      font-size: 10px;
       font-weight: 500;
       color: var(--inkwell-text-muted, #666);
-      text-transform: lowercase;
     }
 
     button.dock-chip-reset {
@@ -2601,17 +2574,60 @@ export class InkwellTopBarPanel extends FloatingPanel {
     return `--block-face-bg: ${c}; --block-depth-color: ${dockColorDepthStripColor(c)};`;
   }
 
-  /** Matches App.getEffectiveMode for brush / lasso. */
-  private effectivePaintModeLabel(): string | null {
-    const tid = this.tool.value;
-    if (tid !== "brush" && tid !== "lasso") return null;
-    const ts = this.settings.value[tid] as { mode?: string };
-    const baseMode = (ts.mode ?? "add") as "add" | "subtract" | "inside";
-    const modeCycle: Array<"add" | "subtract" | "inside"> = ["add", "subtract", "inside"];
-    const effective = this.modifiers.value.shift
-      ? modeCycle[(modeCycle.indexOf(baseMode) + 1) % 3]
-      : baseMode;
+  /** Current mode label derived from the active tool's dockModeSetting. */
+  private effectivePaintModeLabel(): string {
+    const tool = getTool(this.tool.value);
+    const key = tool.dockModeSetting;
+    if (!key) return "—";
+    const def = tool.settings[key];
+    if (!def || def.type !== "toggle") return "—";
+    const options = def.options as readonly string[];
+    const raw = String(
+      (this.settings.value[tool.id] as Record<string, unknown>)?.[key] ?? def.default,
+    );
+    // Shift-modifier preview: show the next option in the cycle
+    const effective =
+      this.modifiers.value.shift
+        ? options[(options.indexOf(raw) + 1) % options.length]
+        : raw;
     return effective.charAt(0).toUpperCase() + effective.slice(1);
+  }
+
+  // ----------------------------------------------------------------
+  // Dock widget helper – renders a compact status cell.
+  //   clickable:  wraps in a <button> (with hover highlight)
+  //   otherwise:  wraps in a <span> (display-only)
+  // ----------------------------------------------------------------
+  private renderDockWidget(opts: {
+    label: string;
+    value: string;
+    title: string;
+    onClick?: () => void;
+  }) {
+    const inner = html`
+      <span class="dock-prefix">${opts.label}</span>
+      <span class="dock-value">${opts.value}</span>
+    `;
+    return html`
+      <div class="dock-cell">
+        ${opts.onClick
+          ? html`
+              <button
+                type="button"
+                class="dock-chip dock-chip-stacked dock-chip-reset"
+                title=${opts.title}
+                aria-label=${opts.title}
+                data-interactive
+                @click=${opts.onClick}
+              >${inner}</button>
+            `
+          : html`
+              <span class="dock-chip dock-chip-stacked" title=${opts.title}
+                >${inner}</span
+              >
+            `}
+      </div>
+    `;
   }
 
   private initializeAllPanelsHidden() {
@@ -2724,54 +2740,43 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   render() {
     const paintMode = this.effectivePaintModeLabel();
+    const prevToolName = getTool(this.prevTool.value).name;
+    const currentToolName = getTool(this.tool.value).name;
+    const toolTip =
+      this.prevTool.value !== this.tool.value
+        ? `Click to switch back to ${prevToolName}`
+        : `Current tool: ${currentToolName}`;
+
     return html`
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
           <div class="unified-dock">
             <div class="dock-status">
-              <div class="dock-cell">
-                <button
-                  type="button"
-                  class="dock-chip dock-chip-stacked dock-chip-reset"
-                  title="Reset zoom to 100%"
-                  aria-label="Reset zoom to 100%"
-                  data-interactive
-                  @click=${() => this.emitDock("zoom-reset")}
-                >
-                  <span class="dock-prefix">zoom:</span>
-                  <span class="dock-value">${this.zoomLevel}%</span>
-                </button>
-              </div>
-              <div class="dock-cell">
-                <button
-                  type="button"
-                  class="dock-chip dock-chip-stacked dock-chip-reset"
-                  title="Reset rotation to 0°"
-                  aria-label="Reset rotation to 0 degrees"
-                  data-interactive
-                  @click=${() => this.emitDock("rotate-reset")}
-                >
-                  <span class="dock-prefix">rot:</span>
-                  <span class="dock-value">${Math.round(this.rotation)}°</span>
-                </button>
-              </div>
-              <div class="dock-cell">
-                <span class="dock-chip dock-chip-stacked" title="Current tool">
-                  <span class="dock-prefix">tool</span>
-                  <span class="dock-value">${getTool(this.tool.value).name}</span>
-                </span>
-              </div>
-              ${paintMode !== null
-                ? html`
-                    <div class="dock-cell">
-                      <span class="dock-chip dock-chip-stacked" title="Paint mode">
-                        <span class="dock-prefix">mode</span>
-                        <span class="dock-value">${paintMode}</span>
-                      </span>
-                    </div>
-                  `
-                : ""}
+              ${this.renderDockWidget({
+                label: "zoom",
+                value: `${this.zoomLevel}%`,
+                title: "Reset zoom to 100%",
+                onClick: () => this.emitDock("zoom-reset"),
+              })}
+              ${this.renderDockWidget({
+                label: "rotation",
+                value: `${Math.round(this.rotation)}°`,
+                title: "Reset rotation to 0°",
+                onClick: () => this.emitDock("rotate-reset"),
+              })}
+              ${this.renderDockWidget({
+                label: "tool",
+                value: currentToolName,
+                title: toolTip,
+                onClick: () => this.emitDock("tool-cycle"),
+              })}
+              ${this.renderDockWidget({
+                label: "mode",
+                value: paintMode,
+                title: "Click to cycle paint mode",
+                onClick: () => this.emitDock("mode-cycle"),
+              })}
             </div>
             <div class="bar">
               ${this.panelVisibility.map(
@@ -3063,10 +3068,7 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     .layer-name {
       flex: 1;
-      font-family: var(--inkwell-font-display, system-ui, sans-serif);
-      font-size: 11px;
       font-weight: 600;
-      letter-spacing: 0.02em;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -3082,11 +3084,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-width: 0;
       margin: 0;
       box-sizing: border-box;
-      font-family: var(--inkwell-font-display, system-ui, sans-serif);
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      line-height: 1.25;
+      font: inherit;
       color: inherit;
       background: color-mix(in srgb, var(--inkwell-panel-surface) 55%, transparent);
       border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
