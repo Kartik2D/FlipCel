@@ -58,6 +58,10 @@ const PHOSPHOR_ICONS: Record<string, string> = {
     '<path d="M200,56V208a8,8,0,0,1-8,8H64a8,8,0,0,1-8-8V56Z" opacity="0.2"/><path d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z"/>',
   x:
     '<path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/>',
+  copy:
+    '<path d="M184,64V168a8,8,0,0,1-8,8H48a8,8,0,0,1-8-8V64a8,8,0,0,1,8-8H176A8,8,0,0,1,184,64Z" opacity="0.2"/><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/>',
+  cursor:
+    '<path d="M82.44,37.84l120,168a4,4,0,0,1-3.26,6.32l-55.27-4.53-25.64,51a4,4,0,0,1-7.12.06L38.72,93.37A4,4,0,0,1,43.33,87.6L82.44,37.84Z" opacity="0.2"/><path d="M80.37,29.7a12,12,0,0,0-18.77,5.78L5.07,194.77a12,12,0,0,0,11.32,16.08,12.14,12.14,0,0,0,4.37-.82L80,184.42l25.57,50.66A12,12,0,0,0,116.28,242h.31a12,12,0,0,0,10.59-7.18l25.67-51,55.26,4.52a12,12,0,0,0,10-18.94ZM126.52,222.7l-26.64-52.78a8,8,0,0,0-6.18-4.35,8.17,8.17,0,0,0-1.14-.08,8,8,0,0,0-2.94.56L29.2,192.16l56.53-158.85L200,185.18l-53.62-4.39a8,8,0,0,0-7,3.36,8.08,8.08,0,0,0-1.09,2.09Z"/>',
 };
 
 const PANEL_ICON_MAP: Record<string, string> = {
@@ -1486,11 +1490,6 @@ export class FloatingPanel extends Block {
       min-width: 0;
     }
 
-    /* Last solo cell in a 2-col grid (e.g. 5th tool) spans full width */
-    .grid > *:nth-child(odd):nth-last-child(1) {
-      grid-column: 1 / -1;
-    }
-
     .grid > blocky-button {
       min-width: 0;
       width: 100%;
@@ -1890,7 +1889,10 @@ export class InkwellColorPanel extends FloatingPanel {
                   colorStore.set(this.color);
                   this.emit("color-change", this.color);
                 }}
-                @change=${() => { prevColorStore.set(this.color); }}
+                @change=${() => {
+                  prevColorStore.set(this.color);
+                  this.emit("color-change-end", this.color);
+                }}
               ></generic-color-picker>
             </div>
             <div class="color-config" data-interactive>
@@ -2082,6 +2084,9 @@ export class InkwellToolsPanel extends FloatingPanel {
       }
       if (currentToolId === "eyedropper") {
         return html`<p class="hint">Click artwork to pick its color.</p>`;
+      }
+      if (currentToolId === "direct-select") {
+        return html`<p class="hint">Drag a rectangle or lasso to select vertices on the active layer.</p>`;
       }
       return html`${this.renderPixelRes()}`;
     }
@@ -2298,6 +2303,9 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
       if (currentToolId === "eyedropper") {
         return html`<p class="hint">Click artwork to pick its color.</p>`;
       }
+      if (currentToolId === "direct-select") {
+        return html`<p class="hint">Drag a rectangle or lasso to select vertices on the active layer.</p>`;
+      }
       return html``;
     }
 
@@ -2475,23 +2483,30 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
     .dock-chip-stacked {
       flex-direction: column;
-      align-items: center;
+      align-items: stretch;
       justify-content: center;
       gap: 1px;
-      white-space: normal;
       text-align: center;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
     }
 
     .dock-value {
       max-width: 100%;
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .dock-prefix {
       flex-shrink: 0;
       font-weight: 500;
       color: var(--inkwell-text-muted, #666);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     button.dock-chip-reset {
@@ -2504,6 +2519,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
       border-radius: 4px;
       color: inherit;
       max-width: 100%;
+      min-width: 0;
     }
 
     button.dock-chip-reset:hover {
@@ -3418,6 +3434,369 @@ export class InkwellLayersPanel extends FloatingPanel {
 }
 
 // ============================================================
+// Modal Window
+// ============================================================
+
+@customElement("inkwell-modal")
+export class InkwellModal extends LitElement {
+  @property({ type: Boolean, reflect: true }) open = false;
+  @property({ type: Number }) x = 0;
+  @property({ type: Number }) y = 0;
+
+  private _outsideClickHandler = (e: PointerEvent) => {
+    if (!this.open) return;
+    const path = e.composedPath();
+    if (!path.includes(this)) {
+      this.close();
+    }
+  };
+
+  static styles = css`
+    :host {
+      position: fixed;
+      z-index: 2000;
+      display: none;
+      font-family: var(--inkwell-font, system-ui, sans-serif);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--inkwell-text-secondary, #6b6b6b);
+    }
+
+    :host([open]) {
+      display: block;
+    }
+
+    .modal-shell {
+      background: var(--inkwell-panel-depth, #bcbcbc);
+      border: 2px solid var(--inkwell-panel-border, #555555);
+      border-radius: 10px;
+      padding: 0 0 7px 0;
+      box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
+      position: relative;
+      overflow: hidden;
+      min-width: 140px;
+      animation: modal-pop-in 180ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
+    }
+
+    @keyframes modal-pop-in {
+      0% { transform: scale(0.85); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    .modal-face {
+      background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
+      border-radius: 8px;
+      padding: 8px;
+    }
+
+    .modal-close {
+      position: absolute;
+      top: -11px;
+      right: -11px;
+      width: 26px;
+      height: 26px;
+      box-sizing: border-box;
+      border: 2px solid var(--inkwell-panel-border, #555555);
+      border-radius: 50%;
+      background: var(--inkwell-panel-depth, #bcbcbc);
+      color: var(--inkwell-panel-border, #555555);
+      line-height: 0;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      z-index: 2001;
+      box-shadow: none;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      animation: floating-close-bounce-in 380ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
+    }
+
+    @keyframes floating-close-bounce-in {
+      0% { transform: scale(0.55); }
+      55% { transform: scale(1.1); }
+      78% { transform: scale(0.96); }
+      100% { transform: scale(1); }
+    }
+
+    .modal-close svg { display: block; }
+    .modal-close:hover { filter: brightness(0.96); }
+    .modal-close:focus { outline: none; }
+  `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener("pointerdown", this._outsideClickHandler, true);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener("pointerdown", this._outsideClickHandler, true);
+  }
+
+  show(x: number, y: number) {
+    this.x = x;
+    this.y = y;
+    this.clampPosition();
+    this.open = true;
+  }
+
+  close() {
+    this.open = false;
+    this.dispatchEvent(new CustomEvent("modal-close", { bubbles: true, composed: true }));
+  }
+
+  private clampPosition() {
+    const margin = 8;
+    const rect = this.getBoundingClientRect();
+    const w = rect.width || 160;
+    const h = rect.height || 120;
+    if (this.x + w > window.innerWidth - margin) this.x = window.innerWidth - margin - w;
+    if (this.y + h > window.innerHeight - margin) this.y = window.innerHeight - margin - h;
+    if (this.x < margin) this.x = margin;
+    if (this.y < margin) this.y = margin;
+  }
+
+  updated(changed: PropertyValues) {
+    super.updated(changed);
+    if (changed.has("x") || changed.has("y") || changed.has("open")) {
+      this.style.left = `${this.x}px`;
+      this.style.top = `${this.y}px`;
+      if (this.open) {
+        requestAnimationFrame(() => this.clampPosition());
+      }
+    }
+  }
+
+  render() {
+    return html`
+      <button type="button" class="modal-close" @click=${() => this.close()}>
+        ${phosphorIcon("x", 12)}
+      </button>
+      <div class="modal-shell">
+        <div class="modal-face">
+          <slot></slot>
+        </div>
+      </div>
+    `;
+  }
+}
+
+// ============================================================
+// Functions Panel (appears on selection)
+// ============================================================
+
+export interface FunctionDef {
+  id: string;
+  name: string;
+  icon: string;
+  danger?: boolean;
+}
+
+const SELECTION_FUNCTIONS: FunctionDef[] = [
+  { id: "duplicate", name: "Duplicate", icon: "copy" },
+  { id: "flatten", name: "Flatten", icon: "stack" },
+  { id: "delete", name: "Delete", icon: "trash", danger: true },
+];
+
+@customElement("inkwell-functions-panel")
+export class InkwellFunctionsPanel extends LitElement {
+  @property({ type: Boolean, reflect: true }) open = false;
+  @property({ type: Number }) x = 0;
+  @property({ type: Number }) y = 0;
+
+  private _outsideClickHandler = (e: PointerEvent) => {
+    if (!this.open) return;
+    const path = e.composedPath();
+    if (!path.includes(this)) {
+      this.close();
+    }
+  };
+
+  static styles = css`
+    :host {
+      position: fixed;
+      z-index: 2000;
+      display: none;
+      font-family: var(--inkwell-font, system-ui, sans-serif);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--inkwell-text-secondary, #6b6b6b);
+    }
+
+    :host([open]) {
+      display: block;
+    }
+
+    .fn-shell {
+      background: var(--inkwell-panel-depth, #bcbcbc);
+      border: 2px solid var(--inkwell-panel-border, #555555);
+      border-radius: 10px;
+      padding: 0 0 7px 0;
+      box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
+      position: relative;
+      overflow: hidden;
+      min-width: 120px;
+      animation: fn-pop-in 180ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
+    }
+
+    @keyframes fn-pop-in {
+      0% { transform: scale(0.85); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    .fn-face {
+      background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
+      border-radius: 8px;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .fn-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--inkwell-text-muted, #80786d);
+      padding: 2px 6px 4px;
+      margin: 0;
+    }
+
+    .fn-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--inkwell-text-primary, #29241e);
+      font: inherit;
+      cursor: pointer;
+      transition: background 80ms ease;
+      white-space: nowrap;
+    }
+
+    .fn-btn:hover {
+      background: var(--inkwell-accent-muted, rgba(77, 115, 215, 0.28));
+    }
+
+    .fn-btn.danger { color: var(--inkwell-danger, #af5b5b); }
+    .fn-btn.danger:hover { background: var(--inkwell-panel-active-danger, rgba(255, 122, 122, 0.58)); }
+
+    .fn-close {
+      position: absolute;
+      top: -11px;
+      right: -11px;
+      width: 26px;
+      height: 26px;
+      box-sizing: border-box;
+      border: 2px solid var(--inkwell-panel-border, #555555);
+      border-radius: 50%;
+      background: var(--inkwell-panel-depth, #bcbcbc);
+      color: var(--inkwell-panel-border, #555555);
+      line-height: 0;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      z-index: 2001;
+      box-shadow: none;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      animation: fn-close-bounce 380ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
+    }
+
+    @keyframes fn-close-bounce {
+      0% { transform: scale(0.55); }
+      55% { transform: scale(1.1); }
+      78% { transform: scale(0.96); }
+      100% { transform: scale(1); }
+    }
+
+    .fn-close svg { display: block; }
+    .fn-close:hover { filter: brightness(0.96); }
+    .fn-close:focus { outline: none; }
+  `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener("pointerdown", this._outsideClickHandler, true);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    window.removeEventListener("pointerdown", this._outsideClickHandler, true);
+  }
+
+  show(x: number, y: number) {
+    this.x = x;
+    this.y = y;
+    this.open = true;
+    requestAnimationFrame(() => this.clampPosition());
+  }
+
+  close() {
+    this.open = false;
+    this.dispatchEvent(new CustomEvent("functions-close", { bubbles: true, composed: true }));
+  }
+
+  private clampPosition() {
+    const margin = 8;
+    const rect = this.getBoundingClientRect();
+    const w = rect.width || 160;
+    const h = rect.height || 120;
+    if (this.x + w > window.innerWidth - margin) this.x = window.innerWidth - margin - w;
+    if (this.y + h > window.innerHeight - margin) this.y = window.innerHeight - margin - h;
+    if (this.x < margin) this.x = margin;
+    if (this.y < margin) this.y = margin;
+    this.style.left = `${this.x}px`;
+    this.style.top = `${this.y}px`;
+  }
+
+  updated(changed: PropertyValues) {
+    super.updated(changed);
+    if (changed.has("x") || changed.has("y") || changed.has("open")) {
+      this.style.left = `${this.x}px`;
+      this.style.top = `${this.y}px`;
+    }
+  }
+
+  private onFunction(id: string) {
+    this.dispatchEvent(new CustomEvent("function-invoke", {
+      detail: { id },
+      bubbles: true,
+      composed: true,
+    }));
+    this.close();
+  }
+
+  render() {
+    return html`
+      <button type="button" class="fn-close" @click=${() => this.close()}>
+        ${phosphorIcon("x", 12)}
+      </button>
+      <div class="fn-shell">
+        <div class="fn-face">
+          <div class="fn-title">Functions</div>
+          ${SELECTION_FUNCTIONS.map(
+            (fn) => html`
+              <button
+                type="button"
+                class="fn-btn ${fn.danger ? "danger" : ""}"
+                @click=${() => this.onFunction(fn.id)}
+              >
+                ${phosphorIcon(fn.icon, 16)}
+                ${fn.name}
+              </button>
+            `
+          )}
+        </div>
+      </div>
+    `;
+  }
+}
+
+// ============================================================
 // Type Declarations
 // ============================================================
 
@@ -3431,5 +3810,7 @@ declare global {
     "inkwell-tool-settings-panel": InkwellToolSettingsPanel;
     "inkwell-universal-panel": InkwellUniversalPanel;
     "inkwell-layers-panel": InkwellLayersPanel;
+    "inkwell-modal": InkwellModal;
+    "inkwell-functions-panel": InkwellFunctionsPanel;
   }
 }

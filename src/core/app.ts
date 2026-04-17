@@ -23,17 +23,21 @@ import { PixelCanvas } from "./pixel-canvas";
 import { Tracer } from "./tracer";
 import { PaperRenderer } from "./paper-renderer";
 import { UIOverlay } from "./ui-overlay";
+import { ChromeOverlay } from "./chrome-overlay";
 import { Camera } from "./camera";
 import { SelectionController } from "./selection-controller";
+import { DirectSelectController } from "./direct-select-controller";
 import { HistoryManager } from "./history";
 import { bus, Events } from "./event-bus";
 import type { CanvasConfig, Point, Modifiers } from "./types";
 import { cycleDockMode, type ToolId, type AllToolSettings } from "./tools";
 import type {
+  InkwellColorPanel,
   InkwellToolsPanel,
   InkwellUniversalPanel,
   InkwellTopBarPanel,
   InkwellLayersPanel,
+  InkwellFunctionsPanel,
 } from "../ui/ui-lib";
 import "../ui/ui-lib"; // Register Lit components
 import {
@@ -45,6 +49,7 @@ import {
   modifiersStore,
   toolSettingsStore,
   layerStore,
+  selectionStore,
   viewOverlayStore,
   themeModeStore,
   type ThemeMode,
@@ -66,20 +71,26 @@ class App {
   private paperCanvas: HTMLCanvasElement;
   private pixelCanvas: HTMLCanvasElement;
   private uiCanvas: HTMLCanvasElement;
+  private chromeCanvas: HTMLCanvasElement;
   private pixelCanvas2D: CanvasRenderingContext2D;
   private uiCanvas2D: CanvasRenderingContext2D;
+  private chromeCanvas2D: CanvasRenderingContext2D;
   private config: CanvasConfig;
   private inputManager: UnifiedInputManager;
   private pixelCanvasManager: PixelCanvas;
   private tracer: Tracer;
   private paperRenderer: PaperRenderer;
   private uiOverlay: UIOverlay;
+  private chromeOverlay: ChromeOverlay;
   private selectionController: SelectionController;
+  private directSelectController: DirectSelectController;
   private historyManager: HistoryManager;
+  private colorPanel: InkwellColorPanel;
   private toolsPanel: InkwellToolsPanel;
   private universalPanel: InkwellUniversalPanel;
   private topBarPanel: InkwellTopBarPanel;
   private layersPanel: InkwellLayersPanel;
+  private functionsPanel: InkwellFunctionsPanel;
   private camera: Camera;
   private isInitialized = false;
   private pixelResScale = 2;
@@ -96,21 +107,29 @@ class App {
     this.paperCanvas = document.getElementById("paper-canvas") as HTMLCanvasElement;
     this.pixelCanvas = document.getElementById("pixel-canvas") as HTMLCanvasElement;
     this.uiCanvas = document.getElementById("ui-canvas") as HTMLCanvasElement;
+    this.chromeCanvas = document.getElementById("chrome-canvas") as HTMLCanvasElement;
 
-    if (!this.paperCanvas || !this.pixelCanvas || !this.uiCanvas) {
+    if (
+      !this.paperCanvas ||
+      !this.pixelCanvas ||
+      !this.uiCanvas ||
+      !this.chromeCanvas
+    ) {
       throw new Error("Canvas elements not found");
     }
 
     // Get 2D contexts
     const pixelCtx = this.pixelCanvas.getContext("2d");
     const uiCtx = this.uiCanvas.getContext("2d");
+    const chromeCtx = this.chromeCanvas.getContext("2d");
 
-    if (!pixelCtx || !uiCtx) {
+    if (!pixelCtx || !uiCtx || !chromeCtx) {
       throw new Error("Could not get 2D contexts");
     }
 
     this.pixelCanvas2D = pixelCtx;
     this.uiCanvas2D = uiCtx;
+    this.chromeCanvas2D = chromeCtx;
 
     // Calculate configuration
     this.config = this.calculateConfig();
@@ -125,25 +144,44 @@ class App {
     this.paperRenderer.setCamera(this.camera);
     this.uiOverlay = new UIOverlay(this.uiCanvas, this.uiCanvas2D, this.config);
     this.uiOverlay.setCamera(this.camera);
+    this.chromeOverlay = new ChromeOverlay(
+      this.chromeCanvas,
+      this.chromeCanvas2D,
+      this.config,
+    );
     this.selectionController = new SelectionController(
       this.paperRenderer,
       this.camera,
-      this.uiOverlay,
-      this.uiCanvas2D,
+      this.chromeOverlay,
+    );
+    this.directSelectController = new DirectSelectController(
+      this.paperRenderer,
+      this.camera,
+      this.chromeOverlay,
     );
     this.historyManager = new HistoryManager();
     this.selectionController.setSnapshotCallback(() => this.historyManager.snapshot());
+    this.directSelectController.setSnapshotCallback(() => this.historyManager.snapshot());
+    this.directSelectController.setReconcileCallback((item) =>
+      this.paperRenderer.reconcileItem(item),
+    );
 
     // Get panel Lit elements
+    this.colorPanel = document.getElementById("color-panel") as InkwellColorPanel;
     this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
     this.topBarPanel = document.getElementById("top-bar-panel") as InkwellTopBarPanel;
     this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
+    this.functionsPanel = document.getElementById("functions-panel") as InkwellFunctionsPanel;
     this.setupPanelEvents();
 
     viewOverlayStore.subscribeImmediate((prefs) => {
       this.uiOverlay.setViewOverlayPrefs(prefs);
-      this.selectionController.drawUI();
+      this.redrawActiveSelectionUI();
+    });
+
+    selectionStore.subscribeImmediate((selection) => {
+      this.onSelectionItemsChange(selection.items);
     });
 
     // Initialize unified input manager
@@ -177,6 +215,13 @@ class App {
   }
 
   private setupPanelEvents() {
+    this.colorPanel.addEventListener("color-change", (e: Event) => {
+      this.onColorPickerChange((e as CustomEvent<string>).detail);
+    });
+    this.colorPanel.addEventListener("color-change-end", (e: Event) => {
+      this.onColorPickerChangeEnd((e as CustomEvent<string>).detail);
+    });
+
     // Tools panel events - sync to inputManager and handle selection placement
     this.toolsPanel.addEventListener("tool-change", (e: Event) => {
       const tool = (e as CustomEvent<ToolId>).detail;
@@ -236,6 +281,15 @@ class App {
       const { id, name } = (e as CustomEvent<{ id: string; name: string }>).detail;
       this.onLayerRename(id, name);
     });
+
+    // Functions panel events
+    this.functionsPanel.addEventListener("function-invoke", (e: Event) => {
+      const { id } = (e as CustomEvent<{ id: string }>).detail;
+      this.onFunctionInvoke(id);
+    });
+    this.functionsPanel.addEventListener("functions-close", () => {
+      // Selection stays active when closing the panel
+    });
   }
 
   private calculateConfig(): CanvasConfig {
@@ -258,11 +312,13 @@ class App {
     this.pixelCanvas.style.height = `${viewportHeight}px`;
     this.uiCanvas.style.width = `${viewportWidth}px`;
     this.uiCanvas.style.height = `${viewportHeight}px`;
+    // Chrome canvas sizing (CSS + internal) is handled by ChromeOverlay.updateConfig.
 
     // Set internal resolution
     this.pixelCanvas.width = this.config.pixelWidth;
     this.pixelCanvas.height = this.config.pixelHeight;
     this.uiOverlay.updateConfig(this.config);
+    this.chromeOverlay.updateConfig(this.config);
 
     // Configure pixel canvas context
     this.pixelCanvas2D.imageSmoothingEnabled = false;
@@ -309,7 +365,7 @@ class App {
       this.camera.updateViewport(this.config.viewportWidth, this.config.viewportHeight);
       this.resizeCanvases();
       configStore.set(this.config); // Propagates to all subscribers
-      this.selectionController.drawUI();
+      this.redrawActiveSelectionUI();
     });
 
     // Take initial history snapshot (empty canvas state)
@@ -329,7 +385,10 @@ class App {
       this.cameraLoopLastMs = now;
       this.camera.stepLerp(dt);
       this.paperRenderer.applyCamera();
-      this.selectionController.drawUI();
+      // Grid/origin/brush ring live on #ui-canvas and move with the camera.
+      this.uiOverlay.redraw();
+      // Selection chrome lives on a separate canvas; repaint independently.
+      this.redrawActiveSelectionUI();
       this.updateDisplays();
       requestAnimationFrame(step);
     };
@@ -374,7 +433,29 @@ class App {
     document.documentElement.dataset.theme = mode;
     document.documentElement.style.colorScheme = mode;
     this.uiOverlay.redraw();
-    this.selectionController.drawUI();
+    this.redrawActiveSelectionUI();
+  }
+
+  /**
+   * Paint the chrome layer for the currently active selection tool.
+   *
+   * Chrome canvas is independent from the ui-overlay layer, so the two layers
+   * never fight over the same pixels. The active controller owns clearing the
+   * chrome canvas at the top of its drawUI() so stale shapes never persist.
+   */
+  private redrawActiveSelectionUI() {
+    const currentTool = toolStore.get();
+    if (currentTool === "direct-select") {
+      // Direct-select always paints: every active-layer anchor is exposed
+      // whenever the tool is active, even with nothing picked yet.
+      this.directSelectController.drawUI();
+      return;
+    }
+    if (currentTool === "select" && this.selectionController.hasTransientUI()) {
+      this.selectionController.drawUI();
+      return;
+    }
+    this.chromeOverlay.clear();
   }
 
   // ============================================================
@@ -479,10 +560,19 @@ class App {
       return;
     }
 
+    if (tool === "direct-select") {
+      this.directSelectController.handleStart(point);
+      return;
+    }
+
     // Safety net: if a selection is still active when another tool starts,
     // place it before the new interaction mutates the layer.
     if (this.selectionController.hasSelection()) {
       this.selectionController.clearSelection();
+    }
+    if (this.directSelectController.hasSelection()) {
+      this.directSelectController.clearSelection();
+      this.functionsPanel.close();
     }
 
     if (tool === "eyedropper") {
@@ -517,6 +607,11 @@ class App {
       return;
     }
 
+    if (tool === "direct-select") {
+      this.directSelectController.handleMove(point);
+      return;
+    }
+
     if (tool === "eyedropper") {
       this.pickColorAt(point);
       return;
@@ -533,6 +628,11 @@ class App {
 
     if (tool === "select") {
       this.selectionController.handleEnd();
+      return;
+    }
+
+    if (tool === "direct-select") {
+      this.directSelectController.handleEnd();
       return;
     }
 
@@ -602,6 +702,11 @@ class App {
       return;
     }
 
+    if (tool === "direct-select") {
+      this.directSelectController.handleCancel();
+      return;
+    }
+
     if (tool === "eyedropper") return;
 
     this.insideClipForStroke = undefined;
@@ -615,8 +720,12 @@ class App {
   private onPointerMove(point: Point) {
     this.uiOverlay.updateCursor(point);
 
-    if (toolStore.get() === "select" && this.selectionController.hasTransientUI()) {
-      this.selectionController.drawUI();
+    const currentTool = toolStore.get();
+    if (currentTool === "select" && this.selectionController.hasTransientUI()) {
+      this.redrawActiveSelectionUI();
+    }
+    if (currentTool === "direct-select") {
+      this.redrawActiveSelectionUI();
     }
   }
 
@@ -627,6 +736,10 @@ class App {
   private onToolChange(tool: ToolId) {
     if (tool !== "select") {
       this.selectionController.clearSelection();
+    }
+    if (tool !== "direct-select") {
+      this.directSelectController.clearSelection();
+      this.functionsPanel.close();
     }
   }
 
@@ -654,6 +767,45 @@ class App {
     if (brushSettings.sizeMax !== undefined) {
       this.uiOverlay.setMaxBrushSize(brushSettings.sizeMax);
     }
+  }
+
+  private onSelectionItemsChange(items: paper.PathItem[]) {
+    if (items.length === 0) {
+      this.functionsPanel.close();
+      return;
+    }
+
+    if (items.length === 1) {
+      const fill = items[0].fillColor;
+      if (fill) {
+        const toHex = (channel: number) =>
+          Math.round(Math.max(0, Math.min(1, channel)) * 255)
+            .toString(16)
+            .padStart(2, "0");
+        const color = `#${toHex(fill.red)}${toHex(fill.green)}${toHex(fill.blue)}`;
+        colorStore.set(color);
+        prevColorStore.set(color);
+      }
+    }
+  }
+
+  private onColorPickerChange(color: string) {
+    const items = selectionStore.get().items.filter((item) => item.parent);
+    if (items.length === 0) return;
+    for (const item of items) {
+      this.paperRenderer.setItemFillColor(item, color);
+    }
+    if (toolStore.get() === "select") this.selectionController.drawUI();
+    if (toolStore.get() === "direct-select") this.directSelectController.drawUI();
+  }
+
+  private onColorPickerChangeEnd(color: string) {
+    const items = selectionStore.get().items.filter((item) => item.parent);
+    if (items.length === 0) return;
+    for (const item of items) {
+      this.paperRenderer.setItemFillColor(item, color);
+    }
+    this.historyManager.snapshot();
   }
 
   private pickColorAt(point: Point) {
@@ -692,7 +844,7 @@ class App {
     this.resizeCanvases();
     this.pixelCanvasManager.clear();
     configStore.set(this.config); // Propagates to all subscribers
-    this.selectionController.drawUI();
+    this.redrawActiveSelectionUI();
   }
 
   private onFlatten() {
@@ -711,12 +863,15 @@ class App {
     }
 
     this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
     this.historyManager.snapshot();
   }
 
   private onClear() {
     this.pixelCanvasManager.clear();
     this.paperRenderer.clearActiveLayer(); // Only clear the active layer
+    this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
     this.historyManager.snapshot(); // Record as a history action (not clear history)
   }
 
@@ -752,12 +907,16 @@ class App {
   private onUndo() {
     if (this.historyManager.undo()) {
       this.selectionController.clearSelection();
+      this.directSelectController.clearSelection();
+      this.functionsPanel.close();
     }
   }
 
   private onRedo() {
     if (this.historyManager.redo()) {
       this.selectionController.clearSelection();
+      this.directSelectController.clearSelection();
+      this.functionsPanel.close();
     }
   }
 
@@ -777,6 +936,7 @@ class App {
     
     // Clear selection when switching layers
     this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
     
     // Snapshot for undo/redo
     this.historyManager.snapshot();
@@ -804,6 +964,7 @@ class App {
     
     // Clear selection when deleting layers
     this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
     
     // Snapshot for undo/redo
     this.historyManager.snapshot();
@@ -812,15 +973,20 @@ class App {
   private onLayerSelect(layerId: string) {
     // Set active layer in Paper.js
     if (!this.paperRenderer.setActiveLayer(layerId)) return;
-    
+
     // Update the store
     layerStore.update((state) => ({
       ...state,
       activeLayerId: layerId,
     }));
-    
-    // Clear selection when switching layers
-    this.selectionController.clearSelection();
+
+    // Layer-panel click always routes through the select tool: switch to it
+    // (if not already active) and select every item on the active layer.
+    if (toolStore.get() !== "select") {
+      this.switchTool("select");
+    }
+    const allItems = this.paperRenderer.getAllPaths();
+    this.selectionController.setSelectedItems(allItems);
   }
 
   private onLayerRename(layerId: string, name: string) {
@@ -853,6 +1019,40 @@ class App {
         l.id === layerId ? { ...l, visible: newVisibility } : l
       ),
     }));
+  }
+
+  private onFunctionInvoke(functionId: string) {
+    const items = selectionStore.get().items.filter((item) => item.parent);
+    if (items.length === 0) return;
+
+    switch (functionId) {
+      case "duplicate": {
+        const worldOffset = 10 / this.camera.zoom;
+        const duplicates = items
+          .map((item) => this.paperRenderer.duplicateItem(item, worldOffset, worldOffset))
+          .filter((item): item is paper.PathItem => Boolean(item));
+        this.selectionController.setSelectedItems(duplicates);
+        this.historyManager.snapshot();
+        break;
+      }
+      case "flatten": {
+        for (const item of items) {
+          this.paperRenderer.flattenItem(item);
+        }
+        this.historyManager.snapshot();
+        break;
+      }
+      case "delete": {
+        for (const item of items) {
+          this.paperRenderer.deleteItem(item);
+        }
+        this.directSelectController.clearSelection();
+        this.selectionController.clearSelection();
+        this.functionsPanel.close();
+        this.historyManager.snapshot();
+        break;
+      }
+    }
   }
 
   private onExportViewSvg() {

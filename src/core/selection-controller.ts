@@ -8,8 +8,8 @@ import type { Point, CanvasConfig } from "./types";
 import type { PaperRenderer } from "./paper-renderer";
 import type { SelectionHandleId, SelectionHandle } from "./paper-renderer";
 import type { Camera } from "./camera";
-import type { UIOverlay } from "./ui-overlay";
-import { configStore, toolSettingsStore } from "./stores";
+import type { ChromeOverlay } from "./chrome-overlay";
+import { configStore, toolSettingsStore, selectionStore } from "./stores";
 
 export class SelectionController {
   private readonly marqueeDragThresholdPx = 6;
@@ -24,8 +24,8 @@ export class SelectionController {
 
   private paperRenderer: PaperRenderer;
   private camera: Camera;
-  private uiOverlay: UIOverlay;
-  private uiCanvas2D: CanvasRenderingContext2D;
+  private chromeOverlay: ChromeOverlay;
+  private chromeCtx: CanvasRenderingContext2D;
 
   // Transform handle state
   private activeHandle: SelectionHandleId | null = null;
@@ -34,13 +34,20 @@ export class SelectionController {
   private marqueeCurrentPoint: Point | null = null;
   private lassoPoints: Point[] = [];
 
-  // Resize state
+  // Resize state (all in screen/viewport space so dragging behaves correctly
+  // when the camera is rotated). The world anchor is derived once when the
+  // transform starts and kept fixed in world so paper.js scaling pivots stay
+  // stable across the drag.
+  private transformAnchorScreen: Point | null = null;
   private transformAnchorWorld: Point | null = null;
-  private originalCornerWorld: Point | null = null;
+  private originalCornerScreen: Point | null = null;
   private lastTotalScaleX = 1;
   private lastTotalScaleY = 1;
 
-  // Rotate state
+  // Rotate state: the pivot lives in WORLD space (fed straight into
+  // paper.js rotate). For a single-item selection we use `item.position` so
+  // the item's own rotation point is honored; for multi-selection we fall
+  // back to the combined bounds center.
   private rotateStartAngle = 0;
   private lastTotalRotation = 0;
   private rotateCenterWorld: Point | null = null;
@@ -51,13 +58,12 @@ export class SelectionController {
   constructor(
     paperRenderer: PaperRenderer,
     camera: Camera,
-    uiOverlay: UIOverlay,
-    uiCanvas2D: CanvasRenderingContext2D,
+    chromeOverlay: ChromeOverlay,
   ) {
     this.paperRenderer = paperRenderer;
     this.camera = camera;
-    this.uiOverlay = uiOverlay;
-    this.uiCanvas2D = uiCanvas2D;
+    this.chromeOverlay = chromeOverlay;
+    this.chromeCtx = chromeOverlay.getContext();
     this.config = configStore.get();
     configStore.subscribe((config) => {
       this.config = config;
@@ -75,6 +81,19 @@ export class SelectionController {
 
   getSelectedItem(): paper.Item | null {
     return this.selectedItems[0] ?? null;
+  }
+
+  getSelectedItems(): paper.PathItem[] {
+    return [...this.selectedItems];
+  }
+
+  setSelectedItems(items: paper.PathItem[]): void {
+    this.selectedItems = [...items];
+    this.selectionNeedsPlacement = false;
+    this.didMove = false;
+    this.handles = [];
+    selectionStore.set({ items: [...this.selectedItems] });
+    this.drawUI();
   }
 
   hasSelection(): boolean {
@@ -99,6 +118,7 @@ export class SelectionController {
     this.selectionNeedsPlacement = false;
     this.didMove = false;
     this.handles = [];
+    selectionStore.set({ items: [] });
   }
 
   clearSelection(): void {
@@ -184,9 +204,11 @@ export class SelectionController {
                 this.marqueeCurrentPoint,
               );
         this.selectionNeedsPlacement = this.selectedItems.length > 0;
+        selectionStore.set({ items: [...this.selectedItems] });
       } else {
         this.selectedItems = [];
         this.selectionNeedsPlacement = false;
+        selectionStore.set({ items: [] });
       }
       this.marqueeStartPoint = null;
       this.marqueeCurrentPoint = null;
@@ -218,23 +240,34 @@ export class SelectionController {
   }
 
   drawUI(): void {
-    this.uiOverlay.redraw();
+    this.chromeOverlay.clear();
 
     if (this.hasSelection()) {
-      const rotatingCursor =
-        this.isDragging && this.activeHandle === "rotate"
-          ? this.lastViewportPoint
-          : null;
+      let rotating:
+        | { cursor: Point; pivot: Point }
+        | null = null;
+      if (
+        this.isDragging &&
+        this.activeHandle === "rotate" &&
+        this.lastViewportPoint &&
+        this.rotateCenterWorld
+      ) {
+        const pivot = this.camera.worldToScreen(
+          this.rotateCenterWorld.x,
+          this.rotateCenterWorld.y,
+        );
+        rotating = { cursor: this.lastViewportPoint, pivot };
+      }
       this.handles = this.paperRenderer.drawSelection(
         this.selectedItems,
-        this.uiCanvas2D,
-        rotatingCursor,
+        this.chromeCtx,
+        rotating,
       );
     } else {
       this.handles = [];
     }
 
-    if (this.hasActiveMarquee() && this.marqueeStartPoint && this.marqueeCurrentPoint) {
+    if (this.marqueeStartPoint && this.marqueeCurrentPoint) {
       if (this.selectionShape === "lasso") {
         this.drawLassoPreview(this.lassoPoints);
       } else {
@@ -268,18 +301,30 @@ export class SelectionController {
     handle: SelectionHandleId,
     viewportPoint: Point,
   ): void {
-    const b = this.paperRenderer.getCombinedBounds(this.selectedItems);
+    const b = this.paperRenderer.getSelectionFrameScreenBounds(
+      this.selectedItems,
+    );
     if (!b) return;
 
     if (handle === "rotate") {
-      const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
-      this.rotateCenterWorld = { x: cx, y: cy };
+      // Rotation pivot: the item's own position for single selections (so the
+      // rotation feedback line springs from the true rotation point, not the
+      // bbox center), else the combined world-bounds center for multi-select.
+      let pivotWorld: Point;
+      if (this.selectedItems.length === 1) {
+        const pos = this.selectedItems[0].position;
+        pivotWorld = { x: pos.x, y: pos.y };
+      } else {
+        const wb = this.paperRenderer.getCombinedBounds(this.selectedItems);
+        if (!wb) return;
+        pivotWorld = { x: wb.x + wb.width / 2, y: wb.y + wb.height / 2 };
+      }
+      this.rotateCenterWorld = pivotWorld;
 
-      const screenCenter = this.camera.worldToScreen(cx, cy);
+      const screenPivot = this.camera.worldToScreen(pivotWorld.x, pivotWorld.y);
       this.rotateStartAngle = Math.atan2(
-        viewportPoint.y - screenCenter.y,
-        viewportPoint.x - screenCenter.x,
+        viewportPoint.y - screenPivot.y,
+        viewportPoint.x - screenPivot.x,
       );
       this.lastTotalRotation = 0;
     } else {
@@ -305,8 +350,14 @@ export class SelectionController {
         w: "e",
       };
 
-      this.originalCornerWorld = corners[handle];
-      this.transformAnchorWorld = corners[opposites[handle]];
+      const anchorScreen = corners[opposites[handle]];
+      const worldAnchor = this.camera.screenToWorld(
+        anchorScreen.x,
+        anchorScreen.y,
+      );
+      this.originalCornerScreen = corners[handle];
+      this.transformAnchorScreen = anchorScreen;
+      this.transformAnchorWorld = { x: worldAnchor.x, y: worldAnchor.y };
       this.lastTotalScaleX = 1;
       this.lastTotalScaleY = 1;
     }
@@ -339,17 +390,18 @@ export class SelectionController {
   private handleResizeMove(viewportPoint: Point): void {
     if (
       !this.hasSelection() ||
+      !this.transformAnchorScreen ||
       !this.transformAnchorWorld ||
-      !this.originalCornerWorld
+      !this.originalCornerScreen
     )
       return;
 
-    const worldPoint = this.camera.screenToWorld(
-      viewportPoint.x,
-      viewportPoint.y,
-    );
-    const anchor = this.transformAnchorWorld;
-    const origCorner = this.originalCornerWorld;
+    // Work entirely in screen space for the scale-factor math so dragging a
+    // handle rightward on screen always produces horizontal scaling regardless
+    // of camera rotation. The item transform is then applied in view-aligned
+    // axes around the fixed world anchor.
+    const anchor = this.transformAnchorScreen;
+    const origCorner = this.originalCornerScreen;
 
     const isEdgeX = this.activeHandle === "e" || this.activeHandle === "w";
     const isEdgeY = this.activeHandle === "n" || this.activeHandle === "s";
@@ -361,10 +413,10 @@ export class SelectionController {
     const dyOrig = origCorner.y - anchor.y;
 
     if (!isEdgeY && Math.abs(dxOrig) > 0.001) {
-      desiredSX = (worldPoint.x - anchor.x) / dxOrig;
+      desiredSX = (viewportPoint.x - anchor.x) / dxOrig;
     }
     if (!isEdgeX && Math.abs(dyOrig) > 0.001) {
-      desiredSY = (worldPoint.y - anchor.y) / dyOrig;
+      desiredSY = (viewportPoint.y - anchor.y) / dyOrig;
     }
 
     const minScale = 0.01;
@@ -378,8 +430,14 @@ export class SelectionController {
 
     if (Math.abs(incSX - 1) > 0.0001 || Math.abs(incSY - 1) > 0.0001) {
       this.didMove = true;
+      const worldAnchor = this.transformAnchorWorld;
       for (const item of this.selectedItems) {
-        this.paperRenderer.scalePath(item, incSX, incSY, anchor);
+        this.paperRenderer.scalePathInViewSpace(
+          item,
+          incSX,
+          incSY,
+          worldAnchor,
+        );
       }
       this.lastTotalScaleX = desiredSX;
       this.lastTotalScaleY = desiredSY;
@@ -415,8 +473,9 @@ export class SelectionController {
   // ============================================================
 
   private clearTransformState(): void {
+    this.transformAnchorScreen = null;
     this.transformAnchorWorld = null;
-    this.originalCornerWorld = null;
+    this.originalCornerScreen = null;
     this.lastTotalScaleX = 1;
     this.lastTotalScaleY = 1;
     this.rotateStartAngle = 0;
@@ -451,33 +510,47 @@ export class SelectionController {
     const width = Math.abs(end.x - start.x);
     const height = Math.abs(end.y - start.y);
 
-    this.uiCanvas2D.save();
-    this.uiCanvas2D.fillStyle = "rgba(255, 153, 0, 0.12)";
-    this.uiCanvas2D.strokeStyle = "#ff9900";
-    this.uiCanvas2D.lineWidth = 1.5;
-    this.uiCanvas2D.setLineDash([6, 4]);
-    this.uiCanvas2D.fillRect(x, y, width, height);
-    this.uiCanvas2D.strokeRect(x, y, width, height);
-    this.uiCanvas2D.restore();
+    const ctx = this.chromeCtx;
+    ctx.save();
+    ctx.fillStyle = "rgba(0, 0, 0, 0.1)";
+    ctx.fillRect(x, y, width, height);
+    const dash = [6, 4];
+    ctx.setLineDash(dash);
+    ctx.lineJoin = "miter";
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x, y, width, height);
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, y, width, height);
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   private drawLassoPreview(points: Point[]): void {
     if (points.length < 2) return;
 
-    this.uiCanvas2D.save();
-    this.uiCanvas2D.fillStyle = "rgba(255, 153, 0, 0.12)";
-    this.uiCanvas2D.strokeStyle = "#ff9900";
-    this.uiCanvas2D.lineWidth = 1.5;
-    this.uiCanvas2D.setLineDash([6, 4]);
-    this.uiCanvas2D.beginPath();
-    this.uiCanvas2D.moveTo(points[0].x, points[0].y);
+    const ctx = this.chromeCtx;
+    ctx.save();
+    const dash = [6, 4];
+    ctx.setLineDash(dash);
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
     for (let i = 1; i < points.length; i++) {
-      this.uiCanvas2D.lineTo(points[i].x, points[i].y);
+      ctx.lineTo(points[i].x, points[i].y);
     }
-    this.uiCanvas2D.closePath();
-    this.uiCanvas2D.fill();
-    this.uiCanvas2D.stroke();
-    this.uiCanvas2D.restore();
+    ctx.closePath();
+    ctx.fillStyle = "rgba(0, 0, 0, 0.1)";
+    ctx.fill();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   private hasActiveMarquee(): boolean {

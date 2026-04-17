@@ -255,6 +255,18 @@ export const toolSettingsStore = new Store<AllToolSettings>(
 );
 
 // ============================================================
+// Selection Store
+// ============================================================
+
+export interface SelectionState {
+  items: paper.PathItem[];
+}
+
+export const selectionStore = new Store<SelectionState>({
+  items: [],
+});
+
+// ============================================================
 // Layer Store
 // ============================================================
 

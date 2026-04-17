@@ -250,6 +250,32 @@ export const select: ToolDefinition<typeof selectSettings> = {
 };
 
 // ============================================================
+// Direct Select Tool
+// ============================================================
+
+const directSelectSettings = {
+  shape: {
+    type: "toggle",
+    options: ["rect", "lasso"] as const,
+    default: "rect",
+  },
+} as const satisfies SettingsSchema;
+
+export const directSelect: ToolDefinition<typeof directSelectSettings> = {
+  id: "direct-select",
+  name: "Direct Select",
+  hotkey: "a",
+  settings: directSelectSettings,
+  dockModeSetting: "shape",
+
+  onStart() {},
+  onMove() {},
+  onEnd() {
+    return null;
+  },
+};
+
+// ============================================================
 // Pan Tool
 // ============================================================
 
@@ -291,7 +317,7 @@ export const eyedropper: ToolDefinition<typeof eyedropperSettings> = {
 // Tool Registry
 // ============================================================
 
-export const tools = [brush, lasso, select, pan, eyedropper] as const;
+export const tools = [brush, lasso, select, directSelect, pan, eyedropper] as const;
 
 export type ToolId = (typeof tools)[number]["id"];
 export type DrawMode = "add" | "subtract" | "inside";

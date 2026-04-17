@@ -39,6 +39,7 @@ export class PaperRenderer {
   private camera: Camera | null = null;
   private aliasFixEnabled = true;
   private readonly aliasFixStrokeWidth = 0.5;
+  private readonly selectionFramePaddingPx = 10;
   private nextSelectionMarkerId = 1;
 
   // Spatial index of current layer pieces (Path + CompoundPath)
@@ -1393,6 +1394,61 @@ export class PaperRenderer {
     return new paper.Rectangle(minX, minY, maxX - minX, maxY - minY);
   }
 
+  getSelectionFrameBounds(items: paper.Item[]): paper.Rectangle | null {
+    const bounds = this.getCombinedBounds(items);
+    if (!bounds) return null;
+    const worldPadding = this.camera
+      ? this.selectionFramePaddingPx / this.camera.zoom
+      : this.selectionFramePaddingPx;
+    return new paper.Rectangle(
+      bounds.x - worldPadding,
+      bounds.y - worldPadding,
+      bounds.width + worldPadding * 2,
+      bounds.height + worldPadding * 2,
+    );
+  }
+
+  /**
+   * Screen-space axis-aligned bounding rectangle for the selection. Computed
+   * by projecting the items' world-space bounds corners through the camera
+   * and taking the axis-aligned box around the projected points. This is the
+   * bbox the selection UI draws so the frame always looks like a proper
+   * rectangle on screen regardless of camera rotation.
+   */
+  getSelectionFrameScreenBounds(
+    items: paper.Item[],
+  ): { x: number; y: number; width: number; height: number } | null {
+    const worldBounds = this.getCombinedBounds(items);
+    if (!worldBounds) return null;
+
+    const worldCorners = [
+      { x: worldBounds.x, y: worldBounds.y },
+      { x: worldBounds.x + worldBounds.width, y: worldBounds.y },
+      { x: worldBounds.x + worldBounds.width, y: worldBounds.y + worldBounds.height },
+      { x: worldBounds.x, y: worldBounds.y + worldBounds.height },
+    ];
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const c of worldCorners) {
+      const s = this.worldToScreen(c.x, c.y);
+      if (s.x < minX) minX = s.x;
+      if (s.y < minY) minY = s.y;
+      if (s.x > maxX) maxX = s.x;
+      if (s.y > maxY) maxY = s.y;
+    }
+
+    const pad = this.selectionFramePaddingPx;
+    return {
+      x: minX - pad,
+      y: minY - pad,
+      width: maxX - minX + pad * 2,
+      height: maxY - minY + pad * 2,
+    };
+  }
+
   /**
    * Get the bounding box of all content in world space
    */
@@ -1440,11 +1496,24 @@ export class PaperRenderer {
     start: { x: number; y: number },
     end: { x: number; y: number },
   ): paper.PathItem[] {
-    const worldStart = this.screenToWorld(start.x, start.y);
-    const worldEnd = this.screenToWorld(end.x, end.y);
-    const rect = new paper.Path.Rectangle({
-      from: new paper.Point(worldStart.x, worldStart.y),
-      to: new paper.Point(worldEnd.x, worldEnd.y),
+    // Build the selection polygon from all four screen corners projected to
+    // world. This keeps the marquee matching what the user drew on screen
+    // even when the camera is rotated (a camera-rotated screen rect maps to
+    // a rotated world quadrilateral, not a world-axis-aligned rectangle).
+    const minX = Math.min(start.x, end.x);
+    const maxX = Math.max(start.x, end.x);
+    const minY = Math.min(start.y, end.y);
+    const maxY = Math.max(start.y, end.y);
+    const screenCorners = [
+      { x: minX, y: minY },
+      { x: maxX, y: minY },
+      { x: maxX, y: maxY },
+      { x: minX, y: maxY },
+    ];
+    const worldPoints = screenCorners.map((c) => this.screenToWorld(c.x, c.y));
+    const rect = new paper.Path({
+      segments: worldPoints.map((p) => new paper.Point(p.x, p.y)),
+      closed: true,
       insert: false,
     });
     const selectedItems = this.extractSelectionFromPath(rect);
@@ -1555,6 +1624,32 @@ export class PaperRenderer {
     paper.view.update();
   }
 
+  /**
+   * Scale in view-aligned (screen) axes around a world-space anchor. Achieved
+   * by rotating the item into view-local space around the anchor, applying a
+   * standard axis-aligned scale, then rotating back. This makes resize handles
+   * behave intuitively when the camera is rotated — dragging a screen-right
+   * handle scales horizontally on screen regardless of world orientation.
+   */
+  scalePathInViewSpace(
+    item: paper.Item,
+    sx: number,
+    sy: number,
+    worldAnchor: { x: number; y: number },
+  ): void {
+    const rotDeg = this.camera ? this.camera.getRotationDegrees() : 0;
+    const anchor = new paper.Point(worldAnchor.x, worldAnchor.y);
+    if (rotDeg !== 0) item.rotate(rotDeg, anchor);
+    item.scale(sx, sy, anchor);
+    if (rotDeg !== 0) item.rotate(-rotDeg, anchor);
+    if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
+      if (!this.indexDirty && this.indexEntries.has(item.id)) {
+        this.indexUpsert(item);
+      }
+    }
+    paper.view.update();
+  }
+
   rotatePath(
     item: paper.Item,
     degrees: number,
@@ -1613,81 +1708,255 @@ export class PaperRenderer {
   }
 
   /**
+   * Reconcile a modified item with its spatial neighbors using the local merge algorithm.
+   * First resolves self-intersections (vertex edits can fold a path over itself),
+   * then merges with neighbors: same-color union, different-color top-cuts-bottom.
+   * Returns the surviving item (may differ from input if a union or self-resolve occurred).
+   */
+  reconcileItem(item: paper.PathItem): paper.PathItem | null {
+    if (!item.parent) return null;
+    const layer = paper.project.activeLayer;
+    const fill = item.fillColor;
+
+    // Phase 1: resolve self-intersections by uniting the path with itself.
+    let current: paper.PathItem = item;
+    try {
+      const resolved = this.normalizeBooleanResult(
+        item.unite(item) as paper.PathItem | null,
+      );
+      if (resolved && !resolved.isEmpty()) {
+        this.forceEvenOdd(resolved);
+        this.applyPathStyle(resolved, fill);
+        this.indexRemove(item);
+        item.replaceWith(resolved);
+        this.indexInsert(resolved);
+        current = resolved;
+      } else {
+        resolved?.remove();
+      }
+    } catch {
+      // Self-unite can fail on degenerate geometry; fall through with the original.
+    }
+
+    // Phase 2: merge with spatial neighbors (same-color union, different-color subtract).
+    this.ensureSpatialIndex();
+    this.indexUpsert(current);
+
+    const padding = 2;
+    const existingSet = new Map<number, paper.PathItem>();
+    for (const hit of this.queryByBounds(current.bounds, padding)) {
+      if (hit === current) continue;
+      existingSet.set(hit.id, hit);
+    }
+    const layerOrder = new Map<number, number>();
+    for (let i = 0; i < layer.children.length; i++) {
+      const c = layer.children[i];
+      if (c instanceof paper.Path || c instanceof paper.CompoundPath) {
+        layerOrder.set(c.id, i);
+      }
+    }
+    const existing = [...existingSet.values()].sort(
+      (a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0),
+    );
+
+    const changedItems: paper.PathItem[] = [];
+    const result = this.mergePathWithExisting(current, existing, changedItems);
+    this.normalizeAfterLocalEdit([...changedItems, result]);
+
+    paper.view.update();
+    return result;
+  }
+
+  /**
+   * Duplicate a path item on the active layer with a small offset.
+   */
+  duplicateItem(item: paper.PathItem, offsetX = 10, offsetY = 10): paper.PathItem | null {
+    if (!item.parent) return null;
+    const clone = item.clone() as paper.PathItem;
+    clone.position = clone.position.add(new paper.Point(offsetX, offsetY));
+    this.applyPathStyle(clone, item.fillColor);
+    this.indexInsert(clone);
+    paper.view.update();
+    return clone;
+  }
+
+  /**
+   * Delete a path item from the active layer.
+   */
+  deleteItem(item: paper.PathItem): void {
+    if (!item.parent) return;
+    this.indexRemove(item);
+    item.remove();
+    paper.view.update();
+  }
+
+  setItemFillColor(item: paper.PathItem, color: string): void {
+    if (!item.parent) return;
+    this.applyPathStyle(item, new paper.Color(color));
+    paper.view.update();
+  }
+
+  /**
+   * Flatten a single item in-place: resolve self-intersections and simplify.
+   */
+  flattenItem(item: paper.PathItem): void {
+    if (!item.parent) return;
+    if (item instanceof paper.CompoundPath) {
+      this.splitDisconnectedItems([item]);
+    }
+    paper.view.update();
+  }
+
+  /**
+   * Trace each contour of a Path or CompoundPath in screen space, then invoke
+   * `strokeContour` once per contour (typically `() => ctx.stroke()`).
+   */
+  private forEachOutlineContour(
+    ctx: CanvasRenderingContext2D,
+    item: paper.Item,
+    strokeContour: () => void,
+  ): void {
+    const paths: paper.Path[] = [];
+    if (item instanceof paper.Path) {
+      paths.push(item);
+    } else if (item instanceof paper.CompoundPath) {
+      for (const child of item.children) {
+        if (child instanceof paper.Path) paths.push(child);
+      }
+    }
+    if (paths.length === 0) return;
+
+    for (const path of paths) {
+      const segs = path.segments;
+      if (segs.length < 2) continue;
+
+      ctx.beginPath();
+      const first = this.worldToScreen(segs[0].point.x, segs[0].point.y);
+      ctx.moveTo(first.x, first.y);
+
+      for (let i = 1; i < segs.length; i++) {
+        const prev = segs[i - 1];
+        const cur = segs[i];
+        const sp = this.worldToScreen(cur.point.x, cur.point.y);
+        if (prev.handleOut.isZero() && cur.handleIn.isZero()) {
+          ctx.lineTo(sp.x, sp.y);
+        } else {
+          const cp1 = prev.point.add(prev.handleOut);
+          const cp2 = cur.point.add(cur.handleIn);
+          const s1 = this.worldToScreen(cp1.x, cp1.y);
+          const s2 = this.worldToScreen(cp2.x, cp2.y);
+          ctx.bezierCurveTo(s1.x, s1.y, s2.x, s2.y, sp.x, sp.y);
+        }
+      }
+
+      if (path.closed && segs.length > 2) {
+        const last = segs[segs.length - 1];
+        const firstSeg = segs[0];
+        const sp = this.worldToScreen(firstSeg.point.x, firstSeg.point.y);
+        if (last.handleOut.isZero() && firstSeg.handleIn.isZero()) {
+          ctx.lineTo(sp.x, sp.y);
+        } else {
+          const cp1 = last.point.add(last.handleOut);
+          const cp2 = firstSeg.point.add(firstSeg.handleIn);
+          const s1 = this.worldToScreen(cp1.x, cp1.y);
+          const s2 = this.worldToScreen(cp2.x, cp2.y);
+          ctx.bezierCurveTo(s1.x, s1.y, s2.x, s2.y, sp.x, sp.y);
+        }
+        ctx.closePath();
+      }
+
+      strokeContour();
+    }
+  }
+
+  /**
+   * Dashed shape outline: semi-transparent underlay (main shadow) + white rim +
+   * black core. Used for select-tool shape chrome and direct-select picked paths.
+   */
+  strokeSelectionShapeOutline(ctx: CanvasRenderingContext2D, item: paper.Item): void {
+    const dash = [6, 5];
+    ctx.save();
+    ctx.lineJoin = "round";
+    ctx.lineCap = "butt";
+
+    const layers: Array<{ style: string; width: number }> = [
+      { style: "rgba(0, 0, 0, 0.45)", width: 5 },
+      { style: "#ffffff", width: 3.5 },
+      { style: "#000000", width: 1.5 },
+    ];
+
+    for (const layer of layers) {
+      ctx.strokeStyle = layer.style;
+      ctx.lineWidth = layer.width;
+      ctx.setLineDash(dash);
+      this.forEachOutlineContour(ctx, item, () => ctx.stroke());
+    }
+
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  /**
    * Draw selection indicator with transform handles.
+   *
+   * The bounding box is screen-aligned (axis-aligned to the viewport, not to
+   * world), so the frame always appears as a proper rectangle regardless of
+   * camera rotation. The item-shape outlines are still traced in world → screen
+   * so they follow the true geometry.
+   *
+   * When rotating, the caller passes the pivot (screen coords) that rotation
+   * is happening around — this is typically the item's own rotation point
+   * (`item.position` for a single selection) rather than the bbox center, so
+   * the feedback line always springs from the true pivot.
+   *
    * Returns screen-space handle positions for hit-testing.
    */
   drawSelection(
     item: paper.Item | paper.Item[] | null,
     ctx: CanvasRenderingContext2D,
-    rotatingCursor?: { x: number; y: number } | null,
+    rotating?: { cursor: { x: number; y: number }; pivot: { x: number; y: number } } | null,
   ): SelectionHandle[] {
     if (!item) return [];
 
     const items = Array.isArray(item) ? item : [item];
-    const bounds = this.getCombinedBounds(items);
-    if (!bounds) return [];
+    const screenBounds = this.getSelectionFrameScreenBounds(items);
+    if (!screenBounds) return [];
 
-    const b = bounds;
-    const worldPadding = this.camera ? 4 / this.camera.zoom : 4;
-
-    const worldCorners = [
-      { x: b.x - worldPadding, y: b.y - worldPadding },
-      { x: b.x + b.width + worldPadding, y: b.y - worldPadding },
-      { x: b.x + b.width + worldPadding, y: b.y + b.height + worldPadding },
-      { x: b.x - worldPadding, y: b.y + b.height + worldPadding },
-    ];
-
-    const screenCorners = worldCorners.map((corner) =>
-      this.worldToScreen(corner.x, corner.y),
-    );
+    const b = screenBounds;
+    const controlFill = "#000000";
+    const controlStroke = "#ffffff";
 
     ctx.save();
 
-    // Dashed bounding box
-    ctx.strokeStyle = "#ff9900";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.moveTo(screenCorners[0].x, screenCorners[0].y);
-    ctx.lineTo(screenCorners[1].x, screenCorners[1].y);
-    ctx.lineTo(screenCorners[2].x, screenCorners[2].y);
-    ctx.lineTo(screenCorners[3].x, screenCorners[3].y);
-    ctx.closePath();
-    ctx.stroke();
+    // Shape outline: dashed black core with white rim + single underlay shadow.
+    for (const it of items) {
+      this.strokeSelectionShapeOutline(ctx, it);
+    }
+
+    // Dashed screen-aligned bounding box (white rim, black core — no drop shadow)
+    const boxDash = [5, 5];
+    ctx.setLineDash(boxDash);
+    ctx.lineJoin = "miter";
+    ctx.strokeStyle = controlStroke;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(b.x, b.y, b.width, b.height);
+    ctx.strokeStyle = controlFill;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(b.x, b.y, b.width, b.height);
     ctx.setLineDash([]);
 
-    // Screen-space handle positions
-    const mid = (a: { x: number; y: number }, b: { x: number; y: number }) => ({
-      x: (a.x + b.x) / 2,
-      y: (a.y + b.y) / 2,
-    });
+    // Handle positions in screen space (axis-aligned; camera-rotation agnostic)
+    const nw = { x: b.x, y: b.y };
+    const ne = { x: b.x + b.width, y: b.y };
+    const se = { x: b.x + b.width, y: b.y + b.height };
+    const sw = { x: b.x, y: b.y + b.height };
+    const n = { x: b.x + b.width / 2, y: b.y };
+    const s = { x: b.x + b.width / 2, y: b.y + b.height };
+    const e = { x: b.x + b.width, y: b.y + b.height / 2 };
+    const w = { x: b.x, y: b.y + b.height / 2 };
 
-    const nw = screenCorners[0];
-    const ne = screenCorners[1];
-    const se = screenCorners[2];
-    const sw = screenCorners[3];
-    const n = mid(nw, ne);
-    const s = mid(sw, se);
-    const e = mid(ne, se);
-    const w = mid(nw, sw);
-
-    // Rotation handle: offset outward from top-center
-    const topCenter = n;
-    const boxCenter = {
-      x: (nw.x + ne.x + se.x + sw.x) / 4,
-      y: (nw.y + ne.y + se.y + sw.y) / 4,
-    };
-    const outX = topCenter.x - boxCenter.x;
-    const outY = topCenter.y - boxCenter.y;
-    const outLen = Math.sqrt(outX * outX + outY * outY);
     const rotateOffset = 30;
-    const rotate =
-      outLen > 0.001
-        ? {
-            x: topCenter.x + (outX / outLen) * rotateOffset,
-            y: topCenter.y + (outY / outLen) * rotateOffset,
-          }
-        : { x: topCenter.x, y: topCenter.y - rotateOffset };
+    const rotate = { x: n.x, y: n.y - rotateOffset };
 
     const handles: SelectionHandle[] = [
       { id: "nw", x: nw.x, y: nw.y },
@@ -1701,30 +1970,48 @@ export class PaperRenderer {
       { id: "rotate", x: rotate.x, y: rotate.y },
     ];
 
-    if (rotatingCursor) {
-      // Active rotation: draw line from center to cursor
-      ctx.strokeStyle = "#ff9900";
+    const strokeLineWhiteBlack = (
+      x0: number,
+      y0: number,
+      x1: number,
+      y1: number,
+    ) => {
+      ctx.lineCap = "round";
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = controlStroke;
+      ctx.lineWidth = 3.5;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = controlFill;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    };
+
+    if (rotating) {
+      strokeLineWhiteBlack(
+        rotating.pivot.x,
+        rotating.pivot.y,
+        rotating.cursor.x,
+        rotating.cursor.y,
+      );
+
+      ctx.fillStyle = controlFill;
+      ctx.strokeStyle = controlStroke;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(boxCenter.x, boxCenter.y);
-      ctx.lineTo(rotatingCursor.x, rotatingCursor.y);
-      ctx.stroke();
-
-      ctx.fillStyle = "#ff9900";
-      ctx.beginPath();
-      ctx.arc(boxCenter.x, boxCenter.y, 3, 0, Math.PI * 2);
+      ctx.arc(rotating.pivot.x, rotating.pivot.y, 3, 0, Math.PI * 2);
       ctx.fill();
-    } else {
-      // Idle: rotation handle stem + circle
-      ctx.strokeStyle = "#ff9900";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(topCenter.x, topCenter.y);
-      ctx.lineTo(rotate.x, rotate.y);
       ctx.stroke();
+    } else {
+      strokeLineWhiteBlack(n.x, n.y, rotate.x, rotate.y);
 
-      ctx.fillStyle = "white";
-      ctx.strokeStyle = "#ff9900";
+      ctx.fillStyle = controlFill;
+      ctx.strokeStyle = controlStroke;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(rotate.x, rotate.y, 5, 0, Math.PI * 2);
@@ -1732,13 +2019,12 @@ export class PaperRenderer {
       ctx.stroke();
     }
 
-    // Resize handles (filled squares)
     const handleSize = 8;
     const half = handleSize / 2;
     for (const h of handles) {
       if (h.id === "rotate") continue;
-      ctx.fillStyle = "white";
-      ctx.strokeStyle = "#ff9900";
+      ctx.fillStyle = controlFill;
+      ctx.strokeStyle = controlStroke;
       ctx.lineWidth = 2;
       ctx.fillRect(h.x - half, h.y - half, handleSize, handleSize);
       ctx.strokeRect(h.x - half, h.y - half, handleSize, handleSize);
