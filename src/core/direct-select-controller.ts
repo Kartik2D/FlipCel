@@ -61,6 +61,16 @@ export class DirectSelectController {
   private dragStartPoint: Point | null = null;
   private didMoveAnchor = false;
 
+  /**
+   * Active bezier-handle drag. Only populated while exactly one anchor is
+   * picked and the user pointerdown'd on one of that anchor's tangent knobs.
+   */
+  private handleDrag: {
+    kind: "in" | "out";
+    segmentKey: AnchorKey;
+  } | null = null;
+  private didMoveHandle = false;
+
   private marqueeStartPoint: Point | null = null;
   private marqueeCurrentPoint: Point | null = null;
   private lassoPoints: Point[] = [];
@@ -118,7 +128,8 @@ export class DirectSelectController {
     return (
       this.hasSelection() ||
       this.marqueeStartPoint !== null ||
-      this.isDraggingAnchor
+      this.isDraggingAnchor ||
+      this.handleDrag !== null
     );
   }
 
@@ -142,6 +153,17 @@ export class DirectSelectController {
   handleStart(point: Point): void {
     const viewportPoint = this.pixelToViewport(point);
     this.rebuildAnchorHandles();
+
+    // Bezier handle drag takes priority over anchor hit testing when a
+    // single anchor is picked (its handles are visible and hit-testable).
+    const handleHit = this.hitTestBezierHandle(viewportPoint);
+    if (handleHit) {
+      this.handleDrag = handleHit;
+      this.dragStartPoint = viewportPoint;
+      this.didMoveHandle = false;
+      this.drawUI();
+      return;
+    }
 
     const hitIdx = this.hitTestAnchor(viewportPoint);
     if (hitIdx !== null) {
@@ -175,6 +197,11 @@ export class DirectSelectController {
       return;
     }
 
+    if (this.handleDrag) {
+      this.dragBezierHandleTo(viewportPoint);
+      return;
+    }
+
     if (!this.isDraggingAnchor || !this.dragStartPoint) return;
 
     const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
@@ -194,6 +221,13 @@ export class DirectSelectController {
     if (this.marqueeStartPoint && this.marqueeCurrentPoint) {
       this.finalizeMarquee();
       this.resetMarqueeState();
+      this.drawUI();
+      return;
+    }
+
+    if (this.handleDrag) {
+      if (this.didMoveHandle) this.finalizeHandleMove();
+      this.resetDragState();
       this.drawUI();
       return;
     }
@@ -228,14 +262,23 @@ export class DirectSelectController {
       this.paperRenderer.strokeSelectionShapeOutline(ctx, item);
     }
 
-    // Anchor nodes: black fill, white outline (picked = larger).
+    // When exactly one anchor is picked, expose its bezier control handles
+    // (handleIn / handleOut). Drawn before the anchor squares so the picked
+    // anchor sits visually on top of the handle arms meeting at it.
+    if (this.pickedAnchors.size === 1) {
+      this.drawBezierHandlesForSoloPick(ctx);
+    }
+
+    // Anchor nodes: picked = black / white; exposed unpicked = solid grey (dim).
     const unpickedR = 3;
     const pickedR = 5;
+    const unpickedFill = "#6e6e6e";
+    const unpickedStroke = "#b8b8b8";
     for (const h of this.anchorHandles) {
       const isPicked = this.pickedAnchors.has(h.key);
       const r = isPicked ? pickedR : unpickedR;
-      ctx.fillStyle = "#000000";
-      ctx.strokeStyle = "#ffffff";
+      ctx.fillStyle = isPicked ? "#000000" : unpickedFill;
+      ctx.strokeStyle = isPicked ? "#ffffff" : unpickedStroke;
       ctx.lineWidth = isPicked ? 2 : 1.5;
       ctx.beginPath();
       ctx.rect(h.x - r, h.y - r, r * 2, r * 2);
@@ -310,6 +353,124 @@ export class DirectSelectController {
   // ============================================================
   // Mutation & finalization
   // ============================================================
+
+  /**
+   * Hit test the two tangent knobs of the solo-picked anchor, if any.
+   * Returns null when no anchor is solo-picked, the resolved segment has
+   * zero-length handles, or the pointer is outside the hit radius.
+   */
+  private hitTestBezierHandle(
+    viewportPoint: Point,
+  ): { kind: "in" | "out"; segmentKey: AnchorKey } | null {
+    if (this.pickedAnchors.size !== 1) return null;
+    const key = this.pickedAnchors.values().next().value as AnchorKey | undefined;
+    if (!key) return null;
+
+    const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+    const item = this.buildPathIndex().get(itemId);
+    if (!item) return null;
+    const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+    if (!seg) return null;
+
+    const hitRadiusSq = 10 * 10;
+    const check = (
+      handle: paper.Point,
+      kind: "in" | "out",
+    ): { kind: "in" | "out"; segmentKey: AnchorKey } | null => {
+      if (handle.isZero()) return null;
+      const tipWorld = seg.point.add(handle);
+      const tipScreen = this.camera.worldToScreen(tipWorld.x, tipWorld.y);
+      const dx = viewportPoint.x - tipScreen.x;
+      const dy = viewportPoint.y - tipScreen.y;
+      if (dx * dx + dy * dy <= hitRadiusSq) {
+        return { kind, segmentKey: key };
+      }
+      return null;
+    };
+
+    // Prefer handleOut when both overlap — matches the draw order (out drawn
+    // last so it's visually on top) and gives deterministic picking.
+    return check(seg.handleOut, "out") ?? check(seg.handleIn, "in");
+  }
+
+  /**
+   * Set the dragged handle's world-space offset so its tip sits at the
+   * pointer. Moves the in/out vector only — the anchor point itself is not
+   * touched. Other segments on the path are unaffected.
+   */
+  private dragBezierHandleTo(viewportPoint: Point): void {
+    if (!this.handleDrag) return;
+
+    const { itemId, childIndex, segmentIndex } = parseAnchorKey(
+      this.handleDrag.segmentKey,
+    );
+    const item = this.buildPathIndex().get(itemId);
+    if (!item) return;
+    const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+    if (!seg) return;
+
+    const world = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
+    const newHandle = new paper.Point(
+      world.x - seg.point.x,
+      world.y - seg.point.y,
+    );
+
+    if (this.handleDrag.kind === "in") {
+      seg.handleIn = newHandle;
+    } else {
+      seg.handleOut = newHandle;
+    }
+
+    paper.view.update();
+    this.didMoveHandle = true;
+    this.drawUI();
+  }
+
+  /**
+   * Commit a handle drag: reconcile the host item (a pulled handle can fold
+   * the path over itself) and snapshot history. The anchor world-position is
+   * unchanged by a handle move, so we remap the picked key to whichever
+   * segment sits at that position after reconcile.
+   */
+  private finalizeHandleMove(): void {
+    if (!this.handleDrag) return;
+
+    const { itemId, childIndex, segmentIndex } = parseAnchorKey(
+      this.handleDrag.segmentKey,
+    );
+    const pathById = this.buildPathIndex();
+    const item = pathById.get(itemId);
+    const seg = item
+      ? this.getChildPaths(item)[childIndex]?.segments[segmentIndex]
+      : undefined;
+    const anchorWorld = seg ? seg.point.clone() : null;
+
+    if (this.onReconcile && item && item.parent) {
+      this.onReconcile(item);
+    }
+
+    // Remap pick to whichever segment now sits at the original anchor's
+    // world position (reconcile may have replaced the item).
+    if (anchorWorld) {
+      const epsilon = 1e-3;
+      const remapped = new Set<AnchorKey>();
+      for (const candidate of this.paperRenderer.getAllPaths()) {
+        const match = this.findSegmentNear(candidate, anchorWorld, epsilon);
+        if (match) {
+          remapped.add(
+            anchorKey(candidate.id, match.childIndex, match.segmentIndex),
+          );
+          break;
+        }
+      }
+      if (remapped.size > 0) {
+        this.pickedAnchors = remapped;
+      }
+    }
+
+    this.onSnapshot?.();
+    this.publishPickedItems();
+  }
 
   private moveSelectedAnchors(dx: number, dy: number): void {
     const delta = new paper.Point(dx, dy);
@@ -408,6 +569,8 @@ export class DirectSelectController {
     this.isDraggingAnchor = false;
     this.dragStartPoint = null;
     this.didMoveAnchor = false;
+    this.handleDrag = null;
+    this.didMoveHandle = false;
   }
 
   private resetMarqueeState(): void {
@@ -535,6 +698,63 @@ export class DirectSelectController {
   // ============================================================
   // Drawing helpers
   // ============================================================
+
+  /**
+   * Render the two bezier control handles (in / out tangents) for the single
+   * picked anchor. Skips either tangent when its handle vector is zero, i.e.
+   * when the segment is a corner on that side.
+   */
+  private drawBezierHandlesForSoloPick(ctx: CanvasRenderingContext2D): void {
+    const key = this.pickedAnchors.values().next().value as AnchorKey | undefined;
+    if (!key) return;
+
+    const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+    const item = this.buildPathIndex().get(itemId);
+    if (!item) return;
+
+    const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+    if (!seg) return;
+
+    const anchorScreen = this.camera.worldToScreen(seg.point.x, seg.point.y);
+
+    const drawTangent = (handle: paper.Point) => {
+      if (handle.isZero()) return;
+      const tipWorld = seg.point.add(handle);
+      const tipScreen = this.camera.worldToScreen(tipWorld.x, tipWorld.y);
+
+      // Arm from anchor to handle tip: white halo then dark line for contrast
+      // on both light and dark artwork.
+      ctx.save();
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(anchorScreen.x, anchorScreen.y);
+      ctx.lineTo(tipScreen.x, tipScreen.y);
+      ctx.stroke();
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(anchorScreen.x, anchorScreen.y);
+      ctx.lineTo(tipScreen.x, tipScreen.y);
+      ctx.stroke();
+
+      // Handle knob: small circle (circles distinguish handles from the
+      // square anchor nodes).
+      const r = 3.5;
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(tipScreen.x, tipScreen.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    drawTangent(seg.handleIn);
+    drawTangent(seg.handleOut);
+  }
 
   private drawMarqueeRect(start: Point, end: Point): void {
     const x = Math.min(start.x, end.x);

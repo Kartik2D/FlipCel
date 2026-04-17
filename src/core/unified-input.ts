@@ -89,6 +89,34 @@ export class UnifiedInputManager {
     this.config = config;
   }
 
+  /**
+   * Reset all in-flight pointer/gesture state without committing any stroke.
+   *
+   * Called after operations that reconfigure the input canvas (e.g. pixel
+   * resolution change), which on some mobile browsers can silently
+   * invalidate the canvas's active pointer captures and drop subsequent
+   * pointerup events. Without this reset, a stale `primaryPointerId` /
+   * `pendingTouchDraw` / `activePointers` entry can block the next
+   * `pointerdown` from starting a fresh stroke, which manifests as
+   * "drawing/tracing stopped working after moving the resolution slider".
+   */
+  resetInputState() {
+    for (const pointerId of this.activePointers.keys()) {
+      this.safeReleasePointerCapture(pointerId);
+    }
+    this.activePointers.clear();
+    this.pendingTouchDraw = null;
+    this.primaryPointerId = null;
+    this.lastPressure = null;
+    this.lastPinchDistance = null;
+    this.lastPinchCenter = null;
+    this.lastPinchAngle = null;
+    if (this.gestureState !== "idle") {
+      this.gestureState = "idle";
+      this.updateCanvasCursor();
+    }
+  }
+
   setTool(tool: ToolId) {
     this.currentTool = tool;
     this.updateCanvasCursor();

@@ -845,6 +845,10 @@ class App {
     this.pixelCanvasManager.clear();
     configStore.set(this.config); // Propagates to all subscribers
     this.redrawActiveSelectionUI();
+    // Resizing #ui-canvas (via resizeCanvases -> uiOverlay.updateConfig) can
+    // invalidate in-flight pointer captures on some mobile browsers. Clear
+    // any stale input state so the next pointerdown starts a clean stroke.
+    this.inputManager.resetInputState();
   }
 
   private onFlatten() {

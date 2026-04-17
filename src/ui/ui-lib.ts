@@ -1972,6 +1972,13 @@ export class InkwellToolsPanel extends FloatingPanel {
   }
 
   private renderPixelRes() {
+    // NOTE: pixel-res-change is intentionally emitted on `change` (release)
+    // rather than `input` (every tick). Each emit triggers a full canvas
+    // reconfiguration (writes to pixelCanvas.width, uiCanvas.width,
+    // chromeCanvas.width, etc.). Firing that on every input tick during a
+    // slider drag causes rapid canvas resets mid-touch-gesture which, on
+    // some mobile browsers, leaves the ui-canvas unable to receive further
+    // pointer/touch input -- breaking drawing and therefore tracing.
     return html`
       <label>
         <span>Pixel Resolution: ${this.pixelRes}x</span>
@@ -1982,6 +1989,9 @@ export class InkwellToolsPanel extends FloatingPanel {
           step="1"
           .value=${String(this.pixelRes)}
           @input=${(e: Event) => {
+            this.pixelRes = parseInt((e.target as HTMLInputElement).value);
+          }}
+          @change=${(e: Event) => {
             this.pixelRes = parseInt((e.target as HTMLInputElement).value);
             this.emit("pixel-res-change", this.pixelRes);
           }}
@@ -2178,6 +2188,12 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
   }
 
   private renderPixelRes() {
+    // See matching note in InkwellToolsPanel.renderPixelRes(): we only emit
+    // the expensive pixel-res-change (canvas reconfigure) on `change`
+    // (slider release), not on every `input` tick. Firing on every tick
+    // during a mobile touch drag causes repeated canvas.width resets that
+    // can break pointer event delivery on #ui-canvas on some mobile
+    // browsers, leaving drawing + tracing non-functional afterwards.
     return html`
       <label>
         <span>Pixel Resolution: ${this.pixelRes}x</span>
@@ -2188,6 +2204,9 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
           step="1"
           .value=${String(this.pixelRes)}
           @input=${(e: Event) => {
+            this.pixelRes = parseInt((e.target as HTMLInputElement).value);
+          }}
+          @change=${(e: Event) => {
             this.pixelRes = parseInt((e.target as HTMLInputElement).value);
             this.emit("pixel-res-change", this.pixelRes);
           }}
