@@ -1,8 +1,9 @@
 <!--
   Entry Point - HTML Structure
 
-  Defines three canvas elements stacked with z-index layering:
-  - UI Canvas (z-index: 3): Receives ALL input events; brush-size ring + grid/axes (pointer cursor via CSS)
+  Defines four canvas elements stacked with z-index layering:
+  - Chrome Canvas (z-index: 4): Selection chrome (outline, bbox, handles, vertex nodes, marquee). No blend mode, pointer-events: none.
+  - UI Canvas (z-index: 3): Receives ALL input events; grid/origin/brush ring under mix-blend-mode: difference.
   - Pixel Canvas (z-index: 2): Low-resolution pixel drawing (temporary, cleared after tracing)
   - Paper Canvas (z-index: 1): Final vector paths rendered with Paper.js
 
@@ -21,7 +22,7 @@
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
-            href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap"
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
             rel="stylesheet"
         />
         <script>
@@ -30,8 +31,7 @@
         </script>
         <style>
             :root {
-                --inkwell-font-display: "Sora", system-ui, sans-serif;
-                --inkwell-font-body: "Instrument Sans", system-ui, sans-serif;
+                --inkwell-font: "Inter", system-ui, sans-serif;
 
                 --inkwell-app-bg: #f3efe8;
                 --inkwell-canvas-bg: #fffdf9;
@@ -101,7 +101,7 @@
                 -webkit-touch-callout: none;
                 -webkit-user-select: none;
                 user-select: none;
-                font-family: var(--inkwell-font-body);
+                font-family: var(--inkwell-font);
                 color: var(--inkwell-text-primary);
                 transition: background-color 180ms ease, color 180ms ease;
             }
@@ -140,14 +140,20 @@
                 mix-blend-mode: difference;
             }
 
+            #chrome-canvas {
+                z-index: 4;
+                pointer-events: none;
+            }
+
         </style>
-      <script type="module" crossorigin src="/inkwell/assets/index-BVKmbwPO.js"></script>
+      <script type="module" crossorigin src="/inkwell/assets/index-B7wxe492.js"></script>
     </head>
     <body>
         <div id="canvas-container">
             <canvas id="paper-canvas"></canvas>
             <canvas id="pixel-canvas"></canvas>
             <canvas id="ui-canvas"></canvas>
+            <canvas id="chrome-canvas"></canvas>
         </div>
         <!-- Floating UI Panels (draggable + resizable, positions in %) -->
         <inkwell-color-panel id="color-panel" draggable resizable style="--panel-top: 2%; --panel-right: 1%; display: none;"></inkwell-color-panel>
@@ -155,6 +161,7 @@
         <inkwell-tools-panel id="tools-panel" draggable resizable style="--panel-top: 28%; --panel-right: 1%; display: none;"></inkwell-tools-panel>
         <inkwell-universal-panel id="universal-panel" draggable resizable style="--panel-top: 50%; --panel-left: 1%; display: none;"></inkwell-universal-panel>
         <inkwell-layers-panel id="layers-panel" draggable resizable style="--panel-bottom: 2%; --panel-right: 1%; display: none;"></inkwell-layers-panel>
+        <inkwell-functions-panel id="functions-panel"></inkwell-functions-panel>
 
     </body>
 </html>
