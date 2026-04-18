@@ -19,6 +19,7 @@
  */
 import type { Point, CanvasConfig } from "./types";
 import type { PaperRenderer } from "./paper-renderer";
+import type { SelectionHandle, SelectionHandleId } from "./paper-renderer";
 import type { Camera } from "./camera";
 import type { ChromeOverlay } from "./chrome-overlay";
 import { configStore, toolSettingsStore, selectionStore } from "./stores";
@@ -76,6 +77,25 @@ export class DirectSelectController {
   private lassoPoints: Point[] = [];
   private readonly marqueeDragThresholdPx = 6;
 
+  /**
+   * Multi-pick transform-gizmo state. Populated only while at least two
+   * anchors are picked so the user can scale/rotate the picked cluster via
+   * the same bbox handles as the select tool.
+   */
+  private transformHandles: SelectionHandle[] = [];
+  private activeTransformHandle: SelectionHandleId | null = null;
+  private isTransformingAnchors = false;
+  private didTransformAnchors = false;
+  private transformAnchorScreen: Point | null = null;
+  private transformAnchorWorld: Point | null = null;
+  private originalCornerScreen: Point | null = null;
+  private lastTotalScaleX = 1;
+  private lastTotalScaleY = 1;
+  private rotateStartAngle = 0;
+  private lastTotalRotation = 0;
+  private rotatePivotWorld: Point | null = null;
+  private lastViewportPoint: Point | null = null;
+
   private lastSelectionViewport: Point | null = null;
   private selectionChangeCallback?: (hasSelection: boolean) => void;
 
@@ -129,7 +149,8 @@ export class DirectSelectController {
       this.hasSelection() ||
       this.marqueeStartPoint !== null ||
       this.isDraggingAnchor ||
-      this.handleDrag !== null
+      this.handleDrag !== null ||
+      this.isTransformingAnchors
     );
   }
 
@@ -141,6 +162,7 @@ export class DirectSelectController {
     this.pickedAnchors.clear();
     this.resetDragState();
     this.resetMarqueeState();
+    this.resetTransformState();
     this.lastSelectionViewport = null;
     selectionStore.set({ items: [] });
     this.drawUI();
@@ -153,6 +175,22 @@ export class DirectSelectController {
   handleStart(point: Point): void {
     const viewportPoint = this.pixelToViewport(point);
     this.rebuildAnchorHandles();
+
+    // Transform gizmo (bbox + handles) is shown whenever >=2 anchors are
+    // picked. Hit test those handles first so the user can scale/rotate
+    // the cluster even when a handle sits near an anchor square.
+    if (this.pickedAnchors.size >= 2 && this.transformHandles.length > 0) {
+      const hitTransform = this.hitTestTransformHandle(viewportPoint);
+      if (hitTransform) {
+        this.activeTransformHandle = hitTransform;
+        this.isTransformingAnchors = true;
+        this.didTransformAnchors = false;
+        this.dragStartPoint = viewportPoint;
+        this.initAnchorTransform(hitTransform, viewportPoint);
+        this.drawUI();
+        return;
+      }
+    }
 
     // Bezier handle drag takes priority over anchor hit testing when a
     // single anchor is picked (its handles are visible and hit-testable).
@@ -179,6 +217,19 @@ export class DirectSelectController {
       return;
     }
 
+    const shapeHit = this.paperRenderer.resolveSelectableItem(
+      this.paperRenderer.hitTest(viewportPoint),
+    );
+    if (shapeHit) {
+      this.pickAllAnchorsOfItem(shapeHit);
+      this.isDraggingAnchor = true;
+      this.dragStartPoint = viewportPoint;
+      this.didMoveAnchor = false;
+      this.publishPickedItems();
+      this.drawUI();
+      return;
+    }
+
     this.marqueeStartPoint = viewportPoint;
     this.marqueeCurrentPoint = viewportPoint;
     this.lassoPoints = [viewportPoint];
@@ -187,11 +238,22 @@ export class DirectSelectController {
 
   handleMove(point: Point): void {
     const viewportPoint = this.pixelToViewport(point);
+    this.lastViewportPoint = viewportPoint;
 
     if (this.marqueeStartPoint) {
       this.marqueeCurrentPoint = viewportPoint;
       if (this.selectionShape === "lasso") {
         this.lassoPoints.push(viewportPoint);
+      }
+      this.drawUI();
+      return;
+    }
+
+    if (this.isTransformingAnchors) {
+      if (this.activeTransformHandle === "rotate") {
+        this.handleAnchorRotateMove(viewportPoint);
+      } else if (this.activeTransformHandle) {
+        this.handleAnchorResizeMove(viewportPoint);
       }
       this.drawUI();
       return;
@@ -225,6 +287,14 @@ export class DirectSelectController {
       return;
     }
 
+    if (this.isTransformingAnchors) {
+      if (this.didTransformAnchors) this.finalizeAnchorMove();
+      this.resetTransformState();
+      this.resetDragState();
+      this.drawUI();
+      return;
+    }
+
     if (this.handleDrag) {
       if (this.didMoveHandle) this.finalizeHandleMove();
       this.resetDragState();
@@ -243,6 +313,7 @@ export class DirectSelectController {
   handleCancel(): void {
     this.resetDragState();
     this.resetMarqueeState();
+    this.resetTransformState();
     this.drawUI();
   }
 
@@ -286,6 +357,38 @@ export class DirectSelectController {
       ctx.stroke();
     }
 
+    // Multi-pick transform gizmo: same bbox + 8 resize + 1 rotate handles as
+    // the select tool, but sized to the picked anchors' screen bounds.
+    if (this.pickedAnchors.size >= 2) {
+      const bounds = this.getPickedAnchorScreenBounds();
+      if (bounds) {
+        let rotating:
+          | { cursor: Point; pivot: Point }
+          | null = null;
+        if (
+          this.isTransformingAnchors &&
+          this.activeTransformHandle === "rotate" &&
+          this.lastViewportPoint &&
+          this.rotatePivotWorld
+        ) {
+          const pivot = this.camera.worldToScreen(
+            this.rotatePivotWorld.x,
+            this.rotatePivotWorld.y,
+          );
+          rotating = { cursor: this.lastViewportPoint, pivot };
+        }
+        this.transformHandles = this.paperRenderer.drawTransformChrome(
+          bounds,
+          ctx,
+          rotating,
+        );
+      } else {
+        this.transformHandles = [];
+      }
+    } else {
+      this.transformHandles = [];
+    }
+
     if (this.marqueeStartPoint && this.marqueeCurrentPoint) {
       if (this.selectionShape === "lasso") {
         this.drawLassoPreview(this.lassoPoints);
@@ -315,6 +418,15 @@ export class DirectSelectController {
       items.push(item);
     }
     return items;
+  }
+
+  /** Replace picks with every anchor on this shape (fill click / interior hit). */
+  private pickAllAnchorsOfItem(item: paper.PathItem): void {
+    const keys = new Set<AnchorKey>();
+    this.forEachSegment(item, (ci, si) => {
+      keys.add(anchorKey(item.id, ci, si));
+    });
+    this.pickedAnchors = keys;
   }
 
   private rebuildAnchorHandles(): void {
@@ -577,6 +689,285 @@ export class DirectSelectController {
     this.marqueeStartPoint = null;
     this.marqueeCurrentPoint = null;
     this.lassoPoints = [];
+  }
+
+  private resetTransformState(): void {
+    this.activeTransformHandle = null;
+    this.isTransformingAnchors = false;
+    this.didTransformAnchors = false;
+    this.transformAnchorScreen = null;
+    this.transformAnchorWorld = null;
+    this.originalCornerScreen = null;
+    this.lastTotalScaleX = 1;
+    this.lastTotalScaleY = 1;
+    this.rotateStartAngle = 0;
+    this.lastTotalRotation = 0;
+    this.rotatePivotWorld = null;
+  }
+
+  // ============================================================
+  // Multi-pick transform gizmo (scale + rotate picked anchors)
+  // ============================================================
+
+  /**
+   * Screen-space bbox enclosing every picked anchor, with a small pad so the
+   * box doesn't sit flush on the outermost anchor squares. Returns null when
+   * fewer than two anchors are picked or they haven't been cached this frame.
+   */
+  private getPickedAnchorScreenBounds():
+    | { x: number; y: number; width: number; height: number }
+    | null {
+    if (this.pickedAnchors.size < 2) return null;
+
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    let count = 0;
+    for (const h of this.anchorHandles) {
+      if (!this.pickedAnchors.has(h.key)) continue;
+      if (h.x < minX) minX = h.x;
+      if (h.y < minY) minY = h.y;
+      if (h.x > maxX) maxX = h.x;
+      if (h.y > maxY) maxY = h.y;
+      count++;
+    }
+    if (count < 2) return null;
+
+    const pad = 10;
+    return {
+      x: minX - pad,
+      y: minY - pad,
+      width: maxX - minX + pad * 2,
+      height: maxY - minY + pad * 2,
+    };
+  }
+
+  private hitTestTransformHandle(viewportPoint: Point): SelectionHandleId | null {
+    const hitRadiusSq = 12 * 12;
+    for (const h of this.transformHandles) {
+      const dx = viewportPoint.x - h.x;
+      const dy = viewportPoint.y - h.y;
+      if (dx * dx + dy * dy <= hitRadiusSq) return h.id;
+    }
+    return null;
+  }
+
+  private initAnchorTransform(
+    handle: SelectionHandleId,
+    viewportPoint: Point,
+  ): void {
+    const bounds = this.getPickedAnchorScreenBounds();
+    if (!bounds) return;
+
+    if (handle === "rotate") {
+      // Rotate around the world-space centroid of the picked anchors.
+      // The centroid is invariant under rotation about itself, so the pivot
+      // stays stable through the drag even as anchors move.
+      const centroid = this.getPickedAnchorCentroidWorld();
+      if (!centroid) return;
+      this.rotatePivotWorld = centroid;
+
+      const screenPivot = this.camera.worldToScreen(centroid.x, centroid.y);
+      this.rotateStartAngle = Math.atan2(
+        viewportPoint.y - screenPivot.y,
+        viewportPoint.x - screenPivot.x,
+      );
+      this.lastTotalRotation = 0;
+      return;
+    }
+
+    const b = bounds;
+    const corners: Record<string, Point> = {
+      nw: { x: b.x, y: b.y },
+      n: { x: b.x + b.width / 2, y: b.y },
+      ne: { x: b.x + b.width, y: b.y },
+      e: { x: b.x + b.width, y: b.y + b.height / 2 },
+      se: { x: b.x + b.width, y: b.y + b.height },
+      s: { x: b.x + b.width / 2, y: b.y + b.height },
+      sw: { x: b.x, y: b.y + b.height },
+      w: { x: b.x, y: b.y + b.height / 2 },
+    };
+
+    const opposites: Record<string, string> = {
+      nw: "se",
+      ne: "sw",
+      se: "nw",
+      sw: "ne",
+      n: "s",
+      s: "n",
+      e: "w",
+      w: "e",
+    };
+
+    const anchorScreen = corners[opposites[handle]];
+    const worldAnchor = this.camera.screenToWorld(
+      anchorScreen.x,
+      anchorScreen.y,
+    );
+    this.originalCornerScreen = corners[handle];
+    this.transformAnchorScreen = anchorScreen;
+    this.transformAnchorWorld = { x: worldAnchor.x, y: worldAnchor.y };
+    this.lastTotalScaleX = 1;
+    this.lastTotalScaleY = 1;
+  }
+
+  private handleAnchorResizeMove(viewportPoint: Point): void {
+    if (
+      !this.transformAnchorScreen ||
+      !this.transformAnchorWorld ||
+      !this.originalCornerScreen
+    )
+      return;
+
+    const anchor = this.transformAnchorScreen;
+    const origCorner = this.originalCornerScreen;
+    const isEdgeX =
+      this.activeTransformHandle === "e" || this.activeTransformHandle === "w";
+    const isEdgeY =
+      this.activeTransformHandle === "n" || this.activeTransformHandle === "s";
+
+    let desiredSX = this.lastTotalScaleX;
+    let desiredSY = this.lastTotalScaleY;
+
+    const dxOrig = origCorner.x - anchor.x;
+    const dyOrig = origCorner.y - anchor.y;
+
+    if (!isEdgeY && Math.abs(dxOrig) > 0.001) {
+      desiredSX = (viewportPoint.x - anchor.x) / dxOrig;
+    }
+    if (!isEdgeX && Math.abs(dyOrig) > 0.001) {
+      desiredSY = (viewportPoint.y - anchor.y) / dyOrig;
+    }
+
+    const minScale = 0.01;
+    if (Math.abs(desiredSX) < minScale)
+      desiredSX = desiredSX < 0 ? -minScale : minScale;
+    if (Math.abs(desiredSY) < minScale)
+      desiredSY = desiredSY < 0 ? -minScale : minScale;
+
+    const incSX = desiredSX / this.lastTotalScaleX;
+    const incSY = desiredSY / this.lastTotalScaleY;
+
+    if (Math.abs(incSX - 1) > 0.0001 || Math.abs(incSY - 1) > 0.0001) {
+      this.didTransformAnchors = true;
+      this.scalePickedAnchorsInViewSpace(
+        incSX,
+        incSY,
+        this.transformAnchorWorld,
+      );
+      this.lastTotalScaleX = desiredSX;
+      this.lastTotalScaleY = desiredSY;
+    }
+  }
+
+  private handleAnchorRotateMove(viewportPoint: Point): void {
+    if (!this.rotatePivotWorld) return;
+
+    const screenCenter = this.camera.worldToScreen(
+      this.rotatePivotWorld.x,
+      this.rotatePivotWorld.y,
+    );
+    const currentAngle = Math.atan2(
+      viewportPoint.y - screenCenter.y,
+      viewportPoint.x - screenCenter.x,
+    );
+    const desiredRotation = currentAngle - this.rotateStartAngle;
+    const incrementalRotation = desiredRotation - this.lastTotalRotation;
+
+    if (Math.abs(incrementalRotation) > 0.0001) {
+      this.didTransformAnchors = true;
+      const degrees = (incrementalRotation * 180) / Math.PI;
+      this.rotatePickedAnchors(degrees, this.rotatePivotWorld);
+      this.lastTotalRotation = desiredRotation;
+    }
+  }
+
+  private getPickedAnchorCentroidWorld(): Point | null {
+    if (this.pickedAnchors.size === 0) return null;
+    const pathById = this.buildPathIndex();
+    let sx = 0,
+      sy = 0,
+      n = 0;
+    for (const key of this.pickedAnchors) {
+      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+      const item = pathById.get(itemId);
+      if (!item) continue;
+      const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+      if (!seg) continue;
+      sx += seg.point.x;
+      sy += seg.point.y;
+      n++;
+    }
+    if (n === 0) return null;
+    return { x: sx / n, y: sy / n };
+  }
+
+  /**
+   * Scale every picked anchor about `worldPivot` in **view-aligned axes**,
+   * so dragging a handle rightward scales horizontally on screen even when
+   * the camera is rotated. Bezier tangents are scaled with the anchor so the
+   * curvature of each picked segment is preserved.
+   */
+  private scalePickedAnchorsInViewSpace(
+    incSX: number,
+    incSY: number,
+    worldPivot: Point,
+  ): void {
+    const rotDeg = this.camera.getRotationDegrees();
+    const origin = new paper.Point(0, 0);
+    const matrix = new paper.Matrix();
+    matrix.translate(worldPivot.x, worldPivot.y);
+    matrix.rotate(-rotDeg, origin);
+    matrix.scale(incSX, incSY);
+    matrix.rotate(rotDeg, origin);
+    matrix.translate(-worldPivot.x, -worldPivot.y);
+
+    const pathById = this.buildPathIndex();
+    for (const key of this.pickedAnchors) {
+      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+      const item = pathById.get(itemId);
+      if (!item) continue;
+      const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+      if (!seg) continue;
+
+      const newPoint = matrix.transform(seg.point);
+      // Handles are relative vectors — transform (anchor + handle), subtract
+      // the new anchor to get the new relative handle. This applies the
+      // rotational/scale portion of the matrix to the vector and drops the
+      // translational part, which is exactly what we want for handles.
+      const inAbsNew = matrix.transform(seg.point.add(seg.handleIn));
+      const outAbsNew = matrix.transform(seg.point.add(seg.handleOut));
+
+      seg.point = newPoint;
+      seg.handleIn = new paper.Point(
+        inAbsNew.x - newPoint.x,
+        inAbsNew.y - newPoint.y,
+      );
+      seg.handleOut = new paper.Point(
+        outAbsNew.x - newPoint.x,
+        outAbsNew.y - newPoint.y,
+      );
+    }
+    paper.view.update();
+  }
+
+  private rotatePickedAnchors(degrees: number, worldPivot: Point): void {
+    const pivot = new paper.Point(worldPivot.x, worldPivot.y);
+    const pathById = this.buildPathIndex();
+    for (const key of this.pickedAnchors) {
+      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+      const item = pathById.get(itemId);
+      if (!item) continue;
+      const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+      if (!seg) continue;
+
+      seg.point = seg.point.rotate(degrees, pivot);
+      // Handles are relative vectors; rotate them about the origin.
+      seg.handleIn = seg.handleIn.rotate(degrees, new paper.Point(0, 0));
+      seg.handleOut = seg.handleOut.rotate(degrees, new paper.Point(0, 0));
+    }
+    paper.view.update();
   }
 
   // ============================================================

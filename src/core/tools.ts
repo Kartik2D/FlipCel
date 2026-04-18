@@ -276,6 +276,34 @@ export const directSelect: ToolDefinition<typeof directSelectSettings> = {
 };
 
 // ============================================================
+// Magnet Tool
+// ============================================================
+
+const magnetSettings = {
+  size: {
+    type: "range",
+    min: 20,
+    max: 400,
+    step: 1,
+    default: 120,
+    label: "Size",
+  },
+} as const satisfies SettingsSchema;
+
+export const magnet: ToolDefinition<typeof magnetSettings> = {
+  id: "magnet",
+  name: "Magnet",
+  hotkey: "m",
+  settings: magnetSettings,
+
+  onStart() {},
+  onMove() {},
+  onEnd() {
+    return null;
+  },
+};
+
+// ============================================================
 // Pan Tool
 // ============================================================
 
@@ -317,7 +345,7 @@ export const eyedropper: ToolDefinition<typeof eyedropperSettings> = {
 // Tool Registry
 // ============================================================
 
-export const tools = [brush, lasso, select, directSelect, pan, eyedropper] as const;
+export const tools = [brush, lasso, select, directSelect, magnet, pan, eyedropper] as const;
 
 export type ToolId = (typeof tools)[number]["id"];
 export type DrawMode = "add" | "subtract" | "inside";

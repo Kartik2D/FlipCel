@@ -267,14 +267,6 @@ function findCusp(a: number, b: number): [number, number] {
   return [L_cusp, C_cusp];
 }
 
-// Get ST max for toe/mid calculations (reserved for future use)
-function _getStMax(a: number, b: number): [number, number] {
-  const [L, C] = findCusp(a, b);
-  return [C / L, C / (1 - L)];
-}
-// Silence unused warning
-void _getStMax;
-
 // Toe function for perceptual lightness
 function toe(x: number): number {
   const k_1 = 0.206;
@@ -283,7 +275,6 @@ function toe(x: number): number {
   return 0.5 * (k_3 * x - k_1 + Math.sqrt((k_3 * x - k_1) * (k_3 * x - k_1) + 4 * k_2 * k_3 * x));
 }
 
-// Inverse toe function
 function toeInv(x: number): number {
   const k_1 = 0.206;
   const k_2 = 0.03;
@@ -291,7 +282,138 @@ function toeInv(x: number): number {
   return (x * x + k_1 * x) / (k_3 * (x + k_2));
 }
 
-// OKHSL to sRGB (0-255)
+// Finds intersection of the line L = L0*(1-t)+t*L1, C = t*C1 with the sRGB gamut.
+// a,b must be normalised (a^2+b^2 = 1). Ported directly from Björn Ottosson's reference.
+function findGamutIntersection(
+  a: number,
+  b: number,
+  L1: number,
+  C1: number,
+  L0: number,
+  cusp: [number, number],
+): number {
+  let t: number;
+  if ((L1 - L0) * cusp[1] - (cusp[0] - L0) * C1 <= 0) {
+    t = (cusp[1] * L0) / (C1 * cusp[0] + cusp[1] * (L0 - L1));
+  } else {
+    t = (cusp[1] * (L0 - 1)) / (C1 * (cusp[0] - 1) + cusp[1] * (L0 - L1));
+
+    const dL = L1 - L0;
+    const dC = C1;
+
+    const k_l = +0.3963377774 * a + 0.2158037573 * b;
+    const k_m = -0.1055613458 * a - 0.0638541728 * b;
+    const k_s = -0.0894841775 * a - 1.291485548 * b;
+
+    const l_dt = dL + dC * k_l;
+    const m_dt = dL + dC * k_m;
+    const s_dt = dL + dC * k_s;
+
+    const L = L0 * (1 - t) + t * L1;
+    const C = t * C1;
+
+    const l_ = L + C * k_l;
+    const m_ = L + C * k_m;
+    const s_ = L + C * k_s;
+
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+
+    const ldt = 3 * l_dt * l_ * l_;
+    const mdt = 3 * m_dt * m_ * m_;
+    const sdt = 3 * s_dt * s_ * s_;
+
+    const ldt2 = 6 * l_dt * l_dt * l_;
+    const mdt2 = 6 * m_dt * m_dt * m_;
+    const sdt2 = 6 * s_dt * s_dt * s_;
+
+    const r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s - 1;
+    const r1 = 4.0767416621 * ldt - 3.3077115913 * mdt + 0.2309699292 * sdt;
+    const r2 = 4.0767416621 * ldt2 - 3.3077115913 * mdt2 + 0.2309699292 * sdt2;
+    const u_r = r1 / (r1 * r1 - 0.5 * r * r2);
+    let t_r = -r * u_r;
+
+    const gG = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s - 1;
+    const g1 = -1.2684380046 * ldt + 2.6097574011 * mdt - 0.3413193965 * sdt;
+    const g2 = -1.2684380046 * ldt2 + 2.6097574011 * mdt2 - 0.3413193965 * sdt2;
+    const u_g = g1 / (g1 * g1 - 0.5 * gG * g2);
+    let t_g = -gG * u_g;
+
+    const bB = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s - 1;
+    const b1 = -0.0041960863 * ldt - 0.7034186147 * mdt + 1.707614701 * sdt;
+    const b2 = -0.0041960863 * ldt2 - 0.7034186147 * mdt2 + 1.707614701 * sdt2;
+    const u_b = b1 / (b1 * b1 - 0.5 * bB * b2);
+    let t_b = -bB * u_b;
+
+    t_r = u_r >= 0 ? t_r : 1e5;
+    t_g = u_g >= 0 ? t_g : 1e5;
+    t_b = u_b >= 0 ? t_b : 1e5;
+
+    t += Math.min(t_r, Math.min(t_g, t_b));
+  }
+  return t;
+}
+
+function getStMax(cusp: [number, number]): [number, number] {
+  return [cusp[1] / cusp[0], cusp[1] / (1 - cusp[0])];
+}
+
+// Returns the three control chroma values (C_0, C_mid, C_max) used by OKHSL.
+function getCs(L: number, a_: number, b_: number): [number, number, number] {
+  const cusp = findCusp(a_, b_);
+  const C_max = findGamutIntersection(a_, b_, L, 1, L, cusp);
+  const [S_max, T_max] = getStMax(cusp);
+
+  const S_mid =
+    0.11516993 +
+    1 /
+      (7.4477897 +
+        4.1590124 * b_ +
+        a_ *
+          (-2.19557347 +
+            1.75198401 * b_ +
+            a_ *
+              (-2.13704948 -
+                10.02301043 * b_ +
+                a_ * (-4.24894561 + 5.38770819 * b_ + 4.69891013 * a_))));
+
+  const T_mid =
+    0.11239642 +
+    1 /
+      (1.6132032 -
+        0.68124379 * b_ +
+        a_ *
+          (0.40370612 +
+            0.90148123 * b_ +
+            a_ *
+              (-0.27087943 +
+                0.6122399 * b_ +
+                a_ * (0.00299215 - 0.45399568 * b_ - 0.14661872 * a_))));
+
+  const k = C_max / Math.min(L * S_max, (1 - L) * T_max);
+
+  let C_mid: number;
+  {
+    const C_a = L * S_mid;
+    const C_b = (1 - L) * T_mid;
+    C_mid =
+      0.9 *
+      k *
+      Math.sqrt(Math.sqrt(1 / (1 / (C_a * C_a * C_a * C_a) + 1 / (C_b * C_b * C_b * C_b))));
+  }
+
+  let C_0: number;
+  {
+    const C_a = L * 0.4;
+    const C_b = (1 - L) * 0.8;
+    C_0 = Math.sqrt(1 / (1 / (C_a * C_a) + 1 / (C_b * C_b)));
+  }
+
+  return [C_0, C_mid, C_max];
+}
+
+// OKHSL → sRGB (faithful port of Björn Ottosson's reference)
 export function okhslToRgb(h: number, s: number, l: number): [number, number, number] {
   h = h / 360;
   s = s / 100;
@@ -299,30 +421,30 @@ export function okhslToRgb(h: number, s: number, l: number): [number, number, nu
 
   if (l >= 1) return [255, 255, 255];
   if (l <= 0) return [0, 0, 0];
-  if (s <= 0) {
-    const gray = Math.round(l * 255);
-    return [gray, gray, gray];
-  }
 
   const a_ = Math.cos(2 * Math.PI * h);
   const b_ = Math.sin(2 * Math.PI * h);
+  const L = toeInv(l);
 
-  const [L_cusp, C_cusp] = findCusp(a_, b_);
-  const L_target = toeInv(l);
+  const [C_0, C_mid, C_max] = getCs(L, a_, b_);
 
   let C: number;
-  if (L_target <= L_cusp) {
-    // Below cusp - interpolate from black to cusp
-    const t = L_target / L_cusp;
-    C = s * t * C_cusp;
+  let t: number, k_0: number, k_1: number, k_2: number;
+  if (s < 0.8) {
+    t = 1.25 * s;
+    k_0 = 0;
+    k_1 = 0.8 * C_0;
+    k_2 = 1 - k_1 / C_mid;
   } else {
-    // Above cusp - interpolate from cusp to white
-    const t = (L_target - L_cusp) / (1 - L_cusp);
-    C = s * (1 - t) * C_cusp;
+    t = 5 * (s - 0.8);
+    k_0 = C_mid;
+    k_1 = (0.2 * C_mid * C_mid * 1.25 * 1.25) / C_0;
+    k_2 = 1 - k_1 / (C_max - C_mid);
   }
 
-  const [r_lin, g_lin, b_lin] = oklabToLinearSrgb(L_target, C * a_, C * b_);
+  C = k_0 + (t * k_1) / (1 - k_2 * t);
 
+  const [r_lin, g_lin, b_lin] = oklabToLinearSrgb(L, C * a_, C * b_);
   return [
     Math.round(Math.max(0, Math.min(1, linearToSrgb(r_lin))) * 255),
     Math.round(Math.max(0, Math.min(1, linearToSrgb(g_lin))) * 255),
@@ -330,40 +452,41 @@ export function okhslToRgb(h: number, s: number, l: number): [number, number, nu
   ];
 }
 
-// sRGB (0-255) to OKHSL
 export function rgbToOkhsl(r: number, g: number, b: number): [number, number, number] {
-  const r_lin = srgbToLinear(r / 255);
-  const g_lin = srgbToLinear(g / 255);
-  const b_lin = srgbToLinear(b / 255);
+  const [L, a, b_raw] = linearSrgbToOklab(
+    srgbToLinear(r / 255),
+    srgbToLinear(g / 255),
+    srgbToLinear(b / 255),
+  );
 
-  const [L, a, b_] = linearSrgbToOklab(r_lin, g_lin, b_lin);
+  const C = Math.sqrt(a * a + b_raw * b_raw);
+  const a_ = C > 0 ? a / C : 1;
+  const b_ = C > 0 ? b_raw / C : 0;
 
-  const C = Math.sqrt(a * a + b_ * b_);
-  let h = 0.5 + (0.5 * Math.atan2(-b_, -a)) / Math.PI;
+  const h = 0.5 + (0.5 * Math.atan2(-b_raw, -a)) / Math.PI;
 
-  if (C < 0.0001) {
+  if (C < 1e-4) {
     return [h * 360, 0, toe(L) * 100];
   }
 
-  const a_ = a / C;
-  const b__ = b_ / C;
-
-  const [L_cusp, C_cusp] = findCusp(a_, b__);
+  const [C_0, C_mid, C_max] = getCs(L, a_, b_);
 
   let s: number;
-  if (L <= L_cusp) {
-    // Below cusp
-    const C_max = L_cusp > 0 ? (L / L_cusp) * C_cusp : 0;
-    s = C_max > 0 ? C / C_max : 0;
+  if (C < C_mid) {
+    const k_0 = 0;
+    const k_1 = 0.8 * C_0;
+    const k_2 = 1 - k_1 / C_mid;
+    const t = (C - k_0) / (k_1 + k_2 * (C - k_0));
+    s = t * 0.8;
   } else {
-    // Above cusp
-    const C_max = (1 - L_cusp) > 0 ? ((1 - L) / (1 - L_cusp)) * C_cusp : 0;
-    s = C_max > 0 ? C / C_max : 0;
+    const k_0 = C_mid;
+    const k_1 = (0.2 * C_mid * C_mid * 1.25 * 1.25) / C_0;
+    const k_2 = 1 - k_1 / (C_max - C_mid);
+    const t = (C - k_0) / (k_1 + k_2 * (C - k_0));
+    s = 0.8 + 0.2 * t;
   }
 
-  const l = toe(L);
-
-  return [h * 360, Math.min(Math.max(s, 0), 1) * 100, l * 100];
+  return [h * 360, Math.max(0, Math.min(1, s)) * 100, toe(L) * 100];
 }
 
 // ============================================================
@@ -380,28 +503,26 @@ export function okhsvToRgb(h: number, s: number, v: number): [number, number, nu
   const a_ = Math.cos(2 * Math.PI * h);
   const b_ = Math.sin(2 * Math.PI * h);
 
-  const [L_cusp, C_cusp] = findCusp(a_, b_);
-  const S_max = L_cusp > 0 ? C_cusp / L_cusp : 1;
-  const T_max = (1 - L_cusp) > 0 ? C_cusp / (1 - L_cusp) : 1;
+  const cusp = findCusp(a_, b_);
+  const [S_max, T] = getStMax(cusp);
   const S_0 = 0.5;
   const k = 1 - S_0 / S_max;
 
-  const denom = S_0 + T_max - T_max * k * s;
-  const l = denom > 0 ? 1 - s * S_0 / denom : 1;
-  const c = denom > 0 ? s * T_max * S_0 / denom : 0;
+  const L_v = 1 - (s * S_0) / (S_0 + T - T * k * s);
+  const C_v = (s * T * S_0) / (S_0 + T - T * k * s);
 
-  let L = v * l;
-  let C = v * c;
+  let L = v * L_v;
+  let C = v * C_v;
 
-  const L_vt = toeInv(l);
-  const C_vt = l > 0 ? c * L_vt / l : 0;
+  const L_vt = toeInv(L_v);
+  const C_vt = L_v > 0 ? (C_v * L_vt) / L_v : 0;
 
   const L_new = toeInv(L);
-  C = L > 0 ? C * L_new / L : 0;
+  C = L > 0 ? (C * L_new) / L : 0;
   L = L_new;
 
   const [rs, gs, bs] = oklabToLinearSrgb(L_vt, a_ * C_vt, b_ * C_vt);
-  const scale_L = Math.cbrt(1 / Math.max(rs, gs, bs, 1e-10));
+  const scale_L = Math.cbrt(1 / Math.max(rs, gs, bs, 0));
 
   L *= scale_L;
   C *= scale_L;
@@ -415,55 +536,48 @@ export function okhsvToRgb(h: number, s: number, v: number): [number, number, nu
 }
 
 export function rgbToOkhsv(r: number, g: number, b: number): [number, number, number] {
-  const r_lin = srgbToLinear(r / 255);
-  const g_lin = srgbToLinear(g / 255);
-  const b_lin = srgbToLinear(b / 255);
-
-  const [L_raw, a, b_val] = linearSrgbToOklab(r_lin, g_lin, b_lin);
+  const [L_raw, a, b_val] = linearSrgbToOklab(
+    srgbToLinear(r / 255),
+    srgbToLinear(g / 255),
+    srgbToLinear(b / 255),
+  );
 
   let C = Math.sqrt(a * a + b_val * b_val);
   let L = L_raw;
-  const h = 0.5 + 0.5 * Math.atan2(-b_val, -a) / Math.PI;
+  const h = 0.5 + (0.5 * Math.atan2(-b_val, -a)) / Math.PI;
 
-  if (C < 0.0001) {
+  if (C < 1e-4) {
     return [h * 360, 0, toe(L) * 100];
   }
 
   const a_ = a / C;
   const b_ = b_val / C;
 
-  const [L_cusp, C_cusp] = findCusp(a_, b_);
-  const S_max = L_cusp > 0 ? C_cusp / L_cusp : 1;
-  const T_max = (1 - L_cusp) > 0 ? C_cusp / (1 - L_cusp) : 1;
+  const cusp = findCusp(a_, b_);
+  const [S_max, T] = getStMax(cusp);
   const S_0 = 0.5;
   const k = 1 - S_0 / S_max;
 
-  const t_denom = C + L * T_max;
-  const t = t_denom > 0 ? T_max / t_denom : 0;
+  const t = T / (C + L * T);
   const L_v = t * L;
   const C_v = t * C;
 
   const L_vt = toeInv(L_v);
-  const C_vt = L_v > 0 ? C_v * L_vt / L_v : 0;
+  const C_vt = L_v > 0 ? (C_v * L_vt) / L_v : 0;
 
   const [rs, gs, bs] = oklabToLinearSrgb(L_vt, a_ * C_vt, b_ * C_vt);
-  const scale_L = Math.cbrt(1 / Math.max(rs, gs, bs, 1e-10));
+  const scale_L = Math.cbrt(1 / Math.max(rs, gs, bs, 0));
 
   L /= scale_L;
   C /= scale_L;
 
-  C = L > 0 ? C * toe(L) / L : 0;
+  C = L > 0 ? (C * toe(L)) / L : 0;
   L = toe(L);
 
   const v = L_v > 0 ? L / L_v : 0;
-  const s_denom = T_max * S_0 + T_max * k * C_v;
-  const s = s_denom > 0 ? (S_0 + T_max) * C_v / s_denom : 0;
+  const s = ((S_0 + T) * C_v) / (T * S_0 + T * k * C_v);
 
-  return [
-    h * 360,
-    Math.max(0, Math.min(1, s)) * 100,
-    Math.max(0, Math.min(1, v)) * 100,
-  ];
+  return [h * 360, Math.max(0, Math.min(1, s)) * 100, Math.max(0, Math.min(1, v)) * 100];
 }
 
 // ============================================================

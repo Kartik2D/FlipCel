@@ -38,6 +38,7 @@ export class UIOverlay {
   private isDrawing = false;
   private isMobile = false;
   private maxBrushSize = 4; // Default max brush size in pixel canvas units
+  private magnetSize = 120; // Magnet brush diameter in viewport/screen pixels
 
   constructor(
     _canvas: HTMLCanvasElement,
@@ -84,6 +85,12 @@ export class UIOverlay {
 
   setMaxBrushSize(size: number) {
     this.maxBrushSize = size;
+    this.draw();
+  }
+
+  /** Set magnet brush diameter in viewport/screen pixels. */
+  setMagnetSize(size: number) {
+    this.magnetSize = size;
     this.draw();
   }
 
@@ -138,6 +145,12 @@ export class UIOverlay {
     // On mobile, only show while actively drawing
     if (this.isMobile) return this.isDrawing;
 
+    return true;
+  }
+
+  private shouldShowMagnetRing(): boolean {
+    if (!this.brushSizeIndicatorEnabled || this.activeTool !== "magnet") return false;
+    if (this.isMobile) return this.isDrawing;
     return true;
   }
 
@@ -429,6 +442,33 @@ export class UIOverlay {
       this.ctx.beginPath();
       this.ctx.arc(viewportX, viewportY, cursorRadius, 0, Math.PI * 2);
       this.ctx.stroke();
+    }
+
+    // Magnet brush ring (falloff radius in viewport pixels)
+    if (this.currentCursor && this.shouldShowMagnetRing()) {
+      const viewportX =
+        (this.currentCursor.x / this.config.pixelWidth) *
+        this.config.viewportWidth;
+      const viewportY =
+        (this.currentCursor.y / this.config.pixelHeight) *
+        this.config.viewportHeight;
+
+      const radius = this.magnetSize / 2;
+
+      this.ctx.save();
+      this.ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+      this.ctx.lineWidth = 1.5;
+      this.ctx.beginPath();
+      this.ctx.arc(viewportX, viewportY, radius, 0, Math.PI * 2);
+      this.ctx.stroke();
+      this.ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+      this.ctx.lineWidth = 1;
+      this.ctx.setLineDash([4, 3]);
+      this.ctx.beginPath();
+      this.ctx.arc(viewportX, viewportY, radius, 0, Math.PI * 2);
+      this.ctx.stroke();
+      this.ctx.setLineDash([]);
+      this.ctx.restore();
     }
   }
 }

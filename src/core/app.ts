@@ -27,6 +27,7 @@ import { ChromeOverlay } from "./chrome-overlay";
 import { Camera } from "./camera";
 import { SelectionController } from "./selection-controller";
 import { DirectSelectController } from "./direct-select-controller";
+import { MagnetController } from "./magnet-controller";
 import { HistoryManager } from "./history";
 import { bus, Events } from "./event-bus";
 import type { CanvasConfig, Point, Modifiers } from "./types";
@@ -84,6 +85,7 @@ class App {
   private chromeOverlay: ChromeOverlay;
   private selectionController: SelectionController;
   private directSelectController: DirectSelectController;
+  private magnetController: MagnetController;
   private historyManager: HistoryManager;
   private colorPanel: InkwellColorPanel;
   private toolsPanel: InkwellToolsPanel;
@@ -159,10 +161,15 @@ class App {
       this.camera,
       this.chromeOverlay,
     );
+    this.magnetController = new MagnetController(this.paperRenderer, this.camera);
     this.historyManager = new HistoryManager();
     this.selectionController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.directSelectController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.directSelectController.setReconcileCallback((item) =>
+      this.paperRenderer.reconcileItem(item),
+    );
+    this.magnetController.setSnapshotCallback(() => this.historyManager.snapshot());
+    this.magnetController.setReconcileCallback((item) =>
       this.paperRenderer.reconcileItem(item),
     );
 
@@ -416,6 +423,10 @@ class App {
       if (brushSettings.sizeMax !== undefined) {
         this.uiOverlay.setMaxBrushSize(brushSettings.sizeMax);
       }
+      const magnetSettings = settings.magnet as { size?: number } | undefined;
+      if (magnetSettings && typeof magnetSettings.size === "number") {
+        this.uiOverlay.setMagnetSize(magnetSettings.size);
+      }
     });
 
     // Tool store - sync with inputManager + overlay (brush ring only when brush is active)
@@ -575,6 +586,13 @@ class App {
       this.functionsPanel.close();
     }
 
+    if (tool === "magnet") {
+      this.magnetController.handleStart(point);
+      this.uiOverlay.setDrawingState(true);
+      this.uiOverlay.updateCursor(point);
+      return;
+    }
+
     if (tool === "eyedropper") {
       this.pickColorAt(point);
       return;
@@ -612,6 +630,12 @@ class App {
       return;
     }
 
+    if (tool === "magnet") {
+      this.magnetController.handleMove(point);
+      this.uiOverlay.updateCursor(point);
+      return;
+    }
+
     if (tool === "eyedropper") {
       this.pickColorAt(point);
       return;
@@ -633,6 +657,12 @@ class App {
 
     if (tool === "direct-select") {
       this.directSelectController.handleEnd();
+      return;
+    }
+
+    if (tool === "magnet") {
+      this.magnetController.handleEnd();
+      this.uiOverlay.setDrawingState(false);
       return;
     }
 
@@ -707,6 +737,12 @@ class App {
       return;
     }
 
+    if (tool === "magnet") {
+      this.magnetController.handleCancel();
+      this.uiOverlay.setDrawingState(false);
+      return;
+    }
+
     if (tool === "eyedropper") return;
 
     this.insideClipForStroke = undefined;
@@ -741,6 +777,9 @@ class App {
       this.directSelectController.clearSelection();
       this.functionsPanel.close();
     }
+    if (tool !== "magnet" && this.magnetController.hasActiveStroke()) {
+      this.magnetController.handleCancel();
+    }
   }
 
   private onToolCycle() {
@@ -766,6 +805,10 @@ class App {
     const brushSettings = settings.brush as { sizeMax?: number };
     if (brushSettings.sizeMax !== undefined) {
       this.uiOverlay.setMaxBrushSize(brushSettings.sizeMax);
+    }
+    const magnetSettings = settings.magnet as { size?: number } | undefined;
+    if (magnetSettings && typeof magnetSettings.size === "number") {
+      this.uiOverlay.setMagnetSize(magnetSettings.size);
     }
   }
 

@@ -1897,43 +1897,26 @@ export class PaperRenderer {
   }
 
   /**
-   * Draw selection indicator with transform handles.
+   * Pure bbox + handle chrome given a screen-space rect. Extracted from
+   * drawSelection so both the select tool (bbox over shape bounds) and
+   * direct-select (bbox over picked anchor points) share the same gizmo.
    *
-   * The bounding box is screen-aligned (axis-aligned to the viewport, not to
-   * world), so the frame always appears as a proper rectangle regardless of
-   * camera rotation. The item-shape outlines are still traced in world → screen
-   * so they follow the true geometry.
-   *
-   * When rotating, the caller passes the pivot (screen coords) that rotation
-   * is happening around — this is typically the item's own rotation point
-   * (`item.position` for a single selection) rather than the bbox center, so
-   * the feedback line always springs from the true pivot.
-   *
-   * Returns screen-space handle positions for hit-testing.
+   * The box is screen-axis-aligned. Rotation pivot + cursor are caller-
+   * supplied because callers have different conventions (item.position,
+   * bbox center, anchor centroid, etc.).
    */
-  drawSelection(
-    item: paper.Item | paper.Item[] | null,
+  drawTransformChrome(
+    screenBounds: { x: number; y: number; width: number; height: number },
     ctx: CanvasRenderingContext2D,
     rotating?: { cursor: { x: number; y: number }; pivot: { x: number; y: number } } | null,
   ): SelectionHandle[] {
-    if (!item) return [];
-
-    const items = Array.isArray(item) ? item : [item];
-    const screenBounds = this.getSelectionFrameScreenBounds(items);
-    if (!screenBounds) return [];
-
     const b = screenBounds;
     const controlFill = "#000000";
     const controlStroke = "#ffffff";
 
     ctx.save();
 
-    // Shape outline: dashed black core with white rim + single underlay shadow.
-    for (const it of items) {
-      this.strokeSelectionShapeOutline(ctx, it);
-    }
-
-    // Dashed screen-aligned bounding box (white rim, black core — no drop shadow)
+    // Dashed screen-aligned bounding box (white rim, black core)
     const boxDash = [5, 5];
     ctx.setLineDash(boxDash);
     ctx.lineJoin = "miter";
@@ -1945,7 +1928,6 @@ export class PaperRenderer {
     ctx.strokeRect(b.x, b.y, b.width, b.height);
     ctx.setLineDash([]);
 
-    // Handle positions in screen space (axis-aligned; camera-rotation agnostic)
     const nw = { x: b.x, y: b.y };
     const ne = { x: b.x + b.width, y: b.y };
     const se = { x: b.x + b.width, y: b.y + b.height };
@@ -2032,5 +2014,28 @@ export class PaperRenderer {
 
     ctx.restore();
     return handles;
+  }
+
+  /**
+   * Draw shape outlines for the selection plus the transform chrome
+   * (bbox + handles). The bbox is computed from item world-bounds projected
+   * to screen, so it stays screen-axis-aligned regardless of camera rotation.
+   */
+  drawSelection(
+    item: paper.Item | paper.Item[] | null,
+    ctx: CanvasRenderingContext2D,
+    rotating?: { cursor: { x: number; y: number }; pivot: { x: number; y: number } } | null,
+  ): SelectionHandle[] {
+    if (!item) return [];
+
+    const items = Array.isArray(item) ? item : [item];
+    const screenBounds = this.getSelectionFrameScreenBounds(items);
+    if (!screenBounds) return [];
+
+    for (const it of items) {
+      this.strokeSelectionShapeOutline(ctx, it);
+    }
+
+    return this.drawTransformChrome(screenBounds, ctx, rotating);
   }
 }

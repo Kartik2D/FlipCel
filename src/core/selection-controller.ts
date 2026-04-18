@@ -159,6 +159,15 @@ export class SelectionController {
       this.didMove = false;
       this.activeHandle = null;
       this.bringSelectionToFront();
+    } else if (hitItem) {
+      // Click inside (or on) another shape: select that whole path, then drag.
+      this.placeSelection();
+      this.setSelectedItems([hitItem]);
+      this.isDragging = true;
+      this.dragStartPoint = viewportPoint;
+      this.didMove = false;
+      this.activeHandle = null;
+      this.bringSelectionToFront();
     } else {
       this.placeSelection();
       this.startMarquee(viewportPoint);

@@ -818,6 +818,7 @@ export class UnifiedInputManager {
         break;
       case "brush":
       case "lasso":
+      case "magnet":
         this.canvas.style.cursor = getDrawingCrosshairCursorCss();
         break;
       default:

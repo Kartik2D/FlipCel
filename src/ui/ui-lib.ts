@@ -12,7 +12,6 @@ import {
   getColorSpaceAdapter,
   valuesToHex,
   clampChannelValues,
-  type ColorSpaceId,
   type ColorSpaceAdapter,
   type ChannelValues,
 } from "./color-utils";
@@ -34,7 +33,6 @@ import {
   themeModeStore,
   StoreController,
   type ColorPanelPrefs,
-  type PickerGeometry,
 } from "../core/stores";
 import { historyStateStore } from "../core/history";
 
@@ -969,11 +967,16 @@ export class BlockyButton extends Block {
 export class GenericColorPicker extends BaseColorPicker {
   @property({ type: Object }) prefs!: ColorPanelPrefs;
 
-  private values: ChannelValues = {};
+  @state() private values: ChannelValues = {};
   private canvas: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
   private planeResizeObserver: ResizeObserver | null = null;
-  private lastPlaneBitmapSize = { w: 0, h: 0 };
+  /* Fixed low-res backing store (upscaled by CSS with bilinear filtering).
+     Keeps drawPlane cheap even for expensive OK* conversions on every slider
+     tick while still looking smooth at typical panel sizes. */
+  private static readonly PLANE_RES = 192;
+  private drawRaf: number | null = null;
+  private lastPlaneSignature = "";
 
   static styles = [pickerVars, handleStyles, sliderColumnStyles, css`
     :host { display: block; height: 100%; }
@@ -1000,7 +1003,7 @@ export class GenericColorPicker extends BaseColorPicker {
       box-sizing: border-box;
     }
 
-    canvas { display: block; width: 100%; height: 100%; }
+    canvas { display: block; width: 100%; height: 100%; image-rendering: auto; }
     .slider-column { flex-shrink: 0; }
     .sliders-stack { flex: 1; display: flex; flex-direction: column; gap: 6px; min-height: 48px; }
     .sliders-stack .s-slider { flex: 1; min-height: 36px; }
@@ -1013,6 +1016,10 @@ export class GenericColorPicker extends BaseColorPicker {
     super.disconnectedCallback();
     this.planeResizeObserver?.disconnect();
     this.planeResizeObserver = null;
+    if (this.drawRaf !== null) {
+      cancelAnimationFrame(this.drawRaf);
+      this.drawRaf = null;
+    }
   }
 
   firstUpdated() {
@@ -1025,7 +1032,7 @@ export class GenericColorPicker extends BaseColorPicker {
   updated(changed: Map<string, unknown>) {
     this.ensureCanvas();
     if (changed.has("prefs")) {
-      this.lastPlaneBitmapSize = { w: 0, h: 0 };
+      this.lastPlaneSignature = "";
       this.setupPlaneResizeObserver();
     }
     if (changed.has("color") && !this._isDragging) {
@@ -1042,7 +1049,7 @@ export class GenericColorPicker extends BaseColorPicker {
     if (c && c instanceof HTMLCanvasElement && c !== this.canvas) {
       this.canvas = c;
       this.ctx = c.getContext("2d");
-      this.lastPlaneBitmapSize = { w: 0, h: 0 };
+      this.lastPlaneSignature = "";
     }
   }
 
@@ -1055,24 +1062,28 @@ export class GenericColorPicker extends BaseColorPicker {
     this.syncPlaneCanvasSize();
   }
 
-  /** Match backing-store resolution to on-screen size so the plane stays sharp and inside the border. */
+  /**
+   * Use a fixed low-res backing store and let the browser scale it to the plane
+   * element's CSS size. This trades pixel-perfect sharpness (unneeded on a
+   * smooth colour gradient) for a ~10× speed-up on every slider tick.
+   */
   private syncPlaneCanvasSize() {
     if (!this.canvas || !this.ctx) return;
-    const planeHost =
-      this.canvas.closest(".plane-square-inner") ?? this.canvas.closest(".circle-disk");
-    if (!planeHost) return;
-    const r = planeHost.getBoundingClientRect();
-    const dpr = Math.min(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1, 2.5);
-    const w = Math.max(1, Math.round(r.width * dpr));
-    const h = Math.max(1, Math.round(r.height * dpr));
-    if (w === this.lastPlaneBitmapSize.w && h === this.lastPlaneBitmapSize.h) {
-      this.drawPlane();
-      return;
+    const size = GenericColorPicker.PLANE_RES;
+    if (this.canvas.width !== size || this.canvas.height !== size) {
+      this.canvas.width = size;
+      this.canvas.height = size;
+      this.lastPlaneSignature = "";
     }
-    this.lastPlaneBitmapSize = { w, h };
-    this.canvas.width = w;
-    this.canvas.height = h;
-    this.drawPlane();
+    this.scheduleDrawPlane();
+  }
+
+  private scheduleDrawPlane() {
+    if (this.drawRaf !== null) return;
+    this.drawRaf = requestAnimationFrame(() => {
+      this.drawRaf = null;
+      this.drawPlane();
+    });
   }
 
   protected syncFromColor(hex: string) {
@@ -1093,6 +1104,18 @@ export class GenericColorPicker extends BaseColorPicker {
     const mx = this.channelMeta(planeX);
     const my = this.channelMeta(planeY);
     if (!mx || !my) return;
+
+    /* Only the "third" (slider) channels plus space/geometry/axes affect the
+       plane image — moving the plane handle itself doesn't. Skip redraw when
+       the signature is unchanged. */
+    const sigParts: string[] = [adapter.id, geometry, planeX, planeY];
+    for (const ch of adapter.channels) {
+      if (ch.id === planeX || ch.id === planeY) continue;
+      sigParts.push(`${ch.id}:${(this.values[ch.id] ?? 0).toFixed(3)}`);
+    }
+    const signature = sigParts.join("|");
+    if (signature === this.lastPlaneSignature) return;
+    this.lastPlaneSignature = signature;
 
     const w = this.canvas.width;
     const h = this.canvas.height;
@@ -1116,20 +1139,24 @@ export class GenericColorPicker extends BaseColorPicker {
     } else {
       const cx = w / 2, cy = h / 2, radius = Math.min(cx, cy);
       const invRadius = radius > 0 ? 1 / radius : 0;
+      /* Edge anti-aliasing: fade pixels near the radius over ~1px so the
+         circle doesn't look jagged after CSS upscaling. */
+      const aaWidth = 1;
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const dx = x - cx, dy = y - cy;
-          const distSq = dx * dx + dy * dy;
-          if (distSq > radius * radius) continue;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > radius + aaWidth) continue;
           const i = (y * w + x) * 4;
-          const dist = Math.sqrt(distSq);
           let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
           if (angleDeg < 0) angleDeg += 360;
-          const t = dist * invRadius;
+          const t = Math.min(1, dist * invRadius);
           pix[planeX] = mx.cyclic ? angleDeg : mx.min + (angleDeg / 360) * mxRange;
           pix[planeY] = my.min + t * myRange;
           const [r, g, b] = toRgb(pix);
-          data[i] = r; data[i+1] = g; data[i+2] = b; data[i+3] = 255;
+          const alpha = dist > radius ? Math.max(0, 1 - (dist - radius) / aaWidth) : 1;
+          data[i] = r; data[i + 1] = g; data[i + 2] = b;
+          data[i + 3] = Math.round(255 * alpha);
         }
       }
     }
@@ -1229,7 +1256,8 @@ export class GenericColorPicker extends BaseColorPicker {
     const update = (ev: PointerEvent) => {
       const v = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height));
       this.values = clampChannelValues(adapter, { ...this.values, [sid]: m.max - v * (m.max - m.min) });
-      this.emitChange(); this.drawPlane();
+      this.emitChange();
+      this.scheduleDrawPlane();
     };
     this.startDrag(e, update);
   }
@@ -1756,12 +1784,42 @@ export class FloatingPanel extends Block {
 // Color Panel (generic configurable picker)
 // ============================================================
 
-const COLOR_SPACE_OPTIONS: { id: ColorSpaceId; label: string }[] = [
-  { id: "hsv", label: "HSV" },
-  { id: "hsl", label: "HSL" },
-  { id: "okhsv", label: "OKHSV" },
-  { id: "okhsl", label: "OKHSL" },
+/** Each entry fixes colour space, geometry, and plane axes for the picker. */
+interface PickerVariant {
+  id: string;
+  label: string;
+  prefs: ColorPanelPrefs;
+}
+
+const PICKER_VARIANTS: PickerVariant[] = [
+  {
+    id: "hsv1",
+    label: "hsv1",
+    prefs: { space: "hsv", geometry: "square", planeX: "s", planeY: "v" },
+  },
+  {
+    id: "okhsl1",
+    label: "okhsl1",
+    prefs: { space: "okhsl", geometry: "circle", planeX: "h", planeY: "s" },
+  },
+  {
+    id: "okhsl2",
+    label: "okhsl2",
+    prefs: { space: "okhsl", geometry: "square", planeX: "h", planeY: "l" },
+  },
 ];
+
+function exactVariantId(prefs: ColorPanelPrefs): string {
+  return (
+    PICKER_VARIANTS.find(
+      (v) =>
+        v.prefs.space === prefs.space &&
+        v.prefs.geometry === prefs.geometry &&
+        v.prefs.planeX === prefs.planeX &&
+        v.prefs.planeY === prefs.planeY,
+    )?.id ?? ""
+  );
+}
 
 @customElement("inkwell-color-panel")
 export class InkwellColorPanel extends FloatingPanel {
@@ -1776,43 +1834,10 @@ export class InkwellColorPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      container-type: inline-size;
-      container-name: inkwell-color-panel;
       --block-face-padding: 10px;
-      /* Wide enough for two axis selects (e.g. “Saturation”) without clipping */
       --panel-width: 288px;
     }
 
-    .color-config {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      min-width: 0;
-      width: 100%;
-    }
-    .color-config label {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      margin: 0;
-      min-width: 0;
-    }
-    .row-2 {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-      width: 100%;
-      min-width: 0;
-    }
-    .row-2 > label {
-      min-width: 0;
-    }
-
-    @container inkwell-color-panel (max-width: 260px) {
-      .row-2 {
-        grid-template-columns: 1fr;
-      }
-    }
     .picker-wrap {
       min-height: 140px;
       flex-shrink: 0;
@@ -1825,6 +1850,13 @@ export class InkwellColorPanel extends FloatingPanel {
     super.connectedCallback();
     this.unsubscribeColor = colorStore.subscribe((c) => { if (this.color !== c) this.color = c; });
     this.unsubscribePrevColor = prevColorStore.subscribe((p) => { this.prevColor = p; });
+
+    /* If persisted prefs don't match any of the new variants (legacy HSV/HSL
+       state), snap to the first variant so the UI isn't inconsistent. */
+    const prefs = colorPanelPrefsStore.get();
+    if (!exactVariantId(prefs)) {
+      colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...PICKER_VARIANTS[0].prefs }));
+    }
   }
 
   disconnectedCallback() {
@@ -1837,41 +1869,15 @@ export class InkwellColorPanel extends FloatingPanel {
     this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
   }
 
-  private onSpaceChange(e: Event) {
-    const newSpace = (e.target as HTMLSelectElement).value as ColorSpaceId;
-    const cur = this.pickerPrefs.value;
-    const oldAdapter = getColorSpaceAdapter(cur.space);
-    const newAdapter = getColorSpaceAdapter(newSpace);
-    const xIdx = oldAdapter.channels.findIndex((c) => c.id === cur.planeX);
-    const yIdx = oldAdapter.channels.findIndex((c) => c.id === cur.planeY);
-    const newX = xIdx >= 0 && xIdx < newAdapter.channels.length ? newAdapter.channels[xIdx].id : newAdapter.defaultPlaneX;
-    const newY = yIdx >= 0 && yIdx < newAdapter.channels.length ? newAdapter.channels[yIdx].id : newAdapter.defaultPlaneY;
-    colorPanelPrefsStore.set(normalizeColorPanelPrefs({ space: newSpace, geometry: cur.geometry, planeX: newX, planeY: newY }));
-  }
-
-  private onGeometryChange(g: PickerGeometry) {
-    colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...this.pickerPrefs.value, geometry: g }));
-  }
-
-  private onGeometrySelectChange(e: Event) {
-    this.onGeometryChange((e.target as HTMLSelectElement).value as PickerGeometry);
-  }
-
-  private onPlaneAxisChange(axis: "planeX" | "planeY", e: Event) {
-    const newId = (e.target as HTMLSelectElement).value;
-    const cur = { ...this.pickerPrefs.value };
-    const other = axis === "planeX" ? "planeY" : "planeX";
-    if (newId === cur[other]) {
-      cur[other] = cur[axis];
-    }
-    cur[axis] = newId;
-    colorPanelPrefsStore.set(normalizeColorPanelPrefs(cur));
+  private onVariantChange(id: string) {
+    const variant = PICKER_VARIANTS.find((v) => v.id === id);
+    if (!variant) return;
+    colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...variant.prefs }));
   }
 
   render() {
     const prefs = this.pickerPrefs.value;
-    const adapter = getColorSpaceAdapter(prefs.space);
-    const channelOpts = adapter.channels;
+    const activeVariant = exactVariantId(prefs) || PICKER_VARIANTS[0].id;
 
     return html`
       ${this.renderPinnedClose()}
@@ -1879,6 +1885,18 @@ export class InkwellColorPanel extends FloatingPanel {
         <div class="face">
           <div class="panel-form">
             ${this.renderDragHandlePill()}
+            <div class="row" data-interactive>
+              ${PICKER_VARIANTS.map(
+                (v) => html`
+                  <blocky-button
+                    flat
+                    ?active=${v.id === activeVariant}
+                    @click=${() => this.onVariantChange(v.id)}
+                    >${v.label}</blocky-button
+                  >
+                `,
+              )}
+            </div>
             <div class="picker-wrap">
               <generic-color-picker
                 .color=${this.color}
@@ -1894,35 +1912,6 @@ export class InkwellColorPanel extends FloatingPanel {
                   this.emit("color-change-end", this.color);
                 }}
               ></generic-color-picker>
-            </div>
-            <div class="color-config" data-interactive>
-              <label>
-                <span>Color space</span>
-                <select @change=${this.onSpaceChange}>
-                  ${COLOR_SPACE_OPTIONS.map((o) => html`<option value=${o.id} .selected=${o.id === prefs.space}>${o.label}</option>`)}
-                </select>
-              </label>
-              <label>
-                <span>Shape</span>
-                <select @change=${this.onGeometrySelectChange}>
-                  <option value="square" .selected=${prefs.geometry === "square"}>Square</option>
-                  <option value="circle" .selected=${prefs.geometry === "circle"}>Circle</option>
-                </select>
-              </label>
-              <div class="row-2">
-                <label>
-                  <span>X / angle</span>
-                  <select @change=${(e: Event) => this.onPlaneAxisChange("planeX", e)}>
-                    ${channelOpts.map((c) => html`<option value=${c.id} .selected=${c.id === prefs.planeX}>${c.label}</option>`)}
-                  </select>
-                </label>
-                <label>
-                  <span>Y / radius</span>
-                  <select @change=${(e: Event) => this.onPlaneAxisChange("planeY", e)}>
-                    ${channelOpts.map((c) => html`<option value=${c.id} .selected=${c.id === prefs.planeY}>${c.label}</option>`)}
-                  </select>
-                </label>
-              </div>
             </div>
           </div>
         </div>
@@ -2085,6 +2074,10 @@ export class InkwellToolsPanel extends FloatingPanel {
     const schema = currentTool.settings as SettingsSchema;
 
     const schemaKeys = Object.keys(schema);
+    // Pixel resolution only affects tools that rasterize through the pixel
+    // canvas before tracing; vector tools (select, direct-select, magnet,
+    // pan, eyedropper) don't touch it and shouldn't advertise the setting.
+    const showsPixelRes = currentToolId === "brush" || currentToolId === "lasso";
     if (schemaKeys.length === 0) {
       if (currentToolId === "select") {
         return html`<p class="hint">Click to select, drag to move.</p>`;
@@ -2098,7 +2091,7 @@ export class InkwellToolsPanel extends FloatingPanel {
       if (currentToolId === "direct-select") {
         return html`<p class="hint">Drag a rectangle or lasso to select vertices on the active layer.</p>`;
       }
-      return html`${this.renderPixelRes()}`;
+      return showsPixelRes ? html`${this.renderPixelRes()}` : html``;
     }
 
     return html`
@@ -2113,7 +2106,7 @@ export class InkwellToolsPanel extends FloatingPanel {
       ${currentToolId === "select"
         ? html`<p class="hint">Drag a rectangle or freeform lasso to extract a selection.</p>`
         : ""}
-      ${this.renderPixelRes()}
+      ${showsPixelRes ? this.renderPixelRes() : ""}
     `;
   }
 
@@ -2328,7 +2321,7 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
       return html``;
     }
 
-    // Render each setting from schema
+    const showsPixelRes = currentToolId === "brush" || currentToolId === "lasso";
     return html`
       ${schemaKeys.map((key) =>
         this.renderSetting(
@@ -2338,7 +2331,7 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
           toolSettings[key]
         )
       )}
-      ${this.renderPixelRes()}
+      ${showsPixelRes ? this.renderPixelRes() : ""}
     `;
   }
 
