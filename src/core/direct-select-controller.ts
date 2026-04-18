@@ -48,6 +48,11 @@ const parseAnchorKey = (key: AnchorKey) => {
 };
 
 export class DirectSelectController {
+  /** Ignore sub-pixel jitter: only apply drags after this many viewport px from pointer-down. */
+  private readonly dragMoveThresholdSq = 5 * 5;
+  private dragPointerOrigin: Point | null = null;
+  private dragPastThreshold = false;
+
   private config: CanvasConfig;
   private paperRenderer: PaperRenderer;
   private camera: Camera;
@@ -185,6 +190,7 @@ export class DirectSelectController {
       if (hitTransform && this.transformGizmo.begin(hitTransform, viewportPoint, this.camera)) {
         this.didTransformAnchors = false;
         this.dragStartPoint = viewportPoint;
+        this.beginDragThreshold(viewportPoint);
         this.drawUI();
         return;
       }
@@ -196,6 +202,7 @@ export class DirectSelectController {
     if (handleHit) {
       this.handleDrag = handleHit;
       this.dragStartPoint = viewportPoint;
+      this.beginDragThreshold(viewportPoint);
       this.didMoveHandle = false;
       this.drawUI();
       return;
@@ -209,6 +216,7 @@ export class DirectSelectController {
       }
       this.isDraggingAnchor = true;
       this.dragStartPoint = viewportPoint;
+      this.beginDragThreshold(viewportPoint);
       this.didMoveAnchor = false;
       this.publishPickedItems();
       this.drawUI();
@@ -222,6 +230,7 @@ export class DirectSelectController {
       this.pickAllAnchorsOfItem(shapeHit);
       this.isDraggingAnchor = true;
       this.dragStartPoint = viewportPoint;
+      this.beginDragThreshold(viewportPoint);
       this.didMoveAnchor = false;
       this.publishPickedItems();
       this.drawUI();
@@ -243,19 +252,28 @@ export class DirectSelectController {
     }
 
     if (this.transformGizmo.isTransforming()) {
-      if (this.transformGizmo.update(viewportPoint, this.camera)) {
-        this.didTransformAnchors = true;
+      if (this.pastDragThreshold(viewportPoint)) {
+        if (this.transformGizmo.update(viewportPoint, this.camera)) {
+          this.didTransformAnchors = true;
+        }
       }
       this.drawUI();
       return;
     }
 
     if (this.handleDrag) {
-      this.dragBezierHandleTo(viewportPoint);
+      if (this.pastDragThreshold(viewportPoint)) {
+        this.dragBezierHandleTo(viewportPoint);
+      }
       return;
     }
 
     if (!this.isDraggingAnchor || !this.dragStartPoint) return;
+
+    if (!this.pastDragThreshold(viewportPoint)) {
+      this.drawUI();
+      return;
+    }
 
     const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
     const worldStart = this.camera.screenToWorld(this.dragStartPoint.x, this.dragStartPoint.y);
@@ -659,6 +677,7 @@ export class DirectSelectController {
     this.didMoveAnchor = false;
     this.handleDrag = null;
     this.didMoveHandle = false;
+    this.resetDragThreshold();
   }
 
   private resetMarqueeState(): void {
@@ -669,6 +688,28 @@ export class DirectSelectController {
     this.didTransformAnchors = false;
     this.transformGizmo.reset();
     this.lastViewportPoint = null;
+  }
+
+  private beginDragThreshold(viewportPoint: Point): void {
+    this.dragPointerOrigin = viewportPoint;
+    this.dragPastThreshold = false;
+  }
+
+  private resetDragThreshold(): void {
+    this.dragPointerOrigin = null;
+    this.dragPastThreshold = false;
+  }
+
+  private pastDragThreshold(viewportPoint: Point): boolean {
+    if (this.dragPastThreshold) return true;
+    if (!this.dragPointerOrigin) return true;
+    const dx = viewportPoint.x - this.dragPointerOrigin.x;
+    const dy = viewportPoint.y - this.dragPointerOrigin.y;
+    if (dx * dx + dy * dy >= this.dragMoveThresholdSq) {
+      this.dragPastThreshold = true;
+      return true;
+    }
+    return false;
   }
 
   // ============================================================

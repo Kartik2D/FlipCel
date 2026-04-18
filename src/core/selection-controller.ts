@@ -15,6 +15,11 @@ import { MarqueeTracker } from "./marquee-tracker";
 import { TransformGizmoController } from "./transform-gizmo-controller";
 
 export class SelectionController {
+  /** Ignore sub-pixel jitter: only count drags after this many viewport px from pointer-down. */
+  private readonly dragMoveThresholdSq = 5 * 5;
+  private dragPointerOrigin: Point | null = null;
+  private dragPastThreshold = false;
+
   private selectionShape: "rect" | "lasso" = "rect";
   private selectedItems: paper.PathItem[] = [];
   private pendingExtractionSnapshot: paper.PathItem[] | null = null;
@@ -137,6 +142,7 @@ export class SelectionController {
     }
     this.isDragging = false;
     this.dragStartPoint = null;
+    this.resetDragThreshold();
     this.marquee.reset();
     this.clearTransformState();
     this.drawUI();
@@ -151,6 +157,7 @@ export class SelectionController {
       if (hitHandle && this.transformGizmo.begin(hitHandle, viewportPoint, this.camera)) {
         this.isDragging = true;
         this.dragStartPoint = viewportPoint;
+        this.beginDragThreshold(viewportPoint);
         this.didMove = false;
         return;
       }
@@ -163,6 +170,7 @@ export class SelectionController {
     if (hitItem && this.isSelectedItem(hitItem)) {
       this.isDragging = true;
       this.dragStartPoint = viewportPoint;
+      this.beginDragThreshold(viewportPoint);
       this.didMove = false;
       this.bringSelectionToFront();
     } else if (hitItem) {
@@ -171,6 +179,7 @@ export class SelectionController {
       this.setSelectedItems([hitItem]);
       this.isDragging = true;
       this.dragStartPoint = viewportPoint;
+      this.beginDragThreshold(viewportPoint);
       this.didMove = false;
       this.bringSelectionToFront();
     } else {
@@ -192,6 +201,11 @@ export class SelectionController {
     }
 
     if (!this.isDragging || !this.hasSelection() || !this.dragStartPoint) return;
+
+    if (!this.pastDragThreshold(viewportPoint)) {
+      this.drawUI();
+      return;
+    }
 
     if (this.transformGizmo.isTransforming()) {
       if (this.transformGizmo.update(viewportPoint, this.camera)) {
@@ -233,6 +247,7 @@ export class SelectionController {
       this.marquee.reset();
       this.isDragging = false;
       this.dragStartPoint = null;
+      this.resetDragThreshold();
       this.clearTransformState();
       this.drawUI();
       return;
@@ -240,6 +255,7 @@ export class SelectionController {
 
     this.isDragging = false;
     this.dragStartPoint = null;
+    this.resetDragThreshold();
     this.clearTransformState();
     this.drawUI();
   }
@@ -250,6 +266,7 @@ export class SelectionController {
     }
     this.isDragging = false;
     this.dragStartPoint = null;
+    this.resetDragThreshold();
     this.marquee.reset();
     this.clearTransformState();
     this.drawUI();
@@ -332,6 +349,29 @@ export class SelectionController {
   private clearTransformState(): void {
     this.transformGizmo.reset();
     this.lastViewportPoint = null;
+  }
+
+  private beginDragThreshold(viewportPoint: Point): void {
+    this.dragPointerOrigin = viewportPoint;
+    this.dragPastThreshold = false;
+  }
+
+  private resetDragThreshold(): void {
+    this.dragPointerOrigin = null;
+    this.dragPastThreshold = false;
+  }
+
+  /** Returns true once pointer has moved at least dragMoveThresholdSq from origin. */
+  private pastDragThreshold(viewportPoint: Point): boolean {
+    if (this.dragPastThreshold) return true;
+    if (!this.dragPointerOrigin) return true;
+    const dx = viewportPoint.x - this.dragPointerOrigin.x;
+    const dy = viewportPoint.y - this.dragPointerOrigin.y;
+    if (dx * dx + dy * dy >= this.dragMoveThresholdSq) {
+      this.dragPastThreshold = true;
+      return true;
+    }
+    return false;
   }
 
   private startMarquee(viewportPoint: Point): void {
