@@ -17,6 +17,7 @@ import { TransformGizmoController } from "./transform-gizmo-controller";
 export class SelectionController {
   private selectionShape: "rect" | "lasso" = "rect";
   private selectedItems: paper.PathItem[] = [];
+  private pendingExtractionSnapshot: paper.PathItem[] | null = null;
   private isDragging = false;
   private dragStartPoint: Point | null = null;
   private didMove = false;
@@ -120,6 +121,7 @@ export class SelectionController {
         this.onSnapshot?.();
       }
     }
+    this.pendingExtractionSnapshot = null;
     this.selectedItems = [];
     this.selectionNeedsPlacement = false;
     this.didMove = false;
@@ -128,7 +130,11 @@ export class SelectionController {
   }
 
   clearSelection(): void {
-    this.placeSelection();
+    if (this.selectionNeedsPlacement && !this.didMove) {
+      this.revertPendingSelection();
+    } else {
+      this.placeSelection();
+    }
     this.isDragging = false;
     this.dragStartPoint = null;
     this.marquee.reset();
@@ -161,14 +167,14 @@ export class SelectionController {
       this.bringSelectionToFront();
     } else if (hitItem) {
       // Click inside (or on) another shape: select that whole path, then drag.
-      this.placeSelection();
+      this.resolvePendingSelectionForNewGesture();
       this.setSelectedItems([hitItem]);
       this.isDragging = true;
       this.dragStartPoint = viewportPoint;
       this.didMove = false;
       this.bringSelectionToFront();
     } else {
-      this.placeSelection();
+      this.resolvePendingSelectionForNewGesture();
       this.startMarquee(viewportPoint);
     }
 
@@ -205,6 +211,7 @@ export class SelectionController {
       const lassoPoints = this.marquee.getLassoPoints();
       if (!marqueeStartPoint || !marqueeCurrentPoint) return;
       if (this.hasActiveMarquee()) {
+        this.pendingExtractionSnapshot = this.paperRenderer.captureActiveLayerSnapshot();
         this.selectedItems =
           this.selectionShape === "lasso"
             ? this.paperRenderer.extractSelectionFromScreenLasso(lassoPoints)
@@ -213,9 +220,13 @@ export class SelectionController {
                 marqueeCurrentPoint,
               );
         this.selectionNeedsPlacement = this.selectedItems.length > 0;
+        if (!this.selectionNeedsPlacement) {
+          this.pendingExtractionSnapshot = null;
+        }
         selectionStore.set({ items: [...this.selectedItems] });
       } else {
         this.selectedItems = [];
+        this.pendingExtractionSnapshot = null;
         this.selectionNeedsPlacement = false;
         selectionStore.set({ items: [] });
       }
@@ -234,6 +245,9 @@ export class SelectionController {
   }
 
   handleCancel(): void {
+    if (this.selectionNeedsPlacement) {
+      this.revertPendingSelection();
+    }
     this.isDragging = false;
     this.dragStartPoint = null;
     this.marquee.reset();
@@ -325,6 +339,26 @@ export class SelectionController {
     this.dragStartPoint = null;
     this.marquee.start(viewportPoint);
     this.clearTransformState();
+  }
+
+  private resolvePendingSelectionForNewGesture(): void {
+    if (this.selectionNeedsPlacement && !this.didMove) {
+      this.revertPendingSelection();
+    } else {
+      this.placeSelection();
+    }
+  }
+
+  private revertPendingSelection(): void {
+    if (this.pendingExtractionSnapshot) {
+      this.paperRenderer.restoreActiveLayerSnapshot(this.pendingExtractionSnapshot);
+    }
+    this.pendingExtractionSnapshot = null;
+    this.selectedItems = [];
+    this.selectionNeedsPlacement = false;
+    this.didMove = false;
+    this.handles = [];
+    selectionStore.set({ items: [] });
   }
 
   private isSelectedItem(item: paper.Item): boolean {

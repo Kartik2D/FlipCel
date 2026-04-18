@@ -618,6 +618,30 @@ export class PaperRenderer {
   }
 
   /**
+   * Detached clones of every selectable shape on the active layer, in z-order.
+   * Used by the select tool to revert a floating extraction if the user
+   * cancels instead of placing it.
+   */
+  captureActiveLayerSnapshot(): paper.PathItem[] {
+    return this.getAllPaths().map((item) => item.clone({ insert: false }) as paper.PathItem);
+  }
+
+  /**
+   * Replace the active layer contents with a previously captured snapshot.
+   */
+  restoreActiveLayerSnapshot(snapshot: paper.PathItem[]): paper.PathItem[] {
+    const layer = paper.project.activeLayer;
+    layer.removeChildren();
+    this.markerByItemId.clear();
+    for (const item of snapshot) {
+      layer.addChild(item);
+    }
+    this.flattenGroups();
+    paper.view.update();
+    return [...snapshot];
+  }
+
+  /**
    * Sample a handful of points likely inside the path to make robust containment checks.
    */
   private samplePoints(path: paper.Path): paper.Point[] {
