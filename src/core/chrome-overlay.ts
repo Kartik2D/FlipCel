@@ -13,7 +13,7 @@
  * Every draw begins by calling `clear()`; owners are responsible for painting a
  * complete frame of chrome on demand.
  */
-import type { CanvasConfig } from "./types";
+import type { CanvasConfig, Point } from "./types";
 
 export class ChromeOverlay {
   private canvas: HTMLCanvasElement;
@@ -44,6 +44,51 @@ export class ChromeOverlay {
   /** Wipe the chrome layer. Called before each full repaint. */
   clear() {
     this.ctx.clearRect(0, 0, this.config.viewportWidth, this.config.viewportHeight);
+  }
+
+  drawMarqueeRect(start: Point, end: Point): void {
+    const x = Math.min(start.x, end.x);
+    const y = Math.min(start.y, end.y);
+    const width = Math.abs(end.x - start.x);
+    const height = Math.abs(end.y - start.y);
+
+    this.ctx.save();
+    this.ctx.fillStyle = "rgba(0, 0, 0, 0.1)";
+    this.ctx.fillRect(x, y, width, height);
+    this.ctx.setLineDash([6, 4]);
+    this.ctx.lineJoin = "miter";
+    this.ctx.strokeStyle = "#ffffff";
+    this.ctx.lineWidth = 3;
+    this.ctx.strokeRect(x, y, width, height);
+    this.ctx.strokeStyle = "#000000";
+    this.ctx.lineWidth = 1.5;
+    this.ctx.strokeRect(x, y, width, height);
+    this.ctx.setLineDash([]);
+    this.ctx.restore();
+  }
+
+  drawLassoPreview(points: Point[]): void {
+    if (points.length < 2) return;
+
+    this.ctx.save();
+    this.ctx.setLineDash([6, 4]);
+    this.ctx.lineJoin = "round";
+    this.ctx.beginPath();
+    this.ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      this.ctx.lineTo(points[i].x, points[i].y);
+    }
+    this.ctx.closePath();
+    this.ctx.fillStyle = "rgba(0, 0, 0, 0.1)";
+    this.ctx.fill();
+    this.ctx.strokeStyle = "#ffffff";
+    this.ctx.lineWidth = 3;
+    this.ctx.stroke();
+    this.ctx.strokeStyle = "#000000";
+    this.ctx.lineWidth = 1.5;
+    this.ctx.stroke();
+    this.ctx.setLineDash([]);
+    this.ctx.restore();
   }
 
   /** Retina-sharp drawing in CSS pixel coordinates. */

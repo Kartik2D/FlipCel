@@ -16,6 +16,7 @@ import type { PaperRenderer } from "./paper-renderer";
 import type { Camera } from "./camera";
 import { configStore, toolSettingsStore } from "./stores";
 import paper from "paper";
+import { pixelToViewport } from "./coords";
 
 interface CapturedAnchor {
   item: paper.PathItem;
@@ -30,7 +31,7 @@ export class MagnetController {
   private paperRenderer: PaperRenderer;
   private camera: Camera;
   private onSnapshot?: () => void;
-  private onReconcile?: (item: paper.PathItem) => paper.PathItem | null;
+  private onReconcile?: (items: paper.PathItem[]) => void;
 
   /** Brush diameter in viewport/screen pixels. */
   private size = 120;
@@ -68,7 +69,7 @@ export class MagnetController {
   }
 
   setReconcileCallback(
-    callback: (item: paper.PathItem) => paper.PathItem | null,
+    callback: (items: paper.PathItem[]) => void,
   ): void {
     this.onReconcile = callback;
   }
@@ -87,7 +88,7 @@ export class MagnetController {
   // ============================================================
 
   handleStart(point: Point): void {
-    const viewportPoint = this.pixelToViewport(point);
+    const viewportPoint = pixelToViewport(point, this.config);
     const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
 
     const radius = this.size / 2;
@@ -97,7 +98,7 @@ export class MagnetController {
     this.affectedItems = new Set();
 
     for (const item of this.paperRenderer.getAllPaths()) {
-      const paths = this.getChildPaths(item);
+      const paths = this.paperRenderer.getChildPaths(item);
       for (const path of paths) {
         for (const seg of path.segments) {
           const screen = this.camera.worldToScreen(seg.point.x, seg.point.y);
@@ -123,7 +124,7 @@ export class MagnetController {
     if (!this.isActive || this.captured.length === 0 || !this.lastWorldPoint) {
       return;
     }
-    const viewportPoint = this.pixelToViewport(point);
+    const viewportPoint = pixelToViewport(point, this.config);
     const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
 
     const dx = worldPoint.x - this.lastWorldPoint.x;
@@ -149,10 +150,8 @@ export class MagnetController {
     if (!this.isActive) return;
 
     if (this.didMove && this.onReconcile) {
-      for (const item of this.affectedItems) {
-        if (!item.parent) continue;
-        this.onReconcile(item);
-      }
+      const affected = [...this.affectedItems].filter((item) => item.parent);
+      if (affected.length > 0) this.onReconcile(affected);
     }
     if (this.didMove) {
       this.onSnapshot?.();
@@ -177,18 +176,4 @@ export class MagnetController {
   // Helpers
   // ============================================================
 
-  private getChildPaths(item: paper.PathItem): paper.Path[] {
-    if (item instanceof paper.Path) return [item];
-    if (item instanceof paper.CompoundPath) {
-      return item.children.filter((c): c is paper.Path => c instanceof paper.Path);
-    }
-    return [];
-  }
-
-  private pixelToViewport(point: Point): Point {
-    return {
-      x: (point.x / this.config.pixelWidth) * this.config.viewportWidth,
-      y: (point.y / this.config.pixelHeight) * this.config.viewportHeight,
-    };
-  }
 }

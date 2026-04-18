@@ -24,6 +24,9 @@ import type { Camera } from "./camera";
 import type { ChromeOverlay } from "./chrome-overlay";
 import { configStore, toolSettingsStore, selectionStore } from "./stores";
 import paper from "paper";
+import { pixelToViewport } from "./coords";
+import { MarqueeTracker } from "./marquee-tracker";
+import { TransformGizmoController } from "./transform-gizmo-controller";
 
 type AnchorKey = string;
 
@@ -51,7 +54,7 @@ export class DirectSelectController {
   private chromeOverlay: ChromeOverlay;
   private chromeCtx: CanvasRenderingContext2D;
   private onSnapshot?: () => void;
-  private onReconcile?: (item: paper.PathItem) => paper.PathItem | null;
+  private onReconcile?: (items: paper.PathItem[]) => void;
 
   private selectionShape: "rect" | "lasso" = "rect";
 
@@ -72,10 +75,7 @@ export class DirectSelectController {
   } | null = null;
   private didMoveHandle = false;
 
-  private marqueeStartPoint: Point | null = null;
-  private marqueeCurrentPoint: Point | null = null;
-  private lassoPoints: Point[] = [];
-  private readonly marqueeDragThresholdPx = 6;
+  private marquee = new MarqueeTracker();
 
   /**
    * Multi-pick transform-gizmo state. Populated only while at least two
@@ -83,18 +83,9 @@ export class DirectSelectController {
    * the same bbox handles as the select tool.
    */
   private transformHandles: SelectionHandle[] = [];
-  private activeTransformHandle: SelectionHandleId | null = null;
-  private isTransformingAnchors = false;
   private didTransformAnchors = false;
-  private transformAnchorScreen: Point | null = null;
-  private transformAnchorWorld: Point | null = null;
-  private originalCornerScreen: Point | null = null;
-  private lastTotalScaleX = 1;
-  private lastTotalScaleY = 1;
-  private rotateStartAngle = 0;
-  private lastTotalRotation = 0;
-  private rotatePivotWorld: Point | null = null;
   private lastViewportPoint: Point | null = null;
+  private transformGizmo: TransformGizmoController;
 
   private lastSelectionViewport: Point | null = null;
   private selectionChangeCallback?: (hasSelection: boolean) => void;
@@ -108,6 +99,16 @@ export class DirectSelectController {
     this.camera = camera;
     this.chromeOverlay = chromeOverlay;
     this.chromeCtx = chromeOverlay.getContext();
+    this.transformGizmo = new TransformGizmoController({
+      getScreenBounds: () => this.getPickedAnchorScreenBounds(),
+      getRotatePivotWorld: () => this.getPickedAnchorCentroidWorld(),
+      applyScale: (incSX, incSY, worldAnchor) => {
+        this.scalePickedAnchorsInViewSpace(incSX, incSY, worldAnchor);
+      },
+      applyRotate: (degrees, worldPivot) => {
+        this.rotatePickedAnchors(degrees, worldPivot);
+      },
+    });
     this.config = configStore.get();
     configStore.subscribe((config) => {
       this.config = config;
@@ -122,7 +123,7 @@ export class DirectSelectController {
     this.onSnapshot = callback;
   }
 
-  setReconcileCallback(callback: (item: paper.PathItem) => paper.PathItem | null): void {
+  setReconcileCallback(callback: (items: paper.PathItem[]) => void): void {
     this.onReconcile = callback;
   }
 
@@ -147,10 +148,10 @@ export class DirectSelectController {
   hasTransientUI(): boolean {
     return (
       this.hasSelection() ||
-      this.marqueeStartPoint !== null ||
+      this.marquee.isTracking() ||
       this.isDraggingAnchor ||
       this.handleDrag !== null ||
-      this.isTransformingAnchors
+      this.transformGizmo.isTransforming()
     );
   }
 
@@ -173,7 +174,7 @@ export class DirectSelectController {
   // ============================================================
 
   handleStart(point: Point): void {
-    const viewportPoint = this.pixelToViewport(point);
+    const viewportPoint = pixelToViewport(point, this.config);
     this.rebuildAnchorHandles();
 
     // Transform gizmo (bbox + handles) is shown whenever >=2 anchors are
@@ -181,12 +182,9 @@ export class DirectSelectController {
     // the cluster even when a handle sits near an anchor square.
     if (this.pickedAnchors.size >= 2 && this.transformHandles.length > 0) {
       const hitTransform = this.hitTestTransformHandle(viewportPoint);
-      if (hitTransform) {
-        this.activeTransformHandle = hitTransform;
-        this.isTransformingAnchors = true;
+      if (hitTransform && this.transformGizmo.begin(hitTransform, viewportPoint, this.camera)) {
         this.didTransformAnchors = false;
         this.dragStartPoint = viewportPoint;
-        this.initAnchorTransform(hitTransform, viewportPoint);
         this.drawUI();
         return;
       }
@@ -230,30 +228,23 @@ export class DirectSelectController {
       return;
     }
 
-    this.marqueeStartPoint = viewportPoint;
-    this.marqueeCurrentPoint = viewportPoint;
-    this.lassoPoints = [viewportPoint];
+    this.marquee.start(viewportPoint);
     this.drawUI();
   }
 
   handleMove(point: Point): void {
-    const viewportPoint = this.pixelToViewport(point);
+    const viewportPoint = pixelToViewport(point, this.config);
     this.lastViewportPoint = viewportPoint;
 
-    if (this.marqueeStartPoint) {
-      this.marqueeCurrentPoint = viewportPoint;
-      if (this.selectionShape === "lasso") {
-        this.lassoPoints.push(viewportPoint);
-      }
+    if (this.marquee.isTracking()) {
+      this.marquee.update(viewportPoint, this.selectionShape);
       this.drawUI();
       return;
     }
 
-    if (this.isTransformingAnchors) {
-      if (this.activeTransformHandle === "rotate") {
-        this.handleAnchorRotateMove(viewportPoint);
-      } else if (this.activeTransformHandle) {
-        this.handleAnchorResizeMove(viewportPoint);
+    if (this.transformGizmo.isTransforming()) {
+      if (this.transformGizmo.update(viewportPoint, this.camera)) {
+        this.didTransformAnchors = true;
       }
       this.drawUI();
       return;
@@ -280,14 +271,14 @@ export class DirectSelectController {
   }
 
   handleEnd(): void {
-    if (this.marqueeStartPoint && this.marqueeCurrentPoint) {
+    if (this.marquee.isTracking()) {
       this.finalizeMarquee();
       this.resetMarqueeState();
       this.drawUI();
       return;
     }
 
-    if (this.isTransformingAnchors) {
+    if (this.transformGizmo.isTransforming()) {
       if (this.didTransformAnchors) this.finalizeAnchorMove();
       this.resetTransformState();
       this.resetDragState();
@@ -362,21 +353,10 @@ export class DirectSelectController {
     if (this.pickedAnchors.size >= 2) {
       const bounds = this.getPickedAnchorScreenBounds();
       if (bounds) {
-        let rotating:
-          | { cursor: Point; pivot: Point }
-          | null = null;
-        if (
-          this.isTransformingAnchors &&
-          this.activeTransformHandle === "rotate" &&
-          this.lastViewportPoint &&
-          this.rotatePivotWorld
-        ) {
-          const pivot = this.camera.worldToScreen(
-            this.rotatePivotWorld.x,
-            this.rotatePivotWorld.y,
-          );
-          rotating = { cursor: this.lastViewportPoint, pivot };
-        }
+        const rotating = this.transformGizmo.getRotationOverlay(
+          this.camera,
+          this.lastViewportPoint,
+        );
         this.transformHandles = this.paperRenderer.drawTransformChrome(
           bounds,
           ctx,
@@ -389,11 +369,14 @@ export class DirectSelectController {
       this.transformHandles = [];
     }
 
-    if (this.marqueeStartPoint && this.marqueeCurrentPoint) {
+    if (this.marquee.isTracking()) {
+      const start = this.marquee.getStartPoint();
+      const current = this.marquee.getCurrentPoint();
+      if (!start || !current) return;
       if (this.selectionShape === "lasso") {
-        this.drawLassoPreview(this.lassoPoints);
+        this.chromeOverlay.drawLassoPreview(this.marquee.getLassoPoints());
       } else {
-        this.drawMarqueeRect(this.marqueeStartPoint, this.marqueeCurrentPoint);
+        this.chromeOverlay.drawMarqueeRect(start, current);
       }
     }
 
@@ -407,12 +390,11 @@ export class DirectSelectController {
   /** Items on the active layer that own at least one picked anchor. */
   private getPickedItems(): paper.PathItem[] {
     if (this.pickedAnchors.size === 0) return [];
-    const pathById = this.buildPathIndex();
     const items: paper.PathItem[] = [];
     const seen = new Set<number>();
     for (const key of this.pickedAnchors) {
       const { itemId } = parseAnchorKey(key);
-      const item = pathById.get(itemId);
+      const item = this.paperRenderer.getPathById(itemId);
       if (!item || seen.has(item.id)) continue;
       seen.add(item.id);
       items.push(item);
@@ -479,9 +461,9 @@ export class DirectSelectController {
     if (!key) return null;
 
     const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-    const item = this.buildPathIndex().get(itemId);
+    const item = this.paperRenderer.getPathById(itemId);
     if (!item) return null;
-    const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+    const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
     if (!seg) return null;
 
     const hitRadiusSq = 10 * 10;
@@ -516,9 +498,9 @@ export class DirectSelectController {
     const { itemId, childIndex, segmentIndex } = parseAnchorKey(
       this.handleDrag.segmentKey,
     );
-    const item = this.buildPathIndex().get(itemId);
+    const item = this.paperRenderer.getPathById(itemId);
     if (!item) return;
-    const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+    const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
     if (!seg) return;
 
     const world = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
@@ -550,15 +532,14 @@ export class DirectSelectController {
     const { itemId, childIndex, segmentIndex } = parseAnchorKey(
       this.handleDrag.segmentKey,
     );
-    const pathById = this.buildPathIndex();
-    const item = pathById.get(itemId);
+    const item = this.paperRenderer.getPathById(itemId);
     const seg = item
-      ? this.getChildPaths(item)[childIndex]?.segments[segmentIndex]
+      ? this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex]
       : undefined;
     const anchorWorld = seg ? seg.point.clone() : null;
 
     if (this.onReconcile && item && item.parent) {
-      this.onReconcile(item);
+      this.onReconcile([item]);
     }
 
     // Remap pick to whichever segment now sits at the original anchor's
@@ -586,12 +567,11 @@ export class DirectSelectController {
 
   private moveSelectedAnchors(dx: number, dy: number): void {
     const delta = new paper.Point(dx, dy);
-    const pathById = this.buildPathIndex();
     for (const key of this.pickedAnchors) {
       const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = pathById.get(itemId);
+      const item = this.paperRenderer.getPathById(itemId);
       if (!item) continue;
-      const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+      const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
       if (!seg) continue;
       seg.point = seg.point.add(delta);
     }
@@ -622,12 +602,11 @@ export class DirectSelectController {
    */
   private finalizeAnchorMove(): void {
     const targets: paper.Point[] = [];
-    const pathById = this.buildPathIndex();
     for (const key of this.pickedAnchors) {
       const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = pathById.get(itemId);
+      const item = this.paperRenderer.getPathById(itemId);
       if (!item) continue;
-      const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+      const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
       if (!seg) continue;
       targets.push(seg.point.clone());
     }
@@ -639,14 +618,11 @@ export class DirectSelectController {
     }
 
     const affectedIds = new Set<number>();
-    for (const key of this.pickedAnchors) {
-      affectedIds.add(parseAnchorKey(key).itemId);
-    }
-    for (const id of affectedIds) {
-      const item = pathById.get(id);
-      if (!item || !item.parent) continue;
-      this.onReconcile(item);
-    }
+    for (const key of this.pickedAnchors) affectedIds.add(parseAnchorKey(key).itemId);
+    const affectedItems = [...affectedIds]
+      .map((id) => this.paperRenderer.getPathById(id))
+      .filter((item): item is paper.PathItem => !!item?.parent);
+    this.onReconcile(affectedItems);
 
     const epsilon = 1e-3;
     const newKeys = new Set<AnchorKey>();
@@ -686,23 +662,13 @@ export class DirectSelectController {
   }
 
   private resetMarqueeState(): void {
-    this.marqueeStartPoint = null;
-    this.marqueeCurrentPoint = null;
-    this.lassoPoints = [];
+    this.marquee.reset();
   }
 
   private resetTransformState(): void {
-    this.activeTransformHandle = null;
-    this.isTransformingAnchors = false;
     this.didTransformAnchors = false;
-    this.transformAnchorScreen = null;
-    this.transformAnchorWorld = null;
-    this.originalCornerScreen = null;
-    this.lastTotalScaleX = 1;
-    this.lastTotalScaleY = 1;
-    this.rotateStartAngle = 0;
-    this.lastTotalRotation = 0;
-    this.rotatePivotWorld = null;
+    this.transformGizmo.reset();
+    this.lastViewportPoint = null;
   }
 
   // ============================================================
@@ -753,147 +719,16 @@ export class DirectSelectController {
     return null;
   }
 
-  private initAnchorTransform(
-    handle: SelectionHandleId,
-    viewportPoint: Point,
-  ): void {
-    const bounds = this.getPickedAnchorScreenBounds();
-    if (!bounds) return;
-
-    if (handle === "rotate") {
-      // Rotate around the world-space centroid of the picked anchors.
-      // The centroid is invariant under rotation about itself, so the pivot
-      // stays stable through the drag even as anchors move.
-      const centroid = this.getPickedAnchorCentroidWorld();
-      if (!centroid) return;
-      this.rotatePivotWorld = centroid;
-
-      const screenPivot = this.camera.worldToScreen(centroid.x, centroid.y);
-      this.rotateStartAngle = Math.atan2(
-        viewportPoint.y - screenPivot.y,
-        viewportPoint.x - screenPivot.x,
-      );
-      this.lastTotalRotation = 0;
-      return;
-    }
-
-    const b = bounds;
-    const corners: Record<string, Point> = {
-      nw: { x: b.x, y: b.y },
-      n: { x: b.x + b.width / 2, y: b.y },
-      ne: { x: b.x + b.width, y: b.y },
-      e: { x: b.x + b.width, y: b.y + b.height / 2 },
-      se: { x: b.x + b.width, y: b.y + b.height },
-      s: { x: b.x + b.width / 2, y: b.y + b.height },
-      sw: { x: b.x, y: b.y + b.height },
-      w: { x: b.x, y: b.y + b.height / 2 },
-    };
-
-    const opposites: Record<string, string> = {
-      nw: "se",
-      ne: "sw",
-      se: "nw",
-      sw: "ne",
-      n: "s",
-      s: "n",
-      e: "w",
-      w: "e",
-    };
-
-    const anchorScreen = corners[opposites[handle]];
-    const worldAnchor = this.camera.screenToWorld(
-      anchorScreen.x,
-      anchorScreen.y,
-    );
-    this.originalCornerScreen = corners[handle];
-    this.transformAnchorScreen = anchorScreen;
-    this.transformAnchorWorld = { x: worldAnchor.x, y: worldAnchor.y };
-    this.lastTotalScaleX = 1;
-    this.lastTotalScaleY = 1;
-  }
-
-  private handleAnchorResizeMove(viewportPoint: Point): void {
-    if (
-      !this.transformAnchorScreen ||
-      !this.transformAnchorWorld ||
-      !this.originalCornerScreen
-    )
-      return;
-
-    const anchor = this.transformAnchorScreen;
-    const origCorner = this.originalCornerScreen;
-    const isEdgeX =
-      this.activeTransformHandle === "e" || this.activeTransformHandle === "w";
-    const isEdgeY =
-      this.activeTransformHandle === "n" || this.activeTransformHandle === "s";
-
-    let desiredSX = this.lastTotalScaleX;
-    let desiredSY = this.lastTotalScaleY;
-
-    const dxOrig = origCorner.x - anchor.x;
-    const dyOrig = origCorner.y - anchor.y;
-
-    if (!isEdgeY && Math.abs(dxOrig) > 0.001) {
-      desiredSX = (viewportPoint.x - anchor.x) / dxOrig;
-    }
-    if (!isEdgeX && Math.abs(dyOrig) > 0.001) {
-      desiredSY = (viewportPoint.y - anchor.y) / dyOrig;
-    }
-
-    const minScale = 0.01;
-    if (Math.abs(desiredSX) < minScale)
-      desiredSX = desiredSX < 0 ? -minScale : minScale;
-    if (Math.abs(desiredSY) < minScale)
-      desiredSY = desiredSY < 0 ? -minScale : minScale;
-
-    const incSX = desiredSX / this.lastTotalScaleX;
-    const incSY = desiredSY / this.lastTotalScaleY;
-
-    if (Math.abs(incSX - 1) > 0.0001 || Math.abs(incSY - 1) > 0.0001) {
-      this.didTransformAnchors = true;
-      this.scalePickedAnchorsInViewSpace(
-        incSX,
-        incSY,
-        this.transformAnchorWorld,
-      );
-      this.lastTotalScaleX = desiredSX;
-      this.lastTotalScaleY = desiredSY;
-    }
-  }
-
-  private handleAnchorRotateMove(viewportPoint: Point): void {
-    if (!this.rotatePivotWorld) return;
-
-    const screenCenter = this.camera.worldToScreen(
-      this.rotatePivotWorld.x,
-      this.rotatePivotWorld.y,
-    );
-    const currentAngle = Math.atan2(
-      viewportPoint.y - screenCenter.y,
-      viewportPoint.x - screenCenter.x,
-    );
-    const desiredRotation = currentAngle - this.rotateStartAngle;
-    const incrementalRotation = desiredRotation - this.lastTotalRotation;
-
-    if (Math.abs(incrementalRotation) > 0.0001) {
-      this.didTransformAnchors = true;
-      const degrees = (incrementalRotation * 180) / Math.PI;
-      this.rotatePickedAnchors(degrees, this.rotatePivotWorld);
-      this.lastTotalRotation = desiredRotation;
-    }
-  }
-
   private getPickedAnchorCentroidWorld(): Point | null {
     if (this.pickedAnchors.size === 0) return null;
-    const pathById = this.buildPathIndex();
     let sx = 0,
       sy = 0,
       n = 0;
     for (const key of this.pickedAnchors) {
       const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = pathById.get(itemId);
+      const item = this.paperRenderer.getPathById(itemId);
       if (!item) continue;
-      const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+      const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
       if (!seg) continue;
       sx += seg.point.x;
       sy += seg.point.y;
@@ -923,12 +758,11 @@ export class DirectSelectController {
     matrix.rotate(rotDeg, origin);
     matrix.translate(-worldPivot.x, -worldPivot.y);
 
-    const pathById = this.buildPathIndex();
     for (const key of this.pickedAnchors) {
       const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = pathById.get(itemId);
+      const item = this.paperRenderer.getPathById(itemId);
       if (!item) continue;
-      const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+      const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
       if (!seg) continue;
 
       const newPoint = matrix.transform(seg.point);
@@ -954,12 +788,11 @@ export class DirectSelectController {
 
   private rotatePickedAnchors(degrees: number, worldPivot: Point): void {
     const pivot = new paper.Point(worldPivot.x, worldPivot.y);
-    const pathById = this.buildPathIndex();
     for (const key of this.pickedAnchors) {
       const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = pathById.get(itemId);
+      const item = this.paperRenderer.getPathById(itemId);
       if (!item) continue;
-      const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+      const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
       if (!seg) continue;
 
       seg.point = seg.point.rotate(degrees, pivot);
@@ -989,31 +822,24 @@ export class DirectSelectController {
     const handles = this.anchorHandles;
 
     if (this.selectionShape === "lasso") {
-      return handles.filter((h) => this.pointInPolygon({ x: h.x, y: h.y }, this.lassoPoints));
+      return handles.filter((h) =>
+        this.pointInPolygon({ x: h.x, y: h.y }, this.marquee.getLassoPoints()),
+      );
     }
-    if (!this.marqueeStartPoint || !this.marqueeCurrentPoint) return [];
-    const minX = Math.min(this.marqueeStartPoint.x, this.marqueeCurrentPoint.x);
-    const minY = Math.min(this.marqueeStartPoint.y, this.marqueeCurrentPoint.y);
-    const maxX = Math.max(this.marqueeStartPoint.x, this.marqueeCurrentPoint.x);
-    const maxY = Math.max(this.marqueeStartPoint.y, this.marqueeCurrentPoint.y);
+    const start = this.marquee.getStartPoint();
+    const current = this.marquee.getCurrentPoint();
+    if (!start || !current) return [];
+    const minX = Math.min(start.x, current.x);
+    const minY = Math.min(start.y, current.y);
+    const maxX = Math.max(start.x, current.x);
+    const maxY = Math.max(start.y, current.y);
     return handles.filter(
       (h) => h.x >= minX && h.x <= maxX && h.y >= minY && h.y <= maxY,
     );
   }
 
   private hasActiveMarquee(): boolean {
-    if (this.selectionShape === "lasso") {
-      if (this.lassoPoints.length < 2) return false;
-      const first = this.lassoPoints[0];
-      const last = this.lassoPoints[this.lassoPoints.length - 1];
-      const dx = last.x - first.x;
-      const dy = last.y - first.y;
-      return dx * dx + dy * dy >= this.marqueeDragThresholdPx ** 2;
-    }
-    if (!this.marqueeStartPoint || !this.marqueeCurrentPoint) return false;
-    const dx = this.marqueeCurrentPoint.x - this.marqueeStartPoint.x;
-    const dy = this.marqueeCurrentPoint.y - this.marqueeStartPoint.y;
-    return dx * dx + dy * dy >= this.marqueeDragThresholdPx ** 2;
+    return this.marquee.hasActiveMarquee(this.selectionShape);
   }
 
   private pointInPolygon(point: Point, polygon: Point[]): boolean {
@@ -1035,27 +861,11 @@ export class DirectSelectController {
   // Path helpers
   // ============================================================
 
-  private buildPathIndex(): Map<number, paper.PathItem> {
-    const map = new Map<number, paper.PathItem>();
-    for (const p of this.paperRenderer.getAllPaths()) {
-      map.set(p.id, p);
-    }
-    return map;
-  }
-
-  private getChildPaths(item: paper.PathItem): paper.Path[] {
-    if (item instanceof paper.Path) return [item];
-    if (item instanceof paper.CompoundPath) {
-      return item.children.filter((c): c is paper.Path => c instanceof paper.Path);
-    }
-    return [];
-  }
-
   private forEachSegment(
     item: paper.PathItem,
     fn: (childIndex: number, segmentIndex: number, seg: paper.Segment) => void,
   ): void {
-    const childPaths = this.getChildPaths(item);
+    const childPaths = this.paperRenderer.getChildPaths(item);
     for (let ci = 0; ci < childPaths.length; ci++) {
       const segs = childPaths[ci].segments;
       for (let si = 0; si < segs.length; si++) {
@@ -1100,10 +910,10 @@ export class DirectSelectController {
     if (!key) return;
 
     const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-    const item = this.buildPathIndex().get(itemId);
+    const item = this.paperRenderer.getPathById(itemId);
     if (!item) return;
 
-    const seg = this.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+    const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
     if (!seg) return;
 
     const anchorScreen = this.camera.worldToScreen(seg.point.x, seg.point.y);
@@ -1147,65 +957,10 @@ export class DirectSelectController {
     drawTangent(seg.handleOut);
   }
 
-  private drawMarqueeRect(start: Point, end: Point): void {
-    const x = Math.min(start.x, end.x);
-    const y = Math.min(start.y, end.y);
-    const width = Math.abs(end.x - start.x);
-    const height = Math.abs(end.y - start.y);
-
-    const ctx = this.chromeCtx;
-    ctx.save();
-    ctx.fillStyle = "rgba(0, 0, 0, 0.1)";
-    ctx.fillRect(x, y, width, height);
-    const dash = [6, 4];
-    ctx.setLineDash(dash);
-    ctx.lineJoin = "miter";
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = 3;
-    ctx.strokeRect(x, y, width, height);
-    ctx.strokeStyle = "#000000";
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(x, y, width, height);
-    ctx.setLineDash([]);
-    ctx.restore();
-  }
-
-  private drawLassoPreview(points: Point[]): void {
-    if (points.length < 2) return;
-    const ctx = this.chromeCtx;
-    ctx.save();
-    const dash = [6, 4];
-    ctx.setLineDash(dash);
-    ctx.lineJoin = "round";
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++) {
-      ctx.lineTo(points[i].x, points[i].y);
-    }
-    ctx.closePath();
-    ctx.fillStyle = "rgba(0, 0, 0, 0.1)";
-    ctx.fill();
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = 3;
-    ctx.stroke();
-    ctx.strokeStyle = "#000000";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-  }
-
   private getSelectionAnchorViewport(items: paper.PathItem[]): Point | null {
     if (items.length === 0) return null;
     const bounds = this.paperRenderer.getCombinedBounds(items);
     if (!bounds) return null;
     return this.camera.worldToScreen(bounds.x + bounds.width, bounds.y);
-  }
-
-  private pixelToViewport(point: Point): Point {
-    return {
-      x: (point.x / this.config.pixelWidth) * this.config.viewportWidth,
-      y: (point.y / this.config.pixelHeight) * this.config.viewportHeight,
-    };
   }
 }

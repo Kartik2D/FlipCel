@@ -32,6 +32,7 @@ import { HistoryManager } from "./history";
 import { bus, Events } from "./event-bus";
 import type { CanvasConfig, Point, Modifiers } from "./types";
 import { cycleDockMode, type ToolId, type AllToolSettings } from "./tools";
+import { pixelToViewport } from "./coords";
 import type {
   InkwellColorPanel,
   InkwellToolsPanel,
@@ -165,12 +166,12 @@ class App {
     this.historyManager = new HistoryManager();
     this.selectionController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.directSelectController.setSnapshotCallback(() => this.historyManager.snapshot());
-    this.directSelectController.setReconcileCallback((item) =>
-      this.paperRenderer.reconcileItem(item),
+    this.directSelectController.setReconcileCallback((items) =>
+      this.paperRenderer.reconcileItemsToFixpoint(items),
     );
     this.magnetController.setSnapshotCallback(() => this.historyManager.snapshot());
-    this.magnetController.setReconcileCallback((item) =>
-      this.paperRenderer.reconcileItem(item),
+    this.magnetController.setReconcileCallback((items) =>
+      this.paperRenderer.reconcileItemsToFixpoint(items),
     );
 
     // Get panel Lit elements
@@ -600,7 +601,7 @@ class App {
 
     if (tool === "brush" || tool === "lasso") {
       if (this.getEffectiveMode(tool) === "inside") {
-        const viewportPoint = this.pixelToViewport(point);
+        const viewportPoint = pixelToViewport(point, this.config);
         const hit = this.paperRenderer.hitTest(viewportPoint);
         this.insideClipForStroke = this.paperRenderer.hitToClipPathItem(hit);
       } else {
@@ -852,7 +853,7 @@ class App {
   }
 
   private pickColorAt(point: Point) {
-    const viewportPoint = this.pixelToViewport(point);
+    const viewportPoint = pixelToViewport(point, this.config);
     const item = this.paperRenderer.hitTest(viewportPoint);
     if (!item) return;
 
@@ -872,13 +873,6 @@ class App {
 
     colorStore.set(pickedColor);
     prevColorStore.set(pickedColor);
-  }
-
-  private pixelToViewport(point: Point): Point {
-    return {
-      x: (point.x / this.config.pixelWidth) * this.config.viewportWidth,
-      y: (point.y / this.config.pixelHeight) * this.config.viewportHeight,
-    };
   }
 
   private onPixelResChange(scale: number) {

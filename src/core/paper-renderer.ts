@@ -13,7 +13,6 @@
  * - Provides methods for camera-aware hit testing
  */
 import paper from "paper";
-import RBush from "rbush";
 import type { CanvasConfig } from "./types";
 import type { Camera } from "./camera";
 
@@ -26,12 +25,9 @@ export interface SelectionHandle {
   y: number;
 }
 
-interface SpatialIndexEntry {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-  id: number;
+interface MergePassResult {
+  survivors: paper.PathItem[];
+  changedItems: paper.PathItem[];
 }
 
 export class PaperRenderer {
@@ -41,14 +37,14 @@ export class PaperRenderer {
   private readonly aliasFixStrokeWidth = 0.5;
   private readonly selectionFramePaddingPx = 10;
   private nextSelectionMarkerId = 1;
+  private markerByItemId = new Map<number, string>();
 
-  // Spatial index of current layer pieces (Path + CompoundPath)
-  private spatialIndex = new RBush<SpatialIndexEntry>();
-  private indexEntries = new Map<number, SpatialIndexEntry>();
-  private indexItems = new Map<number, paper.PathItem>();
-  private indexDirty = true;
-
-  // Layer management: maps logical layer IDs to Paper.js layers
+  // Layer management: maps logical layer IDs to Paper.js layers.
+  // The active layer is the single source of truth for hit-testable shapes;
+  // we deliberately do not maintain a separate spatial index. All neighbor
+  // queries do a linear AABB scan over the layer's children, which is
+  // trivially fast for hand-drawn vector scenes and removes a whole class
+  // of index-drift bugs.
   private layerMap = new Map<string, paper.Layer>();
   private activeLayerId: string | null = null;
 
@@ -65,92 +61,101 @@ export class PaperRenderer {
   }
 
   private getSelectionMarker(item: paper.PathItem): string | null {
-    const marker = (item.data as { selectionMarker?: unknown } | undefined)
-      ?.selectionMarker;
-    return typeof marker === "string" ? marker : null;
+    return this.markerByItemId.get(item.id) ?? null;
   }
 
   private setSelectionMarker(item: paper.PathItem, marker: string): void {
-    item.data = item.data ?? {};
-    (item.data as Record<string, unknown>).selectionMarker = marker;
+    this.markerByItemId.set(item.id, marker);
   }
 
   private clearSelectionMarker(item: paper.PathItem): void {
-    if (!item.data) return;
-    delete (item.data as Record<string, unknown>).selectionMarker;
+    this.markerByItemId.delete(item.id);
   }
 
-  private makeIndexEntry(item: paper.PathItem): SpatialIndexEntry {
-    const b = item.bounds;
-    return {
-      minX: b.x,
-      minY: b.y,
-      maxX: b.x + b.width,
-      maxY: b.y + b.height,
-      id: item.id,
-    };
+  private copySelectionMarker(source: paper.PathItem, target: paper.PathItem): void {
+    const marker = this.getSelectionMarker(source);
+    if (!marker) return;
+    this.setSelectionMarker(target, marker);
   }
 
-  private rebuildSpatialIndex(): void {
-    this.spatialIndex.clear();
-    this.indexEntries.clear();
-    this.indexItems.clear();
-
-    const items = this.getAllPaths();
-    const entries: SpatialIndexEntry[] = [];
-    for (const it of items) {
-      const e = this.makeIndexEntry(it);
-      entries.push(e);
-      this.indexEntries.set(it.id, e);
-      this.indexItems.set(it.id, it);
-    }
-    if (entries.length) this.spatialIndex.load(entries);
-    this.indexDirty = false;
-  }
-
-  private ensureSpatialIndex(): void {
-    if (this.indexDirty) this.rebuildSpatialIndex();
-  }
-
-  private indexRemove(item: paper.PathItem): void {
-    const e = this.indexEntries.get(item.id);
-    if (e) {
-      this.spatialIndex.remove(e);
-      this.indexEntries.delete(item.id);
-      this.indexItems.delete(item.id);
+  private copySelectionMarkerFromMany(
+    sources: paper.PathItem[],
+    target: paper.PathItem,
+  ): void {
+    for (const source of sources) {
+      const marker = this.getSelectionMarker(source);
+      if (marker) {
+        this.setSelectionMarker(target, marker);
+        return;
+      }
     }
   }
 
-  private indexInsert(item: paper.PathItem): void {
-    const e = this.makeIndexEntry(item);
-    this.spatialIndex.insert(e);
-    this.indexEntries.set(item.id, e);
-    this.indexItems.set(item.id, item);
+  /**
+   * Atomically replace `oldItem` with `newItem` on the layer, transferring
+   * the selection marker so direct-select picks survive boolean swaps.
+   */
+  private swapIn(
+    oldItem: paper.PathItem,
+    newItem: paper.PathItem,
+    changedItems?: paper.PathItem[],
+  ): paper.PathItem {
+    this.copySelectionMarker(oldItem, newItem);
+    oldItem.replaceWith(newItem);
+    this.clearSelectionMarker(oldItem);
+    changedItems?.push(newItem);
+    return newItem;
   }
 
-  private indexUpsert(item: paper.PathItem): void {
-    if (this.indexEntries.has(item.id)) this.indexRemove(item);
-    this.indexInsert(item);
-  }
-
+  /**
+   * Linear AABB sweep over the active layer for shapes whose bounds intersect
+   * `bounds` (expanded by `padding` on each side). Replaces the previous
+   * RBush spatial index — at the scale of a hand-drawn vector scene this is
+   * sub-millisecond and removes any possibility of index drift.
+   */
   private queryByBounds(
     bounds: paper.Rectangle,
     padding: number = 0,
   ): paper.PathItem[] {
-    this.ensureSpatialIndex();
-    const b = bounds.expand(padding * 2); // expand expects total delta
-    const hits = this.spatialIndex.search({
-      minX: b.x,
-      minY: b.y,
-      maxX: b.x + b.width,
-      maxY: b.y + b.height,
-    });
+    const expanded = bounds.expand(padding * 2);
     const out: paper.PathItem[] = [];
-    for (const h of hits) {
-      const it = this.indexItems.get(h.id);
-      if (it?.parent) out.push(it);
+    for (const item of this.getAllPaths()) {
+      if (!item.parent) continue;
+      if (!expanded.intersects(item.bounds)) continue;
+      out.push(item);
     }
     return out;
+  }
+
+  private getLayerOrder(layer: paper.Layer): Map<number, number> {
+    const order = new Map<number, number>();
+    for (let i = 0; i < layer.children.length; i++) {
+      const child = layer.children[i];
+      if (child instanceof paper.Path || child instanceof paper.CompoundPath) {
+        order.set(child.id, i);
+      }
+    }
+    return order;
+  }
+
+  private getOrderedNeighbors(
+    seeds: paper.PathItem[],
+    padding: number = 2,
+  ): paper.PathItem[] {
+    if (seeds.length === 0) return [];
+    const layer = paper.project.activeLayer;
+    const seedIds = new Set(seeds.map((seed) => seed.id));
+    const neighbors = new Map<number, paper.PathItem>();
+    for (const seed of seeds) {
+      for (const hit of this.queryByBounds(seed.bounds, padding)) {
+        if (hit.layer !== layer || !hit.parent || seedIds.has(hit.id)) continue;
+        neighbors.set(hit.id, hit);
+      }
+    }
+    const layerOrder = this.getLayerOrder(layer);
+    return [...neighbors.values()].sort(
+      (a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0),
+    );
   }
 
   private splitDisconnectedItems(items: paper.CompoundPath[]): void {
@@ -178,8 +183,8 @@ export class PaperRenderer {
         }
       });
 
-      // Cache sample points per child once (contains() is expensive)
-      const samples = subs.map((p) => this.samplePoints(p));
+      // One reliable interior point per child is enough to decide parity.
+      const interiorPoints = subs.map((p) => this.getContainmentPoint(p));
 
       for (let i = 0; i < n; i++) {
         let bestParent: number | null = null;
@@ -192,8 +197,13 @@ export class PaperRenderer {
           // Quick reject by bounds
           if (!candidate.bounds.contains(subs[i].bounds)) continue;
 
-          // Robust contains check using interior samples of the child
-          if (!this.containsAny(candidate, samples[i])) continue;
+          const interiorPoint = interiorPoints[i];
+          if (!interiorPoint) continue;
+          try {
+            if (!candidate.contains(interiorPoint)) continue;
+          } catch {
+            continue;
+          }
 
           const a = absArea[j];
           if (a < bestArea) {
@@ -239,9 +249,6 @@ export class PaperRenderer {
       const idx = layer.children.indexOf(item);
       let insertAt = idx;
 
-      // Update index: remove old compound
-      this.indexRemove(item);
-
       for (const root of filledRoots) {
         const indices = groups.get(root) ?? [root];
         if (indices.length === 1) {
@@ -252,7 +259,6 @@ export class PaperRenderer {
           newPath.closed = src.closed;
           this.normalizeBooleanResult(newPath);
           layer.insertChild(insertAt++, newPath);
-          this.indexInsert(newPath);
         } else {
           const newCompound = new paper.CompoundPath([]);
           this.applyPathStyle(newCompound, fillColor);
@@ -270,10 +276,10 @@ export class PaperRenderer {
           }
           this.normalizeBooleanResult(newCompound);
           layer.insertChild(insertAt++, newCompound);
-          this.indexInsert(newCompound);
         }
       }
 
+      this.clearSelectionMarker(item);
       item.remove();
     }
   }
@@ -355,10 +361,6 @@ export class PaperRenderer {
     newLayer.name = name;
     this.layerMap.set(id, newLayer);
     this.activeLayerId = id;
-    
-    // Mark spatial index as dirty since we switched layers
-    this.indexDirty = true;
-    
     paper.view.update();
   }
 
@@ -388,10 +390,6 @@ export class PaperRenderer {
     // Remove the layer from Paper.js and our map
     layer.remove();
     this.layerMap.delete(id);
-    
-    // Rebuild spatial index for new active layer
-    this.indexDirty = true;
-    
     paper.view.update();
     return true;
   }
@@ -403,13 +401,8 @@ export class PaperRenderer {
   setActiveLayer(id: string): boolean {
     const layer = this.layerMap.get(id);
     if (!layer) return false;
-    
     this.activeLayerId = id;
     layer.activate();
-    
-    // Rebuild spatial index for the new active layer
-    this.indexDirty = true;
-    
     paper.view.update();
     return true;
   }
@@ -552,9 +545,33 @@ export class PaperRenderer {
       item.position = paper.view.center;
     }
 
-    // Extract paths and remove the import wrapper
+    // Extract paths and reparent them to the active layer BEFORE removing
+    // any wrapper. Paper's importSVG can return Groups, Layers, Shapes, or
+    // even nested Groups depending on the input — pulling paths out first
+    // means a stray wrapper can never carry one of our paths into oblivion.
     const paths = this.extractPaths(item);
-    if (item instanceof paper.Group) item.remove();
+    const layer = paper.project.activeLayer;
+    for (const p of paths) {
+      if (p.parent !== layer) layer.addChild(p);
+    }
+
+    // Now remove the wrapper (and anything left inside it). We accept any
+    // non-Path/CompoundPath wrapper here, not just Group, because Paper has
+    // historically returned different container types for different SVG
+    // shapes.
+    if (
+      item.parent &&
+      item !== layer &&
+      !(item instanceof paper.Path) &&
+      !(item instanceof paper.CompoundPath)
+    ) {
+      item.remove();
+    }
+
+    // Final safety net: anything still wrapped in a Group on the active
+    // layer (e.g. nested groups Paper didn't unwrap) gets dissolved here.
+    this.flattenGroups();
+
     return paths;
   }
 
@@ -576,16 +593,20 @@ export class PaperRenderer {
   }
 
   /**
-   * Flatten layer: ungroup all groups, move paths to layer root
+   * Flatten layer: ungroup all groups, move paths to layer root.
+   * Returns true if any unwrapping actually happened (caller may want to
+   * mark the spatial index dirty in that case).
    */
-  private flattenGroups(): void {
+  private flattenGroups(): boolean {
     const layer = paper.project.activeLayer;
+    let didFlatten = false;
     let hasGroups = true;
     while (hasGroups) {
       hasGroups = false;
       for (const child of [...layer.children]) {
         if (child instanceof paper.Group) {
           hasGroups = true;
+          didFlatten = true;
           for (const gc of [...child.children]) {
             layer.insertChild(layer.children.indexOf(child), gc);
           }
@@ -593,17 +614,7 @@ export class PaperRenderer {
         }
       }
     }
-  }
-
-  /**
-   * Split disconnected CompoundPaths into separate items
-   */
-  private splitDisconnected(): void {
-    const layer = paper.project.activeLayer;
-    const compounds = [...layer.children].filter(
-      (c): c is paper.CompoundPath => c instanceof paper.CompoundPath,
-    );
-    this.splitDisconnectedItems(compounds);
+    return didFlatten;
   }
 
   /**
@@ -658,16 +669,47 @@ export class PaperRenderer {
     return pts.slice(0, 25);
   }
 
-  /**
-   * Safe contains for a set of points.
-   */
-  private containsAny(path: paper.Path, points: paper.Point[]): boolean {
-    for (const p of points) {
+  private getContainmentPoint(path: paper.Path): paper.Point | null {
+    try {
+      const interior = (path as { getInteriorPoint?: () => paper.Point | null }).getInteriorPoint?.();
+      if (interior) return interior;
+    } catch {}
+
+    if (path.segments.length > 0) {
+      let sx = 0;
+      let sy = 0;
+      for (const segment of path.segments) {
+        sx += segment.point.x;
+        sy += segment.point.y;
+      }
+      const centroid = new paper.Point(sx / path.segments.length, sy / path.segments.length);
       try {
-        if (path.contains(p)) return true;
+        if (path.contains(centroid)) return centroid;
       } catch {}
     }
-    return false;
+
+    const len = path.length;
+    if (len > 0) {
+      const minDim = Math.min(path.bounds.width, path.bounds.height);
+      const eps = Math.max(0.05, minDim * 0.05);
+      for (const t of [0.125, 0.375, 0.625, 0.875]) {
+        const offset = len * t;
+        const point = path.getPointAt(offset);
+        const normal = path.getNormalAt(offset);
+        if (!point || !normal) continue;
+        for (const probe of [point.add(normal.multiply(eps)), point.subtract(normal.multiply(eps))]) {
+          try {
+            if (path.contains(probe)) return probe;
+          } catch {}
+        }
+      }
+    }
+
+    try {
+      if (path.contains(path.bounds.center)) return path.bounds.center;
+    } catch {}
+
+    return null;
   }
 
   /**
@@ -805,45 +847,63 @@ export class PaperRenderer {
     return clone;
   }
 
-  /**
-   * Intersect two shapes using the simplest reliable path:
-   * direct boolean first, then retry on flattened clones.
-   */
-  private safeIntersect(
+  private tryBooleanOp(
     target: paper.PathItem,
-    clip: paper.PathItem,
+    other: paper.PathItem,
+    op: "unite" | "subtract" | "intersect",
   ): paper.PathItem | null {
-    if (!this.pathsCollide(target, clip)) return null;
-
-    try {
-      const result = this.normalizeBooleanResult(
-        target.intersect(clip) as paper.PathItem | null,
-      );
-      if (result && !result.isEmpty()) {
-        this.forceEvenOdd(result);
-        return result;
-      }
-      result?.remove();
-    } catch {}
-
-    for (const flatness of [1, 0.5]) {
-      const flatTarget = this.flattenForBoolean(target, flatness);
-      const flatClip = this.flattenForBoolean(clip, flatness);
+    const run = (
+      left: paper.PathItem,
+      right: paper.PathItem,
+    ): paper.PathItem | null => {
       try {
         const result = this.normalizeBooleanResult(
-          flatTarget.intersect(flatClip) as paper.PathItem | null,
+          left[op](right) as paper.PathItem | null,
         );
         if (result && !result.isEmpty()) {
           this.forceEvenOdd(result);
-          flatTarget.remove();
-          flatClip.remove();
           return result;
         }
         result?.remove();
       } catch {}
+      return null;
+    };
+
+    const direct = run(target, other);
+    if (direct) return direct;
+
+    for (const flatness of [1, 0.5]) {
+      const flatTarget = this.flattenForBoolean(target, flatness);
+      const flatOther = this.flattenForBoolean(other, flatness);
+      const flattened = run(flatTarget, flatOther);
       flatTarget.remove();
-      flatClip.remove();
+      flatOther.remove();
+      if (flattened) return flattened;
     }
+
+    return null;
+  }
+
+  private tryUnite(a: paper.PathItem, b: paper.PathItem): paper.PathItem | null {
+    if (!this.pathsCollide(a, b)) return null;
+    return this.tryBooleanOp(a, b, "unite");
+  }
+
+  private trySubtract(
+    target: paper.PathItem,
+    cutter: paper.PathItem,
+  ): paper.PathItem | null {
+    if (!this.pathsCollide(target, cutter)) return null;
+    return this.tryBooleanOp(target, cutter, "subtract");
+  }
+
+  private tryIntersect(
+    target: paper.PathItem,
+    clip: paper.PathItem,
+  ): paper.PathItem | null {
+    if (!this.pathsCollide(target, clip)) return null;
+    const intersected = this.tryBooleanOp(target, clip, "intersect");
+    if (intersected) return intersected;
 
     if (this.likelyFullyCovered(clip, target)) {
       const clone = target.clone({ insert: false }) as paper.PathItem;
@@ -857,159 +917,115 @@ export class PaperRenderer {
       this.forceEvenOdd(clone);
       return clone;
     }
-
     return null;
   }
 
-  /**
-   * Merge a path with existing paths using "add" logic:
-   * - Same color: union
-   * - Different color: new path cuts existing
-   * Returns the resulting path (may be different from input if unioned)
-   */
-  private mergePathWithExisting(
-    newPath: paper.PathItem,
-    existing: paper.PathItem[],
-    changedItems?: paper.PathItem[],
-  ): paper.PathItem {
-    const newColor = newPath.fillColor?.toCSS(true) ?? "none";
-    let currentPath = newPath;
-
-    for (const ex of existing) {
-      if (!ex.parent || !this.pathsCollide(currentPath, ex)) continue;
-
-      const exColor = ex.fillColor?.toCSS(true) ?? "none";
-
-      if (exColor === newColor) {
-        // Same color: union
-        try {
-          const united = currentPath.unite(ex);
-          const cleaned = this.normalizeBooleanResult(united);
-          if (cleaned && !cleaned.isEmpty()) {
-            this.forceEvenOdd(cleaned);
-            // Cleaned result replaces originals
-            this.applyPathStyle(cleaned, currentPath.fillColor);
-            // Index updates: remove consumed pieces, insert result
-            this.indexRemove(ex);
-            if (currentPath.parent) this.indexRemove(currentPath);
-            currentPath.remove();
-            ex.remove();
-            currentPath = cleaned;
-            this.indexInsert(cleaned);
-            changedItems?.push(cleaned);
-          } else {
-            united?.remove();
-          }
-        } catch {}
-      } else {
-        // Different color: new cuts existing
-        try {
-          const result = ex.subtract(currentPath);
-          const cleaned = this.normalizeBooleanResult(result);
-          if (cleaned && !cleaned.isEmpty()) {
-            this.forceEvenOdd(cleaned);
-            this.applyPathStyle(cleaned, ex.fillColor);
-            this.indexRemove(ex);
-            ex.replaceWith(cleaned);
-            this.indexInsert(cleaned);
-            changedItems?.push(cleaned);
-          } else {
-            // Guard: Paper booleans can spuriously return empty due to degeneracy.
-            // Only delete if the cutter very likely fully covers the target.
-            const shouldRemove = this.likelyFullyCovered(currentPath, ex);
-            if (shouldRemove) {
-              this.indexRemove(ex);
-              ex.remove();
-            }
-            result?.remove();
-          }
-        } catch {}
-      }
-    }
-
-    return currentPath;
+  private removeIfFullyCovered(
+    cutter: paper.PathItem,
+    target: paper.PathItem,
+  ): boolean {
+    if (!target.parent) return false;
+    if (!this.likelyFullyCovered(cutter, target)) return false;
+    this.clearSelectionMarker(target);
+    target.remove();
+    return true;
   }
 
-  /**
-   * Subtract a path from all existing paths (eraser mode)
-   */
-  private subtractPathFromExisting(
-    eraserPath: paper.PathItem,
-    existing: paper.PathItem[],
-    changedItems?: paper.PathItem[],
-  ): void {
-    for (const ex of existing) {
-      if (!ex.parent || !this.pathsCollide(eraserPath, ex)) continue;
-      try {
-        const result = ex.subtract(eraserPath);
-        const cleaned = this.normalizeBooleanResult(result);
-        if (cleaned && !cleaned.isEmpty()) {
-          this.forceEvenOdd(cleaned);
-          this.applyPathStyle(cleaned, ex.fillColor);
-          this.indexRemove(ex);
-          ex.replaceWith(cleaned);
-          this.indexInsert(cleaned);
-          changedItems?.push(cleaned);
-        } else {
-          // Guard: only delete if the eraser very likely fully covers the target.
-          const shouldRemove = this.likelyFullyCovered(eraserPath, ex);
-          if (shouldRemove) {
-            this.indexRemove(ex);
-            ex.remove();
+  private mergeAddInto(
+    layer: paper.Layer,
+    additions: paper.PathItem[],
+  ): MergePassResult {
+    const changedItems: paper.PathItem[] = [];
+    const survivors: paper.PathItem[] = [];
+
+    for (const addition of additions) {
+      if (!addition.parent) continue;
+      let current = addition;
+
+      // Re-query neighbors on every iteration. After a same-color union the
+      // unified shape has different (usually larger) bounds, and additions
+      // processed later need to see the freshly-merged result, not a stale
+      // snapshot taken at the top of the call.
+      let progressed = true;
+      let safety = 0;
+      while (progressed && current.parent && safety++ < 64) {
+        progressed = false;
+        const neighbors = this.getOrderedNeighbors([current]);
+
+        for (const neighbor of neighbors) {
+          if (!current.parent || !neighbor.parent) continue;
+          if (current === neighbor || !this.pathsCollide(current, neighbor)) continue;
+
+          const currentColor = current.fillColor?.toCSS(true) ?? "none";
+          const neighborColor = neighbor.fillColor?.toCSS(true) ?? "none";
+
+          if (currentColor === neighborColor) {
+            const united = this.tryUnite(current, neighbor);
+            if (!united) continue;
+            this.applyPathStyle(united, current.fillColor);
+            this.copySelectionMarkerFromMany([current, neighbor], united);
+            this.clearSelectionMarker(current);
+            this.clearSelectionMarker(neighbor);
+            current.remove();
+            neighbor.remove();
+            if (!united.parent) layer.addChild(united);
+            changedItems.push(united);
+            current = united;
+            progressed = true;
+            break; // re-query neighbors using the unified bounds
           }
-          result?.remove();
+
+          const cutNeighbor = this.trySubtract(neighbor, current);
+          if (cutNeighbor) {
+            this.applyPathStyle(cutNeighbor, neighbor.fillColor);
+            this.swapIn(neighbor, cutNeighbor, changedItems);
+            continue;
+          }
+          this.removeIfFullyCovered(current, neighbor);
         }
-      } catch {}
+      }
+
+      if (current.parent) survivors.push(current);
     }
+
+    return { survivors, changedItems };
+  }
+
+  private mergeSubtractInto(cutters: paper.PathItem[]): MergePassResult {
+    const changedItems: paper.PathItem[] = [];
+    for (const cutter of cutters) {
+      const neighbors = this.getOrderedNeighbors([cutter]);
+      for (const neighbor of neighbors) {
+        if (!neighbor.parent) continue;
+        const cutNeighbor = this.trySubtract(neighbor, cutter);
+        if (cutNeighbor) {
+          this.applyPathStyle(cutNeighbor, neighbor.fillColor);
+          this.swapIn(neighbor, cutNeighbor, changedItems);
+          continue;
+        }
+        this.removeIfFullyCovered(cutter, neighbor);
+      }
+      this.clearSelectionMarker(cutter);
+      cutter.remove();
+    }
+    return { survivors: [], changedItems };
   }
 
   async addPath(svg: string, color: string = "#000000"): Promise<void> {
     const layer = paper.project.activeLayer;
     const paperColor = new paper.Color(color);
 
-    // Build index from current layer pieces (exclude the soon-to-be-imported stroke)
-    this.ensureSpatialIndex();
-
-    // Import new paths
     const newPaths = this.importSVG(svg);
     if (newPaths.length === 0) return;
 
-    // Apply color and move to layer root
     for (const p of newPaths) {
       this.applyPathStyle(p, paperColor);
       layer.addChild(p);
-      this.indexInsert(p);
     }
 
-    // Query only nearby existing candidates via spatial index
-    const newSet = new Set(newPaths);
-    const existingSet = new Map<number, paper.PathItem>();
-    const padding = 2;
-    for (const np of newPaths) {
-      for (const hit of this.queryByBounds(np.bounds, padding)) {
-        if (newSet.has(hit)) continue;
-        existingSet.set(hit.id, hit);
-      }
-    }
-    const layerOrder = new Map<number, number>();
-    for (let i = 0; i < layer.children.length; i++) {
-      const c = layer.children[i];
-      if (c instanceof paper.Path || c instanceof paper.CompoundPath) {
-        layerOrder.set(c.id, i);
-      }
-    }
-    const existing = [...existingSet.values()].sort(
-      (a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0),
-    );
-
-    // Boolean operations using shared helper
-    const changedItems: paper.PathItem[] = [];
-    for (const newPath of newPaths) {
-      this.mergePathWithExisting(newPath, existing, changedItems);
-    }
-
-    // Local canonicalization: split only what changed
-    this.normalizeAfterLocalEdit([...changedItems, ...newPaths]);
+    const merged = this.mergeAddInto(layer, newPaths);
+    this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
+    this.flattenGroups();
     paper.view.update();
   }
 
@@ -1049,8 +1065,6 @@ export class PaperRenderer {
     const layer = paper.project.activeLayer;
     const paperColor = new paper.Color(color);
 
-    this.ensureSpatialIndex();
-
     const newPaths = this.importSVG(svg);
     if (newPaths.length === 0) return;
 
@@ -1059,12 +1073,11 @@ export class PaperRenderer {
       const clip = clipPathItem.clone({ insert: false });
       try {
         for (const p of newPaths) {
-          const clipped = this.safeIntersect(p, clip);
+          const clipped = this.tryIntersect(p, clip);
           p.remove();
           if (clipped) {
             this.applyPathStyle(clipped, paperColor);
             layer.addChild(clipped);
-            this.indexInsert(clipped);
             clippedPaths.push(clipped);
           }
         }
@@ -1080,28 +1093,22 @@ export class PaperRenderer {
           (it) => it.layer === layer,
         );
         for (const ex of existing) {
-          if (!remaining || !remaining.parent || !ex.parent) break;
-          if (!this.pathsCollide(remaining, ex)) continue;
-          try {
-            const sub = remaining.subtract(ex) as paper.PathItem | null;
-            const diff: paper.PathItem | null = this.normalizeBooleanResult(sub);
+          if (!remaining || !ex.parent) break;
+          const diff = this.trySubtract(remaining, ex);
+          if (diff) {
             remaining.remove();
-            if (diff && !diff.isEmpty()) {
-              this.forceEvenOdd(diff);
-              remaining = diff;
-            } else {
-              diff?.remove();
-              remaining = null;
-              break;
-            }
-          } catch {
-            // Keep current remaining shape if boolean op fails for this candidate.
+            remaining = diff;
+            continue;
+          }
+          if (this.likelyFullyCovered(ex, remaining)) {
+            remaining.remove();
+            remaining = null;
+            break;
           }
         }
         if (remaining && !remaining.isEmpty()) {
           this.applyPathStyle(remaining, paperColor);
           layer.addChild(remaining);
-          this.indexInsert(remaining);
           clippedPaths.push(remaining);
         } else {
           remaining?.remove();
@@ -1114,60 +1121,19 @@ export class PaperRenderer {
       return;
     }
 
-    const newSet = new Set(clippedPaths);
-    const existingSet = new Map<number, paper.PathItem>();
-    const padding = 2;
-    for (const np of clippedPaths) {
-      for (const hit of this.queryByBounds(np.bounds, padding)) {
-        if (hit.layer !== layer) continue;
-        if (newSet.has(hit)) continue;
-        existingSet.set(hit.id, hit);
-      }
-    }
-    const layerOrder = new Map<number, number>();
-    for (let i = 0; i < layer.children.length; i++) {
-      const c = layer.children[i];
-      if (c instanceof paper.Path || c instanceof paper.CompoundPath) {
-        layerOrder.set(c.id, i);
-      }
-    }
-    const existing = [...existingSet.values()].sort(
-      (a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0),
-    );
-
-    const changedItems: paper.PathItem[] = [];
-    for (const newPath of clippedPaths) {
-      this.mergePathWithExisting(newPath, existing, changedItems);
-    }
-
-    this.normalizeAfterLocalEdit([...changedItems, ...clippedPaths]);
+    const merged = this.mergeAddInto(layer, clippedPaths);
+    this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
+    this.flattenGroups();
     paper.view.update();
   }
 
   async subtractPath(svg: string): Promise<void> {
-    // Build index from current layer pieces (exclude the soon-to-be-imported eraser)
-    this.ensureSpatialIndex();
-
-    // Import eraser paths
     const eraserPaths = this.importSVG(svg);
     if (eraserPaths.length === 0) return;
 
-    // Query only nearby existing candidates via spatial index
-    const eraserSet = new Set(eraserPaths);
-    const padding = 2;
-
-    // Subtract from all existing using shared helper
-    const changedItems: paper.PathItem[] = [];
-    for (const eraser of eraserPaths) {
-      const existing = this.queryByBounds(eraser.bounds, padding).filter(
-        (it) => !eraserSet.has(it),
-      );
-      this.subtractPathFromExisting(eraser, existing, changedItems);
-      eraser.remove();
-    }
-
-    // Local canonicalization: split only what changed
-    this.normalizeAfterLocalEdit(changedItems);
+    const merged = this.mergeSubtractInto(eraserPaths);
+    this.normalizeAfterLocalEdit(merged.changedItems);
+    this.flattenGroups();
     paper.view.update();
   }
 
@@ -1177,7 +1143,7 @@ export class PaperRenderer {
   clearActiveLayer() {
     const layer = paper.project.activeLayer;
     layer.removeChildren();
-    this.indexDirty = true;
+    this.markerByItemId.clear();
     paper.view.update();
   }
 
@@ -1185,11 +1151,10 @@ export class PaperRenderer {
    * Clear all content from all layers
    */
   clear() {
-    // Remove children from all layers but keep the layers themselves
     for (const layer of this.layerMap.values()) {
       layer.removeChildren();
     }
-    this.indexDirty = true;
+    this.markerByItemId.clear();
     paper.view.update();
   }
 
@@ -1198,122 +1163,34 @@ export class PaperRenderer {
    */
   flatten() {
     const layer = paper.project.activeLayer;
-    const getColor = (p: paper.PathItem) => p.fillColor?.toCSS(true) ?? "none";
-
-    this.flattenGroups();
-
-    const allPaths = [...layer.children].filter(
-      (c): c is paper.PathItem =>
-        c instanceof paper.Path || c instanceof paper.CompoundPath,
-    );
+    const allPaths = this.getAllPaths();
     if (allPaths.length < 2) {
       paper.view.update();
       return;
     }
 
-    // Group by color
-    const colorGroups = new Map<string, paper.PathItem[]>();
-    for (const p of allPaths) {
-      const c = getColor(p);
-      if (!colorGroups.has(c)) colorGroups.set(c, []);
-      colorGroups.get(c)!.push(p);
+    // Replay the current layer through the exact same merge pipeline the
+    // tools use: bottom-to-top additions where later items cut earlier ones
+    // and same-color overlaps union. This keeps flatten behavior aligned with
+    // normal drawing instead of maintaining a separate global boolean path.
+    const replayItems = allPaths.map((item) => {
+      const clone = item.clone({ insert: false }) as paper.PathItem;
+      this.copySelectionMarker(item, clone);
+      return clone;
+    });
+
+    for (const item of allPaths) {
+      this.clearSelectionMarker(item);
+      item.remove();
     }
 
-    // Union same-color paths
-    const colorPaths = new Map<string, paper.PathItem>();
-    for (const [color, paths] of colorGroups) {
-      if (paths.length === 1) {
-        colorPaths.set(color, paths[0]);
-        continue;
-      }
-      let result = paths[0];
-      for (let i = 1; i < paths.length; i++) {
-        try {
-          const united = result.unite(paths[i]);
-          const cleaned = this.normalizeBooleanResult(united);
-          if (cleaned && !cleaned.isEmpty()) {
-            this.forceEvenOdd(cleaned);
-            if (result !== paths[0]) result.remove();
-            paths[i].remove();
-            result = cleaned;
-          } else {
-            united?.remove();
-          }
-        } catch {}
-      }
-      this.applyPathStyle(result, paths[0].fillColor);
-      colorPaths.set(color, result);
-      for (const p of paths) if (p.parent && p !== result) p.remove();
+    for (const item of replayItems) {
+      layer.addChild(item);
     }
 
-    // Spatial index for overlap detection
-    interface SI {
-      minX: number;
-      minY: number;
-      maxX: number;
-      maxY: number;
-      color: string;
-    }
-    const index = new RBush<SI>();
-    index.load(
-      Array.from(colorPaths.entries()).map(([color, p]) => {
-        const b = p.bounds;
-        return {
-          minX: b.x,
-          minY: b.y,
-          maxX: b.x + b.width,
-          maxY: b.y + b.height,
-          color,
-        };
-      }),
-    );
-
-    // Z-order by first occurrence
-    const zOrder = [...new Set(allPaths.map(getColor))];
-    const zIndex = new Map<string, number>();
-    for (let i = 0; i < zOrder.length; i++) zIndex.set(zOrder[i], i);
-
-    // Top cuts bottom
-    for (let ti = zOrder.length - 1; ti >= 0; ti--) {
-      const topPath = colorPaths.get(zOrder[ti]);
-      if (!topPath?.parent) continue;
-
-      const b = topPath.bounds;
-      for (const c of index.search({
-        minX: b.x,
-        minY: b.y,
-        maxX: b.x + b.width,
-        maxY: b.y + b.height,
-      })) {
-        const bi = zIndex.get(c.color) ?? -1;
-        if (bi >= ti) continue;
-
-        const botPath = colorPaths.get(c.color);
-        if (!botPath?.parent) continue;
-
-        try {
-          const result = botPath.subtract(topPath);
-          const cleaned = this.normalizeBooleanResult(result);
-          if (cleaned && !cleaned.isEmpty()) {
-            this.forceEvenOdd(cleaned);
-            this.applyPathStyle(cleaned, botPath.fillColor);
-            botPath.replaceWith(cleaned);
-            colorPaths.set(c.color, cleaned);
-          } else {
-            // Guard: only delete if the top very likely fully covers the bottom.
-            const shouldRemove = this.likelyFullyCovered(topPath, botPath);
-            if (shouldRemove) {
-              botPath.remove();
-              colorPaths.delete(c.color);
-            }
-            result?.remove();
-          }
-        } catch {}
-      }
-    }
-
-    this.splitDisconnected();
-    this.rebuildSpatialIndex();
+    const merged = this.mergeAddInto(layer, replayItems);
+    this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
+    this.flattenGroups();
     paper.view.update();
   }
 
@@ -1343,7 +1220,6 @@ export class PaperRenderer {
     }
 
     targetLayer.visible = true;
-    this.indexDirty = true;
     this.flatten();
     return targetLayerId;
   }
@@ -1369,10 +1245,29 @@ export class PaperRenderer {
   }
 
   getAllPaths(): paper.PathItem[] {
+    // Single source of truth for "what shapes exist on the active layer".
+    // Flatten any stray Group first so a path can never hide inside a wrapper
+    // — that's the entire invariant the codebase now relies on.
+    this.flattenGroups();
     return paper.project.activeLayer.children.filter(
       (c): c is paper.PathItem =>
         c instanceof paper.Path || c instanceof paper.CompoundPath,
     );
+  }
+
+  getPathById(id: number): paper.PathItem | null {
+    for (const p of this.getAllPaths()) {
+      if (p.id === id) return p;
+    }
+    return null;
+  }
+
+  getChildPaths(item: paper.PathItem): paper.Path[] {
+    if (item instanceof paper.Path) return [item];
+    if (item instanceof paper.CompoundPath) {
+      return item.children.filter((child): child is paper.Path => child instanceof paper.Path);
+    }
+    return [];
   }
 
   getCombinedBounds(items: paper.Item[]): paper.Rectangle | null {
@@ -1484,11 +1379,6 @@ export class PaperRenderer {
 
   movePath(item: paper.Item, delta: { x: number; y: number }) {
     item.position = item.position.add(new paper.Point(delta.x, delta.y));
-    if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
-      if (!this.indexDirty && this.indexEntries.has(item.id)) {
-        this.indexUpsert(item);
-      }
-    }
     paper.view.update();
   }
 
@@ -1538,18 +1428,10 @@ export class PaperRenderer {
   private extractSelectionFromPath(selectionPath: paper.Path): paper.PathItem[] {
     if (selectionPath.isEmpty()) return [];
 
-    this.ensureSpatialIndex();
     const selectionMarker = this.createSelectionMarker();
 
     const layer = paper.project.activeLayer;
-    const layerOrder = new Map<number, number>();
-    for (let i = 0; i < layer.children.length; i++) {
-      const child = layer.children[i];
-      if (child instanceof paper.Path || child instanceof paper.CompoundPath) {
-        layerOrder.set(child.id, i);
-      }
-    }
-
+    const layerOrder = this.getLayerOrder(layer);
     const candidates = this.queryByBounds(selectionPath.bounds)
       .filter((item) => item.layer === layer && item.parent)
       .sort((a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0));
@@ -1560,37 +1442,24 @@ export class PaperRenderer {
     for (const candidate of candidates) {
       if (!this.pathsCollide(candidate, selectionPath)) continue;
       const fill = candidate.fillColor;
+      const selectedPiece = this.tryIntersect(candidate, selectionPath);
+      if (!selectedPiece) continue;
 
-      try {
-        const selectedPiece = this.safeIntersect(candidate, selectionPath);
-        if (!selectedPiece) continue;
+      this.applyPathStyle(selectedPiece, fill);
+      this.setSelectionMarker(selectedPiece, selectionMarker);
 
-        this.applyPathStyle(selectedPiece, fill);
-        this.setSelectionMarker(selectedPiece, selectionMarker);
-
-        const remainder = this.normalizeBooleanResult(
-          candidate.subtract(selectionPath) as paper.PathItem | null,
-        );
-
-        this.indexRemove(candidate);
-
-        if (remainder && !remainder.isEmpty()) {
-          this.forceEvenOdd(remainder);
-          this.applyPathStyle(remainder, fill);
-          candidate.replaceWith(remainder);
-          this.indexInsert(remainder);
-          changedItems.push(remainder);
-        } else {
-          remainder?.remove();
-          candidate.remove();
-        }
-
-        layer.addChild(selectedPiece);
-        this.indexInsert(selectedPiece);
-        selectedItems.push(selectedPiece);
-      } catch {
-        // Leave candidate untouched if boolean extraction fails.
+      const remainder = this.trySubtract(candidate, selectionPath);
+      if (remainder) {
+        this.applyPathStyle(remainder, fill);
+        this.swapIn(candidate, remainder, changedItems);
+      } else if (!this.removeIfFullyCovered(selectionPath, candidate)) {
+        this.clearSelectionMarker(selectedPiece);
+        selectedPiece.remove();
+        continue;
       }
+
+      if (!selectedPiece.parent) layer.addChild(selectedPiece);
+      selectedItems.push(selectedPiece);
     }
 
     if (changedItems.length || selectedItems.length) {
@@ -1616,11 +1485,6 @@ export class PaperRenderer {
     anchor: { x: number; y: number },
   ): void {
     item.scale(sx, sy, new paper.Point(anchor.x, anchor.y));
-    if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
-      if (!this.indexDirty && this.indexEntries.has(item.id)) {
-        this.indexUpsert(item);
-      }
-    }
     paper.view.update();
   }
 
@@ -1642,11 +1506,6 @@ export class PaperRenderer {
     if (rotDeg !== 0) item.rotate(rotDeg, anchor);
     item.scale(sx, sy, anchor);
     if (rotDeg !== 0) item.rotate(-rotDeg, anchor);
-    if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
-      if (!this.indexDirty && this.indexEntries.has(item.id)) {
-        this.indexUpsert(item);
-      }
-    }
     paper.view.update();
   }
 
@@ -1656,11 +1515,6 @@ export class PaperRenderer {
     center: { x: number; y: number },
   ): void {
     item.rotate(degrees, new paper.Point(center.x, center.y));
-    if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
-      if (!this.indexDirty && this.indexEntries.has(item.id)) {
-        this.indexUpsert(item);
-      }
-    }
     paper.view.update();
   }
 
@@ -1677,33 +1531,9 @@ export class PaperRenderer {
    */
   placeSelection(item: paper.PathItem): void {
     const layer = paper.project.activeLayer;
-
-    // Ensure spatial index exists and the moved item has up-to-date bounds
-    this.ensureSpatialIndex();
-    if (!this.indexDirty) this.indexUpsert(item);
-
-    // Query only nearby candidates (item is on top due to bringToFront)
-    const padding = 2;
-    const existingSet = new Map<number, paper.PathItem>();
-    for (const hit of this.queryByBounds(item.bounds, padding)) {
-      if (hit === item) continue;
-      existingSet.set(hit.id, hit);
-    }
-    const layerOrder = new Map<number, number>();
-    for (let i = 0; i < layer.children.length; i++) {
-      const c = layer.children[i];
-      if (c instanceof paper.Path || c instanceof paper.CompoundPath) {
-        layerOrder.set(c.id, i);
-      }
-    }
-    const existing = [...existingSet.values()].sort(
-      (a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0),
-    );
-
-    const changedItems: paper.PathItem[] = [];
-    const placed = this.mergePathWithExisting(item, existing, changedItems);
-    this.normalizeAfterLocalEdit([...changedItems, placed]);
-
+    const merged = this.mergeAddInto(layer, [item]);
+    this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
+    this.flattenGroups();
     paper.view.update();
   }
 
@@ -1713,58 +1543,70 @@ export class PaperRenderer {
    * then merges with neighbors: same-color union, different-color top-cuts-bottom.
    * Returns the surviving item (may differ from input if a union or self-resolve occurred).
    */
-  reconcileItem(item: paper.PathItem): paper.PathItem | null {
-    if (!item.parent) return null;
+  private reconcileItemOnce(item: paper.PathItem): {
+    survivor: paper.PathItem | null;
+    changedItems: paper.PathItem[];
+    didChange: boolean;
+  } {
+    if (!item.parent) {
+      return { survivor: null, changedItems: [], didChange: false };
+    }
     const layer = paper.project.activeLayer;
     const fill = item.fillColor;
 
-    // Phase 1: resolve self-intersections by uniting the path with itself.
-    let current: paper.PathItem = item;
-    try {
-      const resolved = this.normalizeBooleanResult(
-        item.unite(item) as paper.PathItem | null,
-      );
-      if (resolved && !resolved.isEmpty()) {
-        this.forceEvenOdd(resolved);
-        this.applyPathStyle(resolved, fill);
-        this.indexRemove(item);
-        item.replaceWith(resolved);
-        this.indexInsert(resolved);
-        current = resolved;
-      } else {
-        resolved?.remove();
+    this.normalizeBooleanResult(item);
+    this.forceEvenOdd(item);
+    this.applyPathStyle(item, fill);
+
+    const merged = this.mergeAddInto(layer, [item]);
+    this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
+    const survivor = merged.survivors[0] ?? null;
+    return {
+      survivor,
+      changedItems: merged.changedItems,
+      didChange: merged.changedItems.length > 0 || survivor !== item,
+    };
+  }
+
+  reconcileItemsToFixpoint(items: paper.PathItem[]): paper.PathItem[] {
+    const queue: paper.PathItem[] = [];
+    const queued = new Set<number>();
+    const survivors = new Map<number, paper.PathItem>();
+
+    const enqueue = (candidate: paper.PathItem | null | undefined) => {
+      if (!candidate?.parent || queued.has(candidate.id)) return;
+      queued.add(candidate.id);
+      queue.push(candidate);
+    };
+
+    for (const item of items) enqueue(item);
+
+    let iterations = 0;
+    while (queue.length > 0 && iterations < 100) {
+      const current = queue.shift()!;
+      queued.delete(current.id);
+      if (!current.parent) continue;
+
+      const result = this.reconcileItemOnce(current);
+      if (result.survivor?.parent) survivors.set(result.survivor.id, result.survivor);
+
+      if (result.didChange) {
+        const seeds = [
+          ...(result.survivor?.parent ? [result.survivor] : []),
+          ...result.changedItems.filter((item) => item.parent),
+        ];
+        const neighbors = this.getOrderedNeighbors(seeds);
+        for (const item of [...seeds, ...neighbors]) enqueue(item);
       }
-    } catch {
-      // Self-unite can fail on degenerate geometry; fall through with the original.
+      iterations++;
     }
-
-    // Phase 2: merge with spatial neighbors (same-color union, different-color subtract).
-    this.ensureSpatialIndex();
-    this.indexUpsert(current);
-
-    const padding = 2;
-    const existingSet = new Map<number, paper.PathItem>();
-    for (const hit of this.queryByBounds(current.bounds, padding)) {
-      if (hit === current) continue;
-      existingSet.set(hit.id, hit);
-    }
-    const layerOrder = new Map<number, number>();
-    for (let i = 0; i < layer.children.length; i++) {
-      const c = layer.children[i];
-      if (c instanceof paper.Path || c instanceof paper.CompoundPath) {
-        layerOrder.set(c.id, i);
-      }
-    }
-    const existing = [...existingSet.values()].sort(
-      (a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0),
-    );
-
-    const changedItems: paper.PathItem[] = [];
-    const result = this.mergePathWithExisting(current, existing, changedItems);
-    this.normalizeAfterLocalEdit([...changedItems, result]);
 
     paper.view.update();
-    return result;
+    return [...survivors.values()];
+  }
+
+  reconcileItem(item: paper.PathItem): paper.PathItem | null {
+    return this.reconcileItemsToFixpoint([item])[0] ?? null;
   }
 
   /**
@@ -1775,7 +1617,6 @@ export class PaperRenderer {
     const clone = item.clone() as paper.PathItem;
     clone.position = clone.position.add(new paper.Point(offsetX, offsetY));
     this.applyPathStyle(clone, item.fillColor);
-    this.indexInsert(clone);
     paper.view.update();
     return clone;
   }
@@ -1785,7 +1626,7 @@ export class PaperRenderer {
    */
   deleteItem(item: paper.PathItem): void {
     if (!item.parent) return;
-    this.indexRemove(item);
+    this.clearSelectionMarker(item);
     item.remove();
     paper.view.update();
   }
