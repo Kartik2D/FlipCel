@@ -119,30 +119,6 @@ export class SelectionController {
     return this.hasSelection() || this.marquee.isTracking();
   }
 
-  commitSelectionPreservingSelection(): paper.PathItem[] {
-    if (this.selectedItems.length === 0) return [];
-    if (!this.selectionNeedsPlacement && !this.didMove) {
-      return [...this.selectedItems];
-    }
-
-    const shouldSnapshot = this.didMove;
-    const survivors = this.paperRenderer.placeItemsAsSelection(
-      this.selectedItems.filter((item) => item.parent),
-    );
-
-    this.pendingExtractionSnapshot = null;
-    this.selectedItems = survivors;
-    this.selectionNeedsPlacement = false;
-    this.didMove = false;
-    this.handles = [];
-    selectionStore.set({ items: [...this.selectedItems] });
-    if (shouldSnapshot) {
-      this.onSnapshot?.();
-    }
-    this.drawUI();
-    return survivors;
-  }
-
   placeSelection(): void {
     if (this.selectedItems.length > 0 && (this.selectionNeedsPlacement || this.didMove)) {
       for (const item of this.selectedItems) {
