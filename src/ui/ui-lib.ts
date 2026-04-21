@@ -3731,19 +3731,20 @@ export class InkwellFunctionsPanel extends LitElement {
     const rect = this.getBoundingClientRect();
     const w = rect.width || 160;
     const h = rect.height || 120;
-    if (this.x + w > window.innerWidth - margin) this.x = window.innerWidth - margin - w;
-    if (this.y + h > window.innerHeight - margin) this.y = window.innerHeight - margin - h;
-    if (this.x < margin) this.x = margin;
-    if (this.y < margin) this.y = margin;
-    this.style.left = `${this.x}px`;
-    this.style.top = `${this.y}px`;
+    let left = this.x - w / 2;
+    let top = this.y;
+    if (left + w > window.innerWidth - margin) left = window.innerWidth - margin - w;
+    if (top + h > window.innerHeight - margin) top = window.innerHeight - margin - h;
+    if (left < margin) left = margin;
+    if (top < margin) top = margin;
+    this.style.left = `${left}px`;
+    this.style.top = `${top}px`;
   }
 
   updated(changed: PropertyValues) {
     super.updated(changed);
     if (changed.has("x") || changed.has("y") || changed.has("open")) {
-      this.style.left = `${this.x}px`;
-      this.style.top = `${this.y}px`;
+      this.clampPosition();
     }
   }
 

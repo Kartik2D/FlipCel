@@ -111,6 +111,7 @@ class App {
   private cameraLoopLastMs = performance.now();
   private functionsPanelDismissed = false;
   private lastFunctionsPanelKey = "";
+  private selectionGestureActive = false;
   private duplicateDragSession:
     | {
         items: paper.PathItem[];
@@ -598,12 +599,16 @@ class App {
     if (tool === "pan") return;
 
     if (tool === "select") {
+      this.selectionGestureActive = true;
       this.selectionController.handleStart(point);
+      this.updateFunctionsPanel();
       return;
     }
 
     if (tool === "direct-select") {
+      this.selectionGestureActive = true;
       this.directSelectController.handleStart(point);
+      this.updateFunctionsPanel();
       return;
     }
 
@@ -683,6 +688,7 @@ class App {
 
     if (tool === "select") {
       this.selectionController.handleEnd();
+      this.selectionGestureActive = false;
       this.functionsPanelDismissed = false;
       this.updateFunctionsPanel();
       return;
@@ -690,6 +696,7 @@ class App {
 
     if (tool === "direct-select") {
       this.directSelectController.handleEnd();
+      this.selectionGestureActive = false;
       this.functionsPanelDismissed = false;
       this.updateFunctionsPanel();
       return;
@@ -764,6 +771,7 @@ class App {
 
     if (tool === "select") {
       this.selectionController.handleCancel();
+      this.selectionGestureActive = false;
       this.functionsPanelDismissed = false;
       this.updateFunctionsPanel();
       return;
@@ -771,6 +779,7 @@ class App {
 
     if (tool === "direct-select") {
       this.directSelectController.handleCancel();
+      this.selectionGestureActive = false;
       this.functionsPanelDismissed = false;
       this.updateFunctionsPanel();
       return;
@@ -891,8 +900,8 @@ class App {
       const bounds = this.paperRenderer.getSelectionFrameScreenBounds(context.items);
       if (!bounds) return null;
       return {
-        x: bounds.x + bounds.width + 12,
-        y: bounds.y - 8,
+        x: bounds.x + bounds.width / 2,
+        y: bounds.y + bounds.height + 12,
       };
     }
 
@@ -900,14 +909,15 @@ class App {
       const bounds = this.directSelectController.getSelectionScreenBounds();
       if (bounds) {
         return {
-          x: bounds.x + bounds.width + 12,
-          y: bounds.y - 8,
+          x: bounds.x + bounds.width / 2,
+          y: bounds.y + bounds.height + 12,
         };
       }
 
-      const point = this.directSelectController.getLastSelectionViewport();
+      const point = this.directSelectController.getSinglePickedAnchorViewport()
+        ?? this.directSelectController.getLastSelectionViewport();
       if (!point) return null;
-      return { x: point.x + 12, y: point.y - 8 };
+      return { x: point.x, y: point.y + 12 };
     }
 
     return null;
@@ -915,6 +925,11 @@ class App {
 
   private updateFunctionsPanel() {
     if (this.duplicateDragSession) {
+      this.functionsPanel.close("hidden");
+      return;
+    }
+
+    if (this.selectionGestureActive) {
       this.functionsPanel.close("hidden");
       return;
     }
@@ -934,7 +949,8 @@ class App {
       return;
     }
 
-    if (nextKey !== this.lastFunctionsPanelKey) {
+    const didKeyChange = nextKey !== this.lastFunctionsPanelKey;
+    if (didKeyChange) {
       this.lastFunctionsPanelKey = nextKey;
       this.functionsPanelDismissed = false;
     }
@@ -948,6 +964,10 @@ class App {
       return;
     }
 
+    if (this.functionsPanel.open && !didKeyChange) {
+      return;
+    }
+
     if (this.functionsPanel.open) {
       this.functionsPanel.setPosition(position.x, position.y);
     } else {
@@ -956,13 +976,8 @@ class App {
   }
 
   private syncFunctionsPanelPosition() {
-    if (!this.functionsPanel.open || this.functionsPanelDismissed || this.duplicateDragSession) return;
-    const position = this.getFunctionsPanelPosition(this.buildFunctionContext());
-    if (!position) {
-      this.functionsPanel.close("hidden");
-      return;
-    }
-    this.functionsPanel.setPosition(position.x, position.y);
+    // Intentionally do nothing: the panel should open near the cursor,
+    // then stay put so the user can click its buttons.
   }
 
   private onColorPickerChange(color: string) {

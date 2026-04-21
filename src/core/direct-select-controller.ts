@@ -79,6 +79,13 @@ export class DirectSelectController {
     segmentKey: AnchorKey;
   } | null = null;
   private didMoveHandle = false;
+  private edgeDrag: {
+    itemId: number;
+    childIndex: number;
+    startSegmentIndex: number;
+    endSegmentIndex: number;
+  } | null = null;
+  private didMoveEdge = false;
 
   private marquee = new MarqueeTracker();
 
@@ -172,6 +179,22 @@ export class DirectSelectController {
     | { x: number; y: number; width: number; height: number }
     | null {
     return this.getPickedAnchorScreenBounds();
+  }
+
+  getSinglePickedAnchorViewport(): Point | null {
+    if (this.pickedAnchors.size !== 1) return null;
+
+    const key = this.pickedAnchors.values().next().value as AnchorKey | undefined;
+    if (!key) return null;
+
+    const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+    const item = this.paperRenderer.getPathById(itemId);
+    if (!item) return null;
+
+    const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+    if (!seg) return null;
+
+    return this.camera.worldToScreen(seg.point.x, seg.point.y);
   }
 
   deletePickedVertices(): boolean {
@@ -298,6 +321,21 @@ export class DirectSelectController {
       return;
     }
 
+    const edgeHit = this.hitTestEdge(viewportPoint);
+    if (edgeHit) {
+      this.pickedAnchors = new Set([
+        anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.startSegmentIndex),
+        anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.endSegmentIndex),
+      ]);
+      this.edgeDrag = edgeHit;
+      this.dragStartPoint = viewportPoint;
+      this.beginDragThreshold(viewportPoint);
+      this.didMoveEdge = false;
+      this.publishPickedItems();
+      this.drawUI();
+      return;
+    }
+
     const shapeHit = this.paperRenderer.resolveSelectableItem(
       this.paperRenderer.hitTest(viewportPoint),
     );
@@ -343,6 +381,13 @@ export class DirectSelectController {
       return;
     }
 
+    if (this.edgeDrag) {
+      if (this.pastDragThreshold(viewportPoint)) {
+        this.dragBezierEdgeTo(viewportPoint);
+      }
+      return;
+    }
+
     if (!this.isDraggingAnchor || !this.dragStartPoint) return;
 
     if (!this.pastDragThreshold(viewportPoint)) {
@@ -381,6 +426,13 @@ export class DirectSelectController {
 
     if (this.handleDrag) {
       if (this.didMoveHandle) this.finalizeHandleMove();
+      this.resetDragState();
+      this.drawUI();
+      return;
+    }
+
+    if (this.edgeDrag) {
+      if (this.didMoveEdge) this.finalizeEdgeMove();
       this.resetDragState();
       this.drawUI();
       return;
@@ -443,7 +495,8 @@ export class DirectSelectController {
 
     // Multi-pick transform gizmo: same bbox + 8 resize + 1 rotate handles as
     // the select tool, but sized to the picked anchors' screen bounds.
-    if (this.pickedAnchors.size >= 2) {
+    // Suppress it during edge dragging so curvature editing stays visually focused.
+    if (this.pickedAnchors.size >= 2 && !this.edgeDrag) {
       const bounds = this.getPickedAnchorScreenBounds();
       if (bounds) {
         const rotating = this.transformGizmo.getRotationOverlay(
@@ -614,6 +667,40 @@ export class DirectSelectController {
   }
 
   /**
+   * Drag the curve itself by moving the outgoing tangent of the start anchor
+   * and the incoming tangent of the end anchor together. This edits curvature
+   * while leaving the anchor positions fixed.
+   */
+  private dragBezierEdgeTo(viewportPoint: Point): void {
+    if (!this.edgeDrag || !this.dragStartPoint) return;
+
+    const item = this.paperRenderer.getPathById(this.edgeDrag.itemId);
+    if (!item) return;
+    const path = this.paperRenderer.getChildPaths(item)[this.edgeDrag.childIndex];
+    if (!path) return;
+
+    const startSeg = path.segments[this.edgeDrag.startSegmentIndex];
+    const endSeg = path.segments[this.edgeDrag.endSegmentIndex];
+    if (!startSeg || !endSeg) return;
+
+    const screenDelta = {
+      x: viewportPoint.x - this.dragStartPoint.x,
+      y: viewportPoint.y - this.dragStartPoint.y,
+    };
+    const worldDelta = this.camera.screenDeltaToWorld(screenDelta.x, screenDelta.y);
+    if (worldDelta.x === 0 && worldDelta.y === 0) return;
+
+    const delta = new paper.Point(worldDelta.x, worldDelta.y);
+    startSeg.handleOut = startSeg.handleOut.add(delta);
+    endSeg.handleIn = endSeg.handleIn.add(delta);
+
+    this.dragStartPoint = viewportPoint;
+    paper.view.update();
+    this.didMoveEdge = true;
+    this.drawUI();
+  }
+
+  /**
    * Commit a handle drag: reconcile the host item (a pulled handle can fold
    * the path over itself) and snapshot history. The anchor world-position is
    * unchanged by a handle move, so we remap the picked key to whichever
@@ -647,6 +734,50 @@ export class DirectSelectController {
             anchorKey(candidate.id, match.childIndex, match.segmentIndex),
           );
           break;
+        }
+      }
+      if (remapped.size > 0) {
+        this.pickedAnchors = remapped;
+      }
+    }
+
+    this.onSnapshot?.();
+    this.publishPickedItems();
+  }
+
+  /**
+   * Commit an edge drag by reconciling the owning item, then remapping the
+   * picked endpoint anchors by their unchanged world positions.
+   */
+  private finalizeEdgeMove(): void {
+    if (!this.edgeDrag) return;
+
+    const item = this.paperRenderer.getPathById(this.edgeDrag.itemId);
+    const path = item
+      ? this.paperRenderer.getChildPaths(item)[this.edgeDrag.childIndex]
+      : undefined;
+    const targets: paper.Point[] = [];
+    if (path) {
+      const startSeg = path.segments[this.edgeDrag.startSegmentIndex];
+      const endSeg = path.segments[this.edgeDrag.endSegmentIndex];
+      if (startSeg) targets.push(startSeg.point.clone());
+      if (endSeg) targets.push(endSeg.point.clone());
+    }
+
+    if (this.onReconcile && item && item.parent) {
+      this.onReconcile([item]);
+    }
+
+    if (targets.length > 0) {
+      const epsilon = 1e-3;
+      const remapped = new Set<AnchorKey>();
+      for (const pos of targets) {
+        for (const candidate of this.paperRenderer.getAllPaths()) {
+          const match = this.findSegmentNear(candidate, pos, epsilon);
+          if (match) {
+            remapped.add(anchorKey(candidate.id, match.childIndex, match.segmentIndex));
+            break;
+          }
         }
       }
       if (remapped.size > 0) {
@@ -752,6 +883,8 @@ export class DirectSelectController {
     this.didMoveAnchor = false;
     this.handleDrag = null;
     this.didMoveHandle = false;
+    this.edgeDrag = null;
+    this.didMoveEdge = false;
     this.resetDragThreshold();
   }
 
@@ -932,6 +1065,66 @@ export class DirectSelectController {
       if (dx * dx + dy * dy <= hitRadiusSq) return i;
     }
     return null;
+  }
+
+  private hitTestEdge(
+    viewportPoint: Point,
+  ): {
+    itemId: number;
+    childIndex: number;
+    startSegmentIndex: number;
+    endSegmentIndex: number;
+  } | null {
+    const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
+    const queryPoint = new paper.Point(worldPoint.x, worldPoint.y);
+    const hitRadiusSq = 10 * 10;
+    let best:
+      | {
+          itemId: number;
+          childIndex: number;
+          startSegmentIndex: number;
+          endSegmentIndex: number;
+          distSq: number;
+        }
+      | null = null;
+
+    const items = [...this.paperRenderer.getAllPaths()].reverse();
+    for (const item of items) {
+      const childPaths = this.paperRenderer.getChildPaths(item);
+      for (let childIndex = 0; childIndex < childPaths.length; childIndex++) {
+        const path = childPaths[childIndex];
+        const curves = path.curves;
+        for (let curveIndex = 0; curveIndex < curves.length; curveIndex++) {
+          const location = curves[curveIndex].getNearestLocation(queryPoint);
+          if (!location) continue;
+          const screenPoint = this.camera.worldToScreen(location.point.x, location.point.y);
+          const dx = viewportPoint.x - screenPoint.x;
+          const dy = viewportPoint.y - screenPoint.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq > hitRadiusSq) continue;
+          if (best && distSq >= best.distSq) continue;
+
+          const startSegmentIndex = curveIndex;
+          const endSegmentIndex =
+            curveIndex + 1 < path.segments.length ? curveIndex + 1 : 0;
+          best = {
+            itemId: item.id,
+            childIndex,
+            startSegmentIndex,
+            endSegmentIndex,
+            distSq,
+          };
+        }
+      }
+    }
+
+    if (!best) return null;
+    return {
+      itemId: best.itemId,
+      childIndex: best.childIndex,
+      startSegmentIndex: best.startSegmentIndex,
+      endSegmentIndex: best.endSegmentIndex,
+    };
   }
 
   private collectMarqueeMatches(): AnchorHandle[] {

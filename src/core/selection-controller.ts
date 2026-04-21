@@ -181,20 +181,11 @@ export class SelectionController {
       }
     }
 
-    const hitItem = this.paperRenderer.resolveSelectableItem(
+    const initialHitItem = this.paperRenderer.resolveSelectableItem(
       this.paperRenderer.hitTest(viewportPoint),
     );
 
-    if (hitItem && this.isSelectedItem(hitItem)) {
-      this.isDragging = true;
-      this.dragStartPoint = viewportPoint;
-      this.beginDragThreshold(viewportPoint);
-      this.didMove = false;
-      this.bringSelectionToFront();
-    } else if (hitItem) {
-      // Click inside (or on) another shape: select that whole path, then drag.
-      this.resolvePendingSelectionForNewGesture();
-      this.setSelectedItems([hitItem]);
+    if (initialHitItem && this.isSelectedItem(initialHitItem)) {
       this.isDragging = true;
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
@@ -202,7 +193,21 @@ export class SelectionController {
       this.bringSelectionToFront();
     } else {
       this.resolvePendingSelectionForNewGesture();
-      this.startMarquee(viewportPoint);
+      const hitItem = this.paperRenderer.resolveSelectableItem(
+        this.paperRenderer.hitTest(viewportPoint),
+      );
+
+      if (hitItem) {
+      // Click inside (or on) another shape: select that whole path, then drag.
+        this.setSelectedItems([hitItem]);
+        this.isDragging = true;
+        this.dragStartPoint = viewportPoint;
+        this.beginDragThreshold(viewportPoint);
+        this.didMove = false;
+        this.bringSelectionToFront();
+      } else {
+        this.startMarquee(viewportPoint);
+      }
     }
 
     this.drawUI();
