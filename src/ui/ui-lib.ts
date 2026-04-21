@@ -61,6 +61,18 @@ const PHOSPHOR_ICONS: Record<string, string> = {
     '<path d="M184,64V168a8,8,0,0,1-8,8H48a8,8,0,0,1-8-8V64a8,8,0,0,1,8-8H176A8,8,0,0,1,184,64Z" opacity="0.2"/><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/>',
   cursor:
     '<path d="M82.44,37.84l120,168a4,4,0,0,1-3.26,6.32l-55.27-4.53-25.64,51a4,4,0,0,1-7.12.06L38.72,93.37A4,4,0,0,1,43.33,87.6L82.44,37.84Z" opacity="0.2"/><path d="M80.37,29.7a12,12,0,0,0-18.77,5.78L5.07,194.77a12,12,0,0,0,11.32,16.08,12.14,12.14,0,0,0,4.37-.82L80,184.42l25.57,50.66A12,12,0,0,0,116.28,242h.31a12,12,0,0,0,10.59-7.18l25.67-51,55.26,4.52a12,12,0,0,0,10-18.94ZM126.52,222.7l-26.64-52.78a8,8,0,0,0-6.18-4.35,8.17,8.17,0,0,0-1.14-.08,8,8,0,0,0-2.94.56L29.2,192.16l56.53-158.85L200,185.18l-53.62-4.39a8,8,0,0,0-7,3.36,8.08,8.08,0,0,0-1.09,2.09Z"/>',
+  "flip-horizontal":
+    '<path d="M128 32v192" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><path d="M112 72L56 128l56 56" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M144 72l56 56-56 56" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/>',
+  "flip-vertical":
+    '<path d="M32 128h192" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><path d="M72 112l56-56 56 56" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M72 144l56 56 56-56" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/>',
+  "selection-simplify":
+    '<path d="M40 172c28-48 52-48 76 0s48 48 100-8" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="40" cy="172" r="12"/><circle cx="92" cy="116" r="12"/><circle cx="144" cy="172" r="12"/><circle cx="216" cy="164" r="12"/>',
+  "point-corner":
+    '<path d="M48 192l80-128 80 128" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="128" cy="64" r="10"/><circle cx="208" cy="192" r="10"/>',
+  "point-mirrored":
+    '<path d="M48 192c20-52 44-84 80-84s60 32 80 84" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M88 88h80" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="88" cy="88" r="10"/><circle cx="168" cy="88" r="10"/><circle cx="208" cy="192" r="10"/>',
+  "point-asymmetric":
+    '<path d="M48 192c22-52 46-84 80-84s58 28 80 84" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M128 108c10-22 28-36 48-44" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="128" cy="108" r="10"/><circle cx="176" cy="64" r="10"/><circle cx="208" cy="192" r="10"/>',
 };
 
 const PANEL_ICON_MAP: Record<string, string> = {

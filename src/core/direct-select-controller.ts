@@ -262,6 +262,48 @@ export class DirectSelectController {
     return true;
   }
 
+  setPickedAnchorHandleMode(mode: "corner" | "mirrored" | "asymmetric"): boolean {
+    if (this.pickedAnchors.size === 0) return false;
+
+    const targets: paper.Point[] = [];
+    for (const key of this.pickedAnchors) {
+      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+      const item = this.paperRenderer.getPathById(itemId);
+      if (!item) continue;
+      const path = this.paperRenderer.getChildPaths(item)[childIndex];
+      const seg = path?.segments[segmentIndex];
+      if (!path || !seg) continue;
+
+      targets.push(seg.point.clone());
+      this.applyHandleModeToSegment(path, segmentIndex, seg, mode);
+    }
+
+    paper.view.update();
+    this.commitPickedAnchorMutation(targets);
+    this.drawUI();
+    return true;
+  }
+
+  simplifyPickedItems(): boolean {
+    const items = this.getPickedItems().filter((item) => item.parent);
+    if (items.length === 0) return false;
+
+    const targets: paper.Point[] = [];
+    for (const key of this.pickedAnchors) {
+      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+      const item = this.paperRenderer.getPathById(itemId);
+      const seg = item
+        ? this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex]
+        : undefined;
+      if (seg) targets.push(seg.point.clone());
+    }
+
+    this.paperRenderer.simplifyItems(items);
+    this.commitPickedAnchorMutation(targets);
+    this.drawUI();
+    return true;
+  }
+
   clearSelection(): void {
     this.pickedAnchors.clear();
     this.resetDragState();
@@ -866,6 +908,38 @@ export class DirectSelectController {
     this.publishPickedItems();
   }
 
+  private commitPickedAnchorMutation(targets: paper.Point[]): void {
+    if (!this.onReconcile) {
+      this.onSnapshot?.();
+      this.publishPickedItems();
+      return;
+    }
+
+    const affectedIds = new Set<number>();
+    for (const key of this.pickedAnchors) affectedIds.add(parseAnchorKey(key).itemId);
+    const affectedItems = [...affectedIds]
+      .map((id) => this.paperRenderer.getPathById(id))
+      .filter((item): item is paper.PathItem => !!item?.parent);
+    this.onReconcile(affectedItems);
+
+    const epsilon = 1e-3;
+    const remapped = new Set<AnchorKey>();
+    const layerItems = this.paperRenderer.getAllPaths();
+    for (const pos of targets) {
+      for (const candidate of layerItems) {
+        const match = this.findSegmentNear(candidate, pos, epsilon);
+        if (match) {
+          remapped.add(anchorKey(candidate.id, match.childIndex, match.segmentIndex));
+          break;
+        }
+      }
+    }
+    this.pickedAnchors = remapped;
+
+    this.onSnapshot?.();
+    this.publishPickedItems();
+  }
+
   // ============================================================
   // Sync / state helpers
   // ============================================================
@@ -1181,6 +1255,110 @@ export class DirectSelectController {
         fn(ci, si, segs[si]);
       }
     }
+  }
+
+  private applyHandleModeToSegment(
+    path: paper.Path,
+    segmentIndex: number,
+    seg: paper.Segment,
+    mode: "corner" | "mirrored" | "asymmetric",
+  ): void {
+    const { prev, next } = this.getAdjacentSegments(path, segmentIndex);
+    const hasPrev = prev !== null;
+    const hasNext = next !== null;
+
+    if (mode === "corner") {
+      seg.handleIn = new paper.Point(0, 0);
+      seg.handleOut = new paper.Point(0, 0);
+      return;
+    }
+
+    const tangent = this.getSegmentTangentDirection(seg, prev, next);
+    if (!tangent) return;
+
+    const defaultLength = this.getDefaultHandleLength(seg, prev, next);
+    const currentInLength = seg.handleIn.length;
+    const currentOutLength = seg.handleOut.length;
+
+    if (mode === "mirrored") {
+      const mirroredLength = Math.max(
+        (currentInLength + currentOutLength) / 2,
+        defaultLength,
+      );
+      seg.handleIn = hasPrev
+        ? tangent.multiply(-mirroredLength)
+        : new paper.Point(0, 0);
+      seg.handleOut = hasNext
+        ? tangent.multiply(mirroredLength)
+        : new paper.Point(0, 0);
+      return;
+    }
+
+    const inLength = Math.max(currentInLength, defaultLength);
+    const outLength = Math.max(currentOutLength, defaultLength);
+    seg.handleIn = hasPrev ? tangent.multiply(-inLength) : new paper.Point(0, 0);
+    seg.handleOut = hasNext ? tangent.multiply(outLength) : new paper.Point(0, 0);
+  }
+
+  private getAdjacentSegments(
+    path: paper.Path,
+    segmentIndex: number,
+  ): { prev: paper.Segment | null; next: paper.Segment | null } {
+    const segments = path.segments;
+    const lastIndex = segments.length - 1;
+    const prev = path.closed
+      ? segments[(segmentIndex - 1 + segments.length) % segments.length] ?? null
+      : segmentIndex > 0
+        ? segments[segmentIndex - 1]
+        : null;
+    const next = path.closed
+      ? segments[(segmentIndex + 1) % segments.length] ?? null
+      : segmentIndex < lastIndex
+        ? segments[segmentIndex + 1]
+        : null;
+    return { prev, next };
+  }
+
+  private getSegmentTangentDirection(
+    seg: paper.Segment,
+    prev: paper.Segment | null,
+    next: paper.Segment | null,
+  ): paper.Point | null {
+    const epsilon = 1e-6;
+
+    if (!seg.handleOut.isZero() && seg.handleOut.length > epsilon) {
+      return seg.handleOut.normalize();
+    }
+    if (!seg.handleIn.isZero() && seg.handleIn.length > epsilon) {
+      return seg.handleIn.multiply(-1).normalize();
+    }
+    if (prev && next) {
+      const across = next.point.subtract(prev.point);
+      if (across.length > epsilon) return across.normalize();
+    }
+    if (next) {
+      const forward = next.point.subtract(seg.point);
+      if (forward.length > epsilon) return forward.normalize();
+    }
+    if (prev) {
+      const backward = seg.point.subtract(prev.point);
+      if (backward.length > epsilon) return backward.normalize();
+    }
+    return null;
+  }
+
+  private getDefaultHandleLength(
+    seg: paper.Segment,
+    prev: paper.Segment | null,
+    next: paper.Segment | null,
+  ): number {
+    const neighborDistances = [
+      prev ? seg.point.getDistance(prev.point) : Infinity,
+      next ? seg.point.getDistance(next.point) : Infinity,
+    ].filter((distance) => Number.isFinite(distance) && distance > 0);
+
+    if (neighborDistances.length === 0) return 0;
+    return Math.min(...neighborDistances) * 0.35;
   }
 
   private findSegmentNear(

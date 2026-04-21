@@ -49,6 +49,42 @@ const FUNCTION_REGISTRY: FunctionDef[] = [
     },
   },
   {
+    id: "flip-horizontal",
+    name: "Flip Horizontal",
+    icon: "flip-horizontal",
+    isAvailable: (context) => context.tool === "select" && context.items.length > 0,
+    run: (context, services) => {
+      services.paperRenderer.flipItemsInViewSpace(context.items, "horizontal");
+      services.selectionController.markSelectionAsModified();
+    },
+  },
+  {
+    id: "flip-vertical",
+    name: "Flip Vertical",
+    icon: "flip-vertical",
+    isAvailable: (context) => context.tool === "select" && context.items.length > 0,
+    run: (context, services) => {
+      services.paperRenderer.flipItemsInViewSpace(context.items, "vertical");
+      services.selectionController.markSelectionAsModified();
+    },
+  },
+  {
+    id: "simplify",
+    name: "Simplify",
+    icon: "selection-simplify",
+    isAvailable: (context) =>
+      (context.tool === "select" && context.items.length > 0)
+      || (context.tool === "direct-select" && context.pickedAnchorCount > 0),
+    run: (context, services) => {
+      if (context.tool === "direct-select") {
+        services.directSelectController.simplifyPickedItems();
+        return;
+      }
+      services.paperRenderer.simplifyItems(context.items);
+      services.selectionController.markSelectionAsModified();
+    },
+  },
+  {
     id: "delete",
     name: "Delete",
     icon: "trash",
@@ -62,6 +98,42 @@ const FUNCTION_REGISTRY: FunctionDef[] = [
       services.selectionController.discardSelection();
       services.closePanel();
       services.historyManager.snapshot();
+    },
+  },
+  {
+    id: "point-corner",
+    name: "Corner",
+    icon: "point-corner",
+    isAvailable: (context) =>
+      context.tool === "direct-select"
+      && context.items.length > 0
+      && context.pickedAnchorCount > 0,
+    run: (_context, services) => {
+      services.directSelectController.setPickedAnchorHandleMode("corner");
+    },
+  },
+  {
+    id: "point-mirrored",
+    name: "Mirrored",
+    icon: "point-mirrored",
+    isAvailable: (context) =>
+      context.tool === "direct-select"
+      && context.items.length > 0
+      && context.pickedAnchorCount > 0,
+    run: (_context, services) => {
+      services.directSelectController.setPickedAnchorHandleMode("mirrored");
+    },
+  },
+  {
+    id: "point-asymmetric",
+    name: "Asymmetric",
+    icon: "point-asymmetric",
+    isAvailable: (context) =>
+      context.tool === "direct-select"
+      && context.items.length > 0
+      && context.pickedAnchorCount > 0,
+    run: (_context, services) => {
+      services.directSelectController.setPickedAnchorHandleMode("asymmetric");
     },
   },
   {

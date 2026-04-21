@@ -166,6 +166,13 @@ export class SelectionController {
     this.drawUI();
   }
 
+  markSelectionAsModified(): void {
+    if (!this.hasSelection()) return;
+    this.didMove = true;
+    selectionStore.set({ items: [...this.selectedItems] });
+    this.drawUI();
+  }
+
   handleStart(point: Point): void {
     const viewportPoint = pixelToViewport(point, this.config);
 

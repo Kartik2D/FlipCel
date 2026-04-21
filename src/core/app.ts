@@ -1210,7 +1210,7 @@ class App {
   }
 
   private onFunctionInvoke(functionId: string) {
-    runFunction(functionId, this.buildFunctionContext(), {
+    const didRun = runFunction(functionId, this.buildFunctionContext(), {
       paperRenderer: this.paperRenderer,
       selectionController: this.selectionController,
       directSelectController: this.directSelectController,
@@ -1218,6 +1218,9 @@ class App {
       camera: this.camera,
       closePanel: () => this.functionsPanel.close("hidden"),
     });
+    if (didRun) {
+      requestAnimationFrame(() => this.updateFunctionsPanel());
+    }
   }
 
   private onFunctionDragStart(functionId: string) {

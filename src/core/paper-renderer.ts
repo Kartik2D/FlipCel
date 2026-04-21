@@ -1406,6 +1406,41 @@ export class PaperRenderer {
     paper.view.update();
   }
 
+  flipItemsInViewSpace(
+    items: paper.PathItem[],
+    axis: "horizontal" | "vertical",
+  ): void {
+    const liveItems = items.filter((item) => item.parent);
+    if (liveItems.length === 0) return;
+
+    const bounds = this.getCombinedBounds(liveItems);
+    if (!bounds) return;
+
+    const center = {
+      x: bounds.x + bounds.width / 2,
+      y: bounds.y + bounds.height / 2,
+    };
+    const sx = axis === "horizontal" ? -1 : 1;
+    const sy = axis === "vertical" ? -1 : 1;
+
+    for (const item of liveItems) {
+      this.scalePathInViewSpace(item, sx, sy, center);
+    }
+    paper.view.update();
+  }
+
+  simplifyItems(items: paper.PathItem[]): void {
+    const liveItems = items.filter((item) => item.parent);
+    if (liveItems.length === 0) return;
+
+    for (const item of liveItems) {
+      for (const path of this.getChildPaths(item)) {
+        path.simplify();
+      }
+    }
+    paper.view.update();
+  }
+
   extractSelectionFromScreenRect(
     start: { x: number; y: number },
     end: { x: number; y: number },
