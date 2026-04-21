@@ -1561,6 +1561,42 @@ export class PaperRenderer {
     paper.view.update();
   }
 
+  placeItemsAsSelection(items: paper.PathItem[]): paper.PathItem[] {
+    const liveItems = items.filter((item) => item.parent);
+    if (liveItems.length === 0) return [];
+
+    const markerOrder = new Map<string, number>();
+    for (const [index, item] of liveItems.entries()) {
+      const marker = this.createSelectionMarker();
+      markerOrder.set(marker, index);
+      this.setSelectionMarker(item, marker);
+    }
+
+    for (const item of liveItems) {
+      if (!item.parent) continue;
+      this.placeSelection(item);
+    }
+
+    const survivors = this.getAllPaths()
+      .filter((item) => {
+        const marker = this.getSelectionMarker(item);
+        return marker ? markerOrder.has(marker) : false;
+      })
+      .sort((a, b) => {
+        const aMarker = this.getSelectionMarker(a);
+        const bMarker = this.getSelectionMarker(b);
+        return (aMarker ? markerOrder.get(aMarker) ?? 0 : 0)
+          - (bMarker ? markerOrder.get(bMarker) ?? 0 : 0);
+      });
+
+    for (const item of survivors) {
+      this.clearSelectionMarker(item);
+    }
+
+    paper.view.update();
+    return survivors;
+  }
+
   /**
    * Reconcile a modified item with its spatial neighbors using the local merge algorithm.
    * First resolves self-intersections (vertex edits can fold a path over itself),
@@ -1658,17 +1694,6 @@ export class PaperRenderer {
   setItemFillColor(item: paper.PathItem, color: string): void {
     if (!item.parent) return;
     this.applyPathStyle(item, new paper.Color(color));
-    paper.view.update();
-  }
-
-  /**
-   * Flatten a single item in-place: resolve self-intersections and simplify.
-   */
-  flattenItem(item: paper.PathItem): void {
-    if (!item.parent) return;
-    if (item instanceof paper.CompoundPath) {
-      this.splitDisconnectedItems([item]);
-    }
     paper.view.update();
   }
 

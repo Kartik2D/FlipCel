@@ -164,6 +164,81 @@ export class DirectSelectController {
     return this.lastSelectionViewport;
   }
 
+  getPickedAnchorCount(): number {
+    return this.pickedAnchors.size;
+  }
+
+  getSelectionScreenBounds():
+    | { x: number; y: number; width: number; height: number }
+    | null {
+    return this.getPickedAnchorScreenBounds();
+  }
+
+  deletePickedVertices(): boolean {
+    if (this.pickedAnchors.size === 0) return false;
+
+    const removalsByItem = new Map<number, Map<number, number[]>>();
+    for (const key of this.pickedAnchors) {
+      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+      if (!removalsByItem.has(itemId)) removalsByItem.set(itemId, new Map());
+      const childMap = removalsByItem.get(itemId)!;
+      if (!childMap.has(childIndex)) childMap.set(childIndex, []);
+      childMap.get(childIndex)!.push(segmentIndex);
+    }
+
+    const affectedItems: paper.PathItem[] = [];
+    for (const [itemId, childMap] of removalsByItem) {
+      const item = this.paperRenderer.getPathById(itemId);
+      if (!item?.parent) continue;
+
+      const childPaths = this.paperRenderer.getChildPaths(item);
+      for (const [childIndex, rawIndices] of childMap) {
+        const path = childPaths[childIndex];
+        if (!path) continue;
+
+        const indices = [...new Set(rawIndices)].sort((a, b) => b - a);
+        for (const index of indices) {
+          if (index < 0 || index >= path.segments.length) continue;
+          path.removeSegment(index);
+        }
+
+        const minSegments = path.closed ? 3 : 2;
+        if (path.segments.length < minSegments) {
+          path.remove();
+        }
+      }
+
+      if (item instanceof paper.CompoundPath) {
+        const survivingChildren = item.children.filter(
+          (child): child is paper.Path => child instanceof paper.Path,
+        );
+        if (survivingChildren.length === 0) {
+          item.remove();
+          continue;
+        }
+      } else if (item instanceof paper.Path) {
+        const minSegments = item.closed ? 3 : 2;
+        if (item.segments.length < minSegments) {
+          item.remove();
+          continue;
+        }
+      }
+
+      affectedItems.push(item);
+    }
+
+    if (this.onReconcile && affectedItems.length > 0) {
+      this.onReconcile(affectedItems.filter((item) => item.parent));
+    }
+
+    paper.view.update();
+    this.pickedAnchors.clear();
+    this.onSnapshot?.();
+    this.publishPickedItems();
+    this.drawUI();
+    return true;
+  }
+
   clearSelection(): void {
     this.pickedAnchors.clear();
     this.resetDragState();

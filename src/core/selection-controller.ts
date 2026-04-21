@@ -99,10 +99,13 @@ export class SelectionController {
     return [...this.selectedItems];
   }
 
-  setSelectedItems(items: paper.PathItem[]): void {
+  setSelectedItems(
+    items: paper.PathItem[],
+    options?: { needsPlacement?: boolean; didMove?: boolean },
+  ): void {
     this.selectedItems = [...items];
-    this.selectionNeedsPlacement = false;
-    this.didMove = false;
+    this.selectionNeedsPlacement = options?.needsPlacement ?? false;
+    this.didMove = options?.didMove ?? false;
     this.handles = [];
     selectionStore.set({ items: [...this.selectedItems] });
     this.drawUI();
@@ -114,6 +117,30 @@ export class SelectionController {
 
   hasTransientUI(): boolean {
     return this.hasSelection() || this.marquee.isTracking();
+  }
+
+  commitSelectionPreservingSelection(): paper.PathItem[] {
+    if (this.selectedItems.length === 0) return [];
+    if (!this.selectionNeedsPlacement && !this.didMove) {
+      return [...this.selectedItems];
+    }
+
+    const shouldSnapshot = this.didMove;
+    const survivors = this.paperRenderer.placeItemsAsSelection(
+      this.selectedItems.filter((item) => item.parent),
+    );
+
+    this.pendingExtractionSnapshot = null;
+    this.selectedItems = survivors;
+    this.selectionNeedsPlacement = false;
+    this.didMove = false;
+    this.handles = [];
+    selectionStore.set({ items: [...this.selectedItems] });
+    if (shouldSnapshot) {
+      this.onSnapshot?.();
+    }
+    this.drawUI();
+    return survivors;
   }
 
   placeSelection(): void {
@@ -145,6 +172,21 @@ export class SelectionController {
     this.resetDragThreshold();
     this.marquee.reset();
     this.clearTransformState();
+    this.drawUI();
+  }
+
+  discardSelection(): void {
+    this.pendingExtractionSnapshot = null;
+    this.selectedItems = [];
+    this.selectionNeedsPlacement = false;
+    this.didMove = false;
+    this.handles = [];
+    this.isDragging = false;
+    this.dragStartPoint = null;
+    this.resetDragThreshold();
+    this.marquee.reset();
+    this.clearTransformState();
+    selectionStore.set({ items: [] });
     this.drawUI();
   }
 

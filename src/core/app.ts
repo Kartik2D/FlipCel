@@ -33,6 +33,11 @@ import { bus, Events } from "./event-bus";
 import type { CanvasConfig, Point, Modifiers } from "./types";
 import { cycleDockMode, type ToolId, type AllToolSettings } from "./tools";
 import { pixelToViewport } from "./coords";
+import {
+  getAvailableFunctions,
+  runFunction,
+  type FunctionContext,
+} from "./functions";
 import type {
   InkwellColorPanel,
   InkwellToolsPanel,
@@ -104,6 +109,14 @@ class App {
   private rotationSnapRaf: number | null = null;
 
   private cameraLoopLastMs = performance.now();
+  private functionsPanelDismissed = false;
+  private lastFunctionsPanelKey = "";
+  private duplicateDragSession:
+    | {
+        items: paper.PathItem[];
+        lastWorldDelta: { x: number; y: number };
+      }
+    | null = null;
 
   constructor() {
     // Get canvas elements
@@ -295,8 +308,23 @@ class App {
       const { id } = (e as CustomEvent<{ id: string }>).detail;
       this.onFunctionInvoke(id);
     });
-    this.functionsPanel.addEventListener("functions-close", () => {
-      // Selection stays active when closing the panel
+    this.functionsPanel.addEventListener("function-drag-start", (e: Event) => {
+      const { id } = (e as CustomEvent<{ id: string; dx: number; dy: number }>).detail;
+      this.onFunctionDragStart(id);
+    });
+    this.functionsPanel.addEventListener("function-drag-move", (e: Event) => {
+      const { id, dx, dy } = (e as CustomEvent<{ id: string; dx: number; dy: number }>).detail;
+      this.onFunctionDragMove(id, dx, dy);
+    });
+    this.functionsPanel.addEventListener("function-drag-end", (e: Event) => {
+      const { id, dx, dy } = (e as CustomEvent<{ id: string; dx: number; dy: number }>).detail;
+      this.onFunctionDragEnd(id, dx, dy);
+    });
+    this.functionsPanel.addEventListener("functions-close", (e: Event) => {
+      const { reason } = (e as CustomEvent<{ reason?: "dismissed" | "hidden" }>).detail ?? {};
+      if (reason === "dismissed") {
+        this.functionsPanelDismissed = true;
+      }
     });
   }
 
@@ -397,6 +425,7 @@ class App {
       this.uiOverlay.redraw();
       // Selection chrome lives on a separate canvas; repaint independently.
       this.redrawActiveSelectionUI();
+      this.syncFunctionsPanelPosition();
       this.updateDisplays();
       requestAnimationFrame(step);
     };
@@ -434,6 +463,7 @@ class App {
     toolStore.subscribeImmediate((tool) => {
       this.inputManager.setTool(tool);
       this.uiOverlay.setActiveTool(tool);
+      this.updateFunctionsPanel();
     });
 
     themeModeStore.subscribeImmediate((mode) => {
@@ -584,7 +614,7 @@ class App {
     }
     if (this.directSelectController.hasSelection()) {
       this.directSelectController.clearSelection();
-      this.functionsPanel.close();
+      this.functionsPanel.close("hidden");
     }
 
     if (tool === "magnet") {
@@ -653,11 +683,15 @@ class App {
 
     if (tool === "select") {
       this.selectionController.handleEnd();
+      this.functionsPanelDismissed = false;
+      this.updateFunctionsPanel();
       return;
     }
 
     if (tool === "direct-select") {
       this.directSelectController.handleEnd();
+      this.functionsPanelDismissed = false;
+      this.updateFunctionsPanel();
       return;
     }
 
@@ -730,11 +764,15 @@ class App {
 
     if (tool === "select") {
       this.selectionController.handleCancel();
+      this.functionsPanelDismissed = false;
+      this.updateFunctionsPanel();
       return;
     }
 
     if (tool === "direct-select") {
       this.directSelectController.handleCancel();
+      this.functionsPanelDismissed = false;
+      this.updateFunctionsPanel();
       return;
     }
 
@@ -776,7 +814,7 @@ class App {
     }
     if (tool !== "direct-select") {
       this.directSelectController.clearSelection();
-      this.functionsPanel.close();
+      this.functionsPanel.close("hidden");
     }
     if (tool !== "magnet" && this.magnetController.hasActiveStroke()) {
       this.magnetController.handleCancel();
@@ -814,11 +852,6 @@ class App {
   }
 
   private onSelectionItemsChange(items: paper.PathItem[]) {
-    if (items.length === 0) {
-      this.functionsPanel.close();
-      return;
-    }
-
     if (items.length === 1) {
       const fill = items[0].fillColor;
       if (fill) {
@@ -831,6 +864,105 @@ class App {
         prevColorStore.set(color);
       }
     }
+
+    this.updateFunctionsPanel();
+  }
+
+  private buildFunctionContext(): FunctionContext {
+    return {
+      tool: toolStore.get(),
+      items: selectionStore.get().items.filter((item) => item.parent),
+      pickedAnchorCount: this.directSelectController.getPickedAnchorCount(),
+    };
+  }
+
+  private getFunctionsPanelKey(context: FunctionContext, functionIds: string[]): string {
+    const itemIds = context.items.map((item) => item.id).sort((a, b) => a - b);
+    return [
+      context.tool,
+      itemIds.join(","),
+      context.pickedAnchorCount,
+      functionIds.join(","),
+    ].join("|");
+  }
+
+  private getFunctionsPanelPosition(context: FunctionContext): { x: number; y: number } | null {
+    if (context.tool === "select") {
+      const bounds = this.paperRenderer.getSelectionFrameScreenBounds(context.items);
+      if (!bounds) return null;
+      return {
+        x: bounds.x + bounds.width + 12,
+        y: bounds.y - 8,
+      };
+    }
+
+    if (context.tool === "direct-select") {
+      const bounds = this.directSelectController.getSelectionScreenBounds();
+      if (bounds) {
+        return {
+          x: bounds.x + bounds.width + 12,
+          y: bounds.y - 8,
+        };
+      }
+
+      const point = this.directSelectController.getLastSelectionViewport();
+      if (!point) return null;
+      return { x: point.x + 12, y: point.y - 8 };
+    }
+
+    return null;
+  }
+
+  private updateFunctionsPanel() {
+    if (this.duplicateDragSession) {
+      this.functionsPanel.close("hidden");
+      return;
+    }
+
+    const context = this.buildFunctionContext();
+    const functions = getAvailableFunctions(context);
+    const nextKey = this.getFunctionsPanelKey(
+      context,
+      functions.map((fn) => fn.id),
+    );
+
+    if (functions.length === 0) {
+      this.lastFunctionsPanelKey = "";
+      this.functionsPanelDismissed = false;
+      this.functionsPanel.functions = [];
+      this.functionsPanel.close("hidden");
+      return;
+    }
+
+    if (nextKey !== this.lastFunctionsPanelKey) {
+      this.lastFunctionsPanelKey = nextKey;
+      this.functionsPanelDismissed = false;
+    }
+
+    this.functionsPanel.functions = functions;
+    if (this.functionsPanelDismissed) return;
+
+    const position = this.getFunctionsPanelPosition(context);
+    if (!position) {
+      this.functionsPanel.close("hidden");
+      return;
+    }
+
+    if (this.functionsPanel.open) {
+      this.functionsPanel.setPosition(position.x, position.y);
+    } else {
+      this.functionsPanel.show(position.x, position.y);
+    }
+  }
+
+  private syncFunctionsPanelPosition() {
+    if (!this.functionsPanel.open || this.functionsPanelDismissed || this.duplicateDragSession) return;
+    const position = this.getFunctionsPanelPosition(this.buildFunctionContext());
+    if (!position) {
+      this.functionsPanel.close("hidden");
+      return;
+    }
+    this.functionsPanel.setPosition(position.x, position.y);
   }
 
   private onColorPickerChange(color: string) {
@@ -949,7 +1081,7 @@ class App {
     if (this.historyManager.undo()) {
       this.selectionController.clearSelection();
       this.directSelectController.clearSelection();
-      this.functionsPanel.close();
+      this.functionsPanel.close("hidden");
     }
   }
 
@@ -957,7 +1089,7 @@ class App {
     if (this.historyManager.redo()) {
       this.selectionController.clearSelection();
       this.directSelectController.clearSelection();
-      this.functionsPanel.close();
+      this.functionsPanel.close("hidden");
     }
   }
 
@@ -1063,37 +1195,68 @@ class App {
   }
 
   private onFunctionInvoke(functionId: string) {
-    const items = selectionStore.get().items.filter((item) => item.parent);
+    if (toolStore.get() === "select") {
+      this.selectionController.commitSelectionPreservingSelection();
+    }
+
+    runFunction(functionId, this.buildFunctionContext(), {
+      paperRenderer: this.paperRenderer,
+      selectionController: this.selectionController,
+      directSelectController: this.directSelectController,
+      historyManager: this.historyManager,
+      camera: this.camera,
+      closePanel: () => this.functionsPanel.close("hidden"),
+    });
+  }
+
+  private onFunctionDragStart(functionId: string) {
+    if (functionId !== "duplicate") return;
+
+    if (toolStore.get() === "select") {
+      this.selectionController.commitSelectionPreservingSelection();
+    }
+
+    const context = this.buildFunctionContext();
+    if (context.tool !== "select" || context.items.length === 0) return;
+
+    const items = context.items
+      .map((item) => this.paperRenderer.duplicateItem(item, 0, 0))
+      .filter((item): item is paper.PathItem => item !== null);
     if (items.length === 0) return;
 
-    switch (functionId) {
-      case "duplicate": {
-        const worldOffset = 10 / this.camera.zoom;
-        const duplicates = items
-          .map((item) => this.paperRenderer.duplicateItem(item, worldOffset, worldOffset))
-          .filter((item): item is paper.PathItem => Boolean(item));
-        this.selectionController.setSelectedItems(duplicates);
-        this.historyManager.snapshot();
-        break;
-      }
-      case "flatten": {
-        for (const item of items) {
-          this.paperRenderer.flattenItem(item);
-        }
-        this.historyManager.snapshot();
-        break;
-      }
-      case "delete": {
-        for (const item of items) {
-          this.paperRenderer.deleteItem(item);
-        }
-        this.directSelectController.clearSelection();
-        this.selectionController.clearSelection();
-        this.functionsPanel.close();
-        this.historyManager.snapshot();
-        break;
-      }
+    this.duplicateDragSession = {
+      items,
+      lastWorldDelta: { x: 0, y: 0 },
+    };
+    this.selectionController.setSelectedItems(items, { didMove: true });
+    this.functionsPanel.close("hidden");
+  }
+
+  private onFunctionDragMove(functionId: string, dx: number, dy: number) {
+    if (functionId !== "duplicate" || !this.duplicateDragSession) return;
+
+    const worldDelta = this.camera.screenDeltaToWorld(dx, dy);
+    const stepX = worldDelta.x - this.duplicateDragSession.lastWorldDelta.x;
+    const stepY = worldDelta.y - this.duplicateDragSession.lastWorldDelta.y;
+    if (stepX === 0 && stepY === 0) return;
+
+    for (const item of this.duplicateDragSession.items) {
+      if (!item.parent) continue;
+      item.position = item.position.add(new paper.Point(stepX, stepY));
     }
+    this.duplicateDragSession.lastWorldDelta = worldDelta;
+    paper.view.update();
+    this.selectionController.drawUI();
+  }
+
+  private onFunctionDragEnd(functionId: string, dx: number, dy: number) {
+    if (functionId !== "duplicate" || !this.duplicateDragSession) return;
+
+    this.onFunctionDragMove(functionId, dx, dy);
+
+    const items = this.duplicateDragSession.items.filter((item) => item.parent);
+    this.duplicateDragSession = null;
+    this.selectionController.setSelectedItems(items, { didMove: true });
   }
 
   private onExportViewSvg() {

@@ -34,6 +34,7 @@ import {
   StoreController,
   type ColorPanelPrefs,
 } from "../core/stores";
+import type { FunctionMenuItem } from "../core/functions";
 import { historyStateStore } from "../core/history";
 
 // ============================================================
@@ -3597,30 +3598,28 @@ export class InkwellModal extends LitElement {
 // Functions Panel (appears on selection)
 // ============================================================
 
-export interface FunctionDef {
-  id: string;
-  name: string;
-  icon: string;
-  danger?: boolean;
-}
-
-const SELECTION_FUNCTIONS: FunctionDef[] = [
-  { id: "duplicate", name: "Duplicate", icon: "copy" },
-  { id: "flatten", name: "Flatten", icon: "stack" },
-  { id: "delete", name: "Delete", icon: "trash", danger: true },
-];
-
 @customElement("inkwell-functions-panel")
 export class InkwellFunctionsPanel extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false;
   @property({ type: Number }) x = 0;
   @property({ type: Number }) y = 0;
+  @property({ attribute: false }) functions: FunctionMenuItem[] = [];
+  private activeDrag:
+    | {
+        id: string;
+        pointerId: number;
+        startX: number;
+        startY: number;
+        dragging: boolean;
+      }
+    | null = null;
+  private suppressClickForId: string | null = null;
 
   private _outsideClickHandler = (e: PointerEvent) => {
     if (!this.open) return;
     const path = e.composedPath();
     if (!path.includes(this)) {
-      this.close();
+      this.dismiss();
     }
   };
 
@@ -3647,7 +3646,7 @@ export class InkwellFunctionsPanel extends LitElement {
       box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
       position: relative;
       overflow: hidden;
-      min-width: 120px;
+      min-width: 0;
       animation: fn-pop-in 180ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
     }
 
@@ -3661,24 +3660,17 @@ export class InkwellFunctionsPanel extends LitElement {
       border-radius: 8px;
       padding: 6px;
       display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .fn-title {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--inkwell-text-muted, #80786d);
-      padding: 2px 6px 4px;
-      margin: 0;
+      align-items: center;
+      gap: 4px;
     }
 
     .fn-btn {
-      display: flex;
+      display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      padding: 0;
       border: none;
       border-radius: 6px;
       background: transparent;
@@ -3686,7 +3678,6 @@ export class InkwellFunctionsPanel extends LitElement {
       font: inherit;
       cursor: pointer;
       transition: background 80ms ease;
-      white-space: nowrap;
     }
 
     .fn-btn:hover {
@@ -3695,39 +3686,6 @@ export class InkwellFunctionsPanel extends LitElement {
 
     .fn-btn.danger { color: var(--inkwell-danger, #af5b5b); }
     .fn-btn.danger:hover { background: var(--inkwell-panel-active-danger, rgba(255, 122, 122, 0.58)); }
-
-    .fn-close {
-      position: absolute;
-      top: -11px;
-      right: -11px;
-      width: 26px;
-      height: 26px;
-      box-sizing: border-box;
-      border: 2px solid var(--inkwell-panel-border, #555555);
-      border-radius: 50%;
-      background: var(--inkwell-panel-depth, #bcbcbc);
-      color: var(--inkwell-panel-border, #555555);
-      line-height: 0;
-      display: grid;
-      place-items: center;
-      cursor: pointer;
-      z-index: 2001;
-      box-shadow: none;
-      padding: 0;
-      -webkit-tap-highlight-color: transparent;
-      animation: fn-close-bounce 380ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
-    }
-
-    @keyframes fn-close-bounce {
-      0% { transform: scale(0.55); }
-      55% { transform: scale(1.1); }
-      78% { transform: scale(0.96); }
-      100% { transform: scale(1); }
-    }
-
-    .fn-close svg { display: block; }
-    .fn-close:hover { filter: brightness(0.96); }
-    .fn-close:focus { outline: none; }
   `;
 
   connectedCallback() {
@@ -3747,9 +3705,25 @@ export class InkwellFunctionsPanel extends LitElement {
     requestAnimationFrame(() => this.clampPosition());
   }
 
-  close() {
+  setPosition(x: number, y: number) {
+    this.x = x;
+    this.y = y;
+    if (this.open) {
+      this.clampPosition();
+    }
+  }
+
+  dismiss() {
+    this.close("dismissed");
+  }
+
+  close(reason: "dismissed" | "hidden" = "hidden") {
     this.open = false;
-    this.dispatchEvent(new CustomEvent("functions-close", { bubbles: true, composed: true }));
+    this.dispatchEvent(new CustomEvent("functions-close", {
+      detail: { reason },
+      bubbles: true,
+      composed: true,
+    }));
   }
 
   private clampPosition() {
@@ -3774,31 +3748,113 @@ export class InkwellFunctionsPanel extends LitElement {
   }
 
   private onFunction(id: string) {
+    if (this.suppressClickForId === id) {
+      this.suppressClickForId = null;
+      return;
+    }
     this.dispatchEvent(new CustomEvent("function-invoke", {
       detail: { id },
       bubbles: true,
       composed: true,
     }));
-    this.close();
+    this.close("hidden");
+  }
+
+  private onFunctionPointerDown(fn: FunctionMenuItem, e: PointerEvent) {
+    if (!fn.draggable) return;
+    this.activeDrag = {
+      id: fn.id,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      dragging: false,
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  private onFunctionPointerMove(fn: FunctionMenuItem, e: PointerEvent) {
+    if (!fn.draggable || !this.activeDrag || this.activeDrag.id !== fn.id || this.activeDrag.pointerId !== e.pointerId) {
+      return;
+    }
+
+    const dx = e.clientX - this.activeDrag.startX;
+    const dy = e.clientY - this.activeDrag.startY;
+    const dragDistanceSq = dx * dx + dy * dy;
+    if (!this.activeDrag.dragging && dragDistanceSq >= 25) {
+      this.activeDrag.dragging = true;
+      this.dispatchEvent(new CustomEvent("function-drag-start", {
+        detail: { id: fn.id, dx, dy },
+        bubbles: true,
+        composed: true,
+      }));
+    }
+
+    if (!this.activeDrag.dragging) return;
+
+    this.dispatchEvent(new CustomEvent("function-drag-move", {
+      detail: { id: fn.id, dx, dy },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  private onFunctionPointerUp(fn: FunctionMenuItem, e: PointerEvent) {
+    if (!fn.draggable || !this.activeDrag || this.activeDrag.id !== fn.id || this.activeDrag.pointerId !== e.pointerId) {
+      return;
+    }
+
+    const dx = e.clientX - this.activeDrag.startX;
+    const dy = e.clientY - this.activeDrag.startY;
+    const wasDragging = this.activeDrag.dragging;
+    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    this.activeDrag = null;
+
+    if (!wasDragging) return;
+
+    this.suppressClickForId = fn.id;
+    this.dispatchEvent(new CustomEvent("function-drag-end", {
+      detail: { id: fn.id, dx, dy },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  private onFunctionPointerCancel(fn: FunctionMenuItem, e: PointerEvent) {
+    if (!fn.draggable || !this.activeDrag || this.activeDrag.id !== fn.id || this.activeDrag.pointerId !== e.pointerId) {
+      return;
+    }
+    const wasDragging = this.activeDrag.dragging;
+    const dx = e.clientX - this.activeDrag.startX;
+    const dy = e.clientY - this.activeDrag.startY;
+    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    this.activeDrag = null;
+    if (!wasDragging) return;
+    this.suppressClickForId = fn.id;
+    this.dispatchEvent(new CustomEvent("function-drag-end", {
+      detail: { id: fn.id, dx, dy },
+      bubbles: true,
+      composed: true,
+    }));
   }
 
   render() {
     return html`
-      <button type="button" class="fn-close" @click=${() => this.close()}>
-        ${phosphorIcon("x", 12)}
-      </button>
       <div class="fn-shell">
         <div class="fn-face">
-          <div class="fn-title">Functions</div>
-          ${SELECTION_FUNCTIONS.map(
+          ${this.functions.map(
             (fn) => html`
               <button
                 type="button"
                 class="fn-btn ${fn.danger ? "danger" : ""}"
+                title=${fn.name}
+                aria-label=${fn.name}
+                @pointerdown=${(e: PointerEvent) => this.onFunctionPointerDown(fn, e)}
+                @pointermove=${(e: PointerEvent) => this.onFunctionPointerMove(fn, e)}
+                @pointerup=${(e: PointerEvent) => this.onFunctionPointerUp(fn, e)}
+                @pointercancel=${(e: PointerEvent) => this.onFunctionPointerCancel(fn, e)}
                 @click=${() => this.onFunction(fn.id)}
               >
                 ${phosphorIcon(fn.icon, 16)}
-                ${fn.name}
               </button>
             `
           )}
