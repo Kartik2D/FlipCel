@@ -1195,10 +1195,6 @@ class App {
   }
 
   private onFunctionInvoke(functionId: string) {
-    if (toolStore.get() === "select") {
-      this.selectionController.commitSelectionPreservingSelection();
-    }
-
     runFunction(functionId, this.buildFunctionContext(), {
       paperRenderer: this.paperRenderer,
       selectionController: this.selectionController,
@@ -1211,11 +1207,6 @@ class App {
 
   private onFunctionDragStart(functionId: string) {
     if (functionId !== "duplicate") return;
-
-    if (toolStore.get() === "select") {
-      this.selectionController.commitSelectionPreservingSelection();
-    }
-
     const context = this.buildFunctionContext();
     if (context.tool !== "select" || context.items.length === 0) return;
 
