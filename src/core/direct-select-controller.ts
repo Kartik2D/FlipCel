@@ -77,6 +77,18 @@ export class DirectSelectController {
   private handleDrag: {
     kind: "in" | "out";
     segmentKey: AnchorKey;
+    /**
+     * Linkage between this anchor's two tangent handles, sampled at the
+     * moment the drag starts. If the opposite handle is colinear with the
+     * dragged handle (pointing in the inverse direction), we keep them
+     * linked during the drag:
+     *   - "mirrored": equal length + opposite direction → opposite handle
+     *     tracks symmetrically (|in| = |out|, opposite direction).
+     *   - "asymmetric": colinear-opposite but different lengths → opposite
+     *     handle preserves its length but rotates so it stays colinear.
+     *   - "corner": not colinear → handles move independently.
+     */
+    linkage: "mirrored" | "asymmetric" | "corner";
   } | null = null;
   private didMoveHandle = false;
   private edgeDrag: {
@@ -688,7 +700,11 @@ export class DirectSelectController {
    */
   private hitTestBezierHandle(
     viewportPoint: Point,
-  ): { kind: "in" | "out"; segmentKey: AnchorKey } | null {
+  ): {
+    kind: "in" | "out";
+    segmentKey: AnchorKey;
+    linkage: "mirrored" | "asymmetric" | "corner";
+  } | null {
     if (this.pickedAnchors.size !== 1) return null;
     const key = this.pickedAnchors.values().next().value as AnchorKey | undefined;
     if (!key) return null;
@@ -699,18 +715,24 @@ export class DirectSelectController {
     const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
     if (!seg) return null;
 
+    const linkage = this.classifyHandleLinkage(seg);
+
     const hitRadiusSq = 10 * 10;
     const check = (
       handle: paper.Point,
       kind: "in" | "out",
-    ): { kind: "in" | "out"; segmentKey: AnchorKey } | null => {
+    ): {
+      kind: "in" | "out";
+      segmentKey: AnchorKey;
+      linkage: "mirrored" | "asymmetric" | "corner";
+    } | null => {
       if (handle.isZero()) return null;
       const tipWorld = seg.point.add(handle);
       const tipScreen = this.camera.worldToScreen(tipWorld.x, tipWorld.y);
       const dx = viewportPoint.x - tipScreen.x;
       const dy = viewportPoint.y - tipScreen.y;
       if (dx * dx + dy * dy <= hitRadiusSq) {
-        return { kind, segmentKey: key };
+        return { kind, segmentKey: key, linkage };
       }
       return null;
     };
@@ -718,6 +740,32 @@ export class DirectSelectController {
     // Prefer handleOut when both overlap — matches the draw order (out drawn
     // last so it's visually on top) and gives deterministic picking.
     return check(seg.handleOut, "out") ?? check(seg.handleIn, "in");
+  }
+
+  /**
+   * Classify the relationship between a segment's two tangent handles so the
+   * drag logic can keep them linked. Two handles are considered colinear
+   * when their normalized directions point nearly opposite one another
+   * (dot product ≈ -1). If either handle is effectively zero-length the
+   * anchor is treated as a corner and handles move independently.
+   */
+  private classifyHandleLinkage(
+    seg: paper.Segment,
+  ): "mirrored" | "asymmetric" | "corner" {
+    const lenIn = seg.handleIn.length;
+    const lenOut = seg.handleOut.length;
+    const minLen = 1e-4;
+    if (lenIn < minLen || lenOut < minLen) return "corner";
+
+    const nin = seg.handleIn.divide(lenIn);
+    const nout = seg.handleOut.divide(lenOut);
+    const dot = nin.x * nout.x + nin.y * nout.y;
+    // Colinear-opposite when dot ≈ -1. Allow a small tolerance so hand-tuned
+    // handles that are visually symmetric still register as linked.
+    if (dot > -0.999) return "corner";
+
+    const relDiff = Math.abs(lenIn - lenOut) / Math.max(lenIn, lenOut);
+    return relDiff < 0.01 ? "mirrored" : "asymmetric";
   }
 
   /**
@@ -742,10 +790,34 @@ export class DirectSelectController {
       world.y - seg.point.y,
     );
 
+    const linkage = this.handleDrag.linkage;
+    const oppositeLength =
+      this.handleDrag.kind === "in"
+        ? seg.handleOut.length
+        : seg.handleIn.length;
+
     if (this.handleDrag.kind === "in") {
       seg.handleIn = newHandle;
     } else {
       seg.handleOut = newHandle;
+    }
+
+    // When the two handles started the drag colinear-opposite (either
+    // mirrored or asymmetric), keep them linked during drag by preserving
+    // the opposite handle's original length and rotating its direction to
+    // stay colinear-opposite. Mirrored anchors intentionally drop their
+    // length-symmetry while the user is dragging — the opposite handle
+    // keeps the length it had at drag-start rather than tracking the
+    // dragged handle's new length.
+    if (linkage !== "corner" && !newHandle.isZero() && oppositeLength > 1e-4) {
+      const len = newHandle.length;
+      const scale = -oppositeLength / len;
+      const opposite = newHandle.multiply(scale);
+      if (this.handleDrag.kind === "in") {
+        seg.handleOut = opposite;
+      } else {
+        seg.handleIn = opposite;
+      }
     }
 
     paper.view.update();
