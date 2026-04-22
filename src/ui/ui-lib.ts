@@ -2090,7 +2090,7 @@ export class InkwellToolsPanel extends FloatingPanel {
     // Pixel resolution only affects tools that rasterize through the pixel
     // canvas before tracing; vector tools (select, direct-select, magnet,
     // pan, eyedropper) don't touch it and shouldn't advertise the setting.
-    const showsPixelRes = currentToolId === "brush" || currentToolId === "lasso";
+    const showsPixelRes = currentToolId === "brush" || currentToolId === "lasso" || currentToolId === "rect" || currentToolId === "circle";
     if (schemaKeys.length === 0) {
       if (currentToolId === "select") {
         return html`<p class="hint">Click to select, drag to move.</p>`;
@@ -2334,7 +2334,7 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
       return html``;
     }
 
-    const showsPixelRes = currentToolId === "brush" || currentToolId === "lasso";
+    const showsPixelRes = currentToolId === "brush" || currentToolId === "lasso" || currentToolId === "rect" || currentToolId === "circle";
     return html`
       ${schemaKeys.map((key) =>
         this.renderSetting(

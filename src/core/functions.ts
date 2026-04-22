@@ -72,14 +72,8 @@ const FUNCTION_REGISTRY: FunctionDef[] = [
     id: "simplify",
     name: "Simplify",
     icon: "selection-simplify",
-    isAvailable: (context) =>
-      (context.tool === "select" && context.items.length > 0)
-      || (context.tool === "direct-select" && context.pickedAnchorCount > 0),
+    isAvailable: (context) => context.tool === "select" && context.items.length > 0,
     run: (context, services) => {
-      if (context.tool === "direct-select") {
-        services.directSelectController.simplifyPickedItems();
-        return;
-      }
       services.paperRenderer.simplifyItems(context.items);
       services.selectionController.markSelectionAsModified();
     },
@@ -122,18 +116,6 @@ const FUNCTION_REGISTRY: FunctionDef[] = [
       && context.pickedAnchorCount > 0,
     run: (_context, services) => {
       services.directSelectController.setPickedAnchorHandleMode("mirrored");
-    },
-  },
-  {
-    id: "point-asymmetric",
-    name: "Asymmetric",
-    icon: "point-asymmetric",
-    isAvailable: (context) =>
-      context.tool === "direct-select"
-      && context.items.length > 0
-      && context.pickedAnchorCount > 0,
-    run: (_context, services) => {
-      services.directSelectController.setPickedAnchorHandleMode("asymmetric");
     },
   },
   {

@@ -634,7 +634,12 @@ class App {
       return;
     }
 
-    if (tool === "brush" || tool === "lasso") {
+    if (
+      tool === "brush" ||
+      tool === "lasso" ||
+      tool === "rect" ||
+      tool === "circle"
+    ) {
       if (this.getEffectiveMode(tool) === "inside") {
         const viewportPoint = pixelToViewport(point, this.config);
         const hit = this.paperRenderer.hitTest(viewportPoint);
@@ -721,17 +726,50 @@ class App {
       return;
     }
 
-    try {
-      const svg = await this.tracer.trace(this.pixelCanvas);
-      if (!svg) {
-        this.insideClipForStroke = undefined;
+    const clipForInside = this.insideClipForStroke;
+    this.insideClipForStroke = undefined;
+    const effectiveMode = this.getEffectiveMode(tool);
+
+    // Shape primitives bypass the potrace raster-trace step entirely and
+    // commit a native paper.js Path (Rectangle / Ellipse) built directly
+    // from the stroke anchors. This keeps the final geometry crisp and
+    // parametrically clean.
+    if (tool === "rect" || tool === "circle") {
+      const toolSettings = settings[tool] as { from?: string };
+      const fromCenter = toolSettings.from === "center";
+      const shape = this.buildPrimitiveShape(
+        tool,
+        stroke.points,
+        fromCenter,
+      );
+      if (!shape) {
+        this.pixelCanvasManager.clear();
         return;
       }
 
-      const clipForInside = this.insideClipForStroke;
-      this.insideClipForStroke = undefined;
+      if (effectiveMode === "add") {
+        const color = colorStore.get();
+        this.paperRenderer.addShape(shape, color);
+      } else if (effectiveMode === "subtract") {
+        this.paperRenderer.subtractShape(shape);
+      } else {
+        const color = colorStore.get();
+        this.paperRenderer.addShapeIntersectClip(
+          shape,
+          color,
+          clipForInside ?? null,
+        );
+      }
+      this.pixelCanvasManager.clear();
+      this.historyManager.snapshot();
+      return;
+    }
 
-      const effectiveMode = this.getEffectiveMode(tool);
+    try {
+      const svg = await this.tracer.trace(this.pixelCanvas);
+      if (!svg) {
+        return;
+      }
 
       if (effectiveMode === "add") {
         const color = colorStore.get();
@@ -745,9 +783,58 @@ class App {
       this.pixelCanvasManager.clear();
       this.historyManager.snapshot(); // Record history after drawing
     } catch (error) {
-      this.insideClipForStroke = undefined;
       console.error("Tracing failed:", error);
     }
+  }
+
+  /**
+   * Build a native paper.js Path (rectangle or ellipse) from the tool's
+   * pointer anchors. Returns the unattached path in viewport (screen)
+   * coordinates; the paper-renderer's shape pipeline is responsible for
+   * reparenting it into world space and merging it into the layer.
+   */
+  private buildPrimitiveShape(
+    tool: "rect" | "circle",
+    pixelPoints: Point[],
+    fromCenter: boolean,
+  ): paper.PathItem | null {
+    if (pixelPoints.length < 2) return null;
+
+    const a = pixelToViewport(pixelPoints[0], this.config);
+    const b = pixelToViewport(pixelPoints[pixelPoints.length - 1], this.config);
+
+    let x: number;
+    let y: number;
+    let w: number;
+    let h: number;
+
+    if (fromCenter) {
+      const rx = Math.abs(b.x - a.x);
+      const ry = Math.abs(b.y - a.y);
+      x = a.x - rx;
+      y = a.y - ry;
+      w = rx * 2;
+      h = ry * 2;
+    } else {
+      x = Math.min(a.x, b.x);
+      y = Math.min(a.y, b.y);
+      w = Math.abs(b.x - a.x);
+      h = Math.abs(b.y - a.y);
+    }
+
+    if (w < 0.5 || h < 0.5) return null;
+
+    const rect = new paper.Rectangle(
+      new paper.Point(x, y),
+      new paper.Size(w, h),
+    );
+
+    const path =
+      tool === "rect"
+        ? new paper.Path.Rectangle({ rectangle: rect, insert: false })
+        : new paper.Path.Ellipse({ rectangle: rect, insert: false });
+
+    return path;
   }
 
   private getEffectiveMode(tool: ToolId): "add" | "subtract" | "inside" {
@@ -911,6 +998,14 @@ class App {
         return {
           x: bounds.x + bounds.width / 2,
           y: bounds.y + bounds.height + 12,
+        };
+      }
+
+      const singleBounds = this.directSelectController.getSinglePickedAnchorScreenBounds();
+      if (singleBounds) {
+        return {
+          x: singleBounds.x + singleBounds.width / 2,
+          y: singleBounds.y + singleBounds.height + 12,
         };
       }
 

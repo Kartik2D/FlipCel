@@ -197,6 +197,51 @@ export class DirectSelectController {
     return this.camera.worldToScreen(seg.point.x, seg.point.y);
   }
 
+  getSinglePickedAnchorScreenBounds():
+    | { x: number; y: number; width: number; height: number }
+    | null {
+    if (this.pickedAnchors.size !== 1) return null;
+
+    const key = this.pickedAnchors.values().next().value as AnchorKey | undefined;
+    if (!key) return null;
+
+    const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
+    const item = this.paperRenderer.getPathById(itemId);
+    if (!item) return null;
+
+    const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
+    if (!seg) return null;
+
+    const points = [this.camera.worldToScreen(seg.point.x, seg.point.y)];
+    if (!seg.handleIn.isZero()) {
+      const tip = seg.point.add(seg.handleIn);
+      points.push(this.camera.worldToScreen(tip.x, tip.y));
+    }
+    if (!seg.handleOut.isZero()) {
+      const tip = seg.point.add(seg.handleOut);
+      points.push(this.camera.worldToScreen(tip.x, tip.y));
+    }
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const point of points) {
+      if (point.x < minX) minX = point.x;
+      if (point.y < minY) minY = point.y;
+      if (point.x > maxX) maxX = point.x;
+      if (point.y > maxY) maxY = point.y;
+    }
+
+    const pad = 10;
+    return {
+      x: minX - pad,
+      y: minY - pad,
+      width: maxX - minX + pad * 2,
+      height: maxY - minY + pad * 2,
+    };
+  }
+
   deletePickedVertices(): boolean {
     if (this.pickedAnchors.size === 0) return false;
 

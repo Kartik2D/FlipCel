@@ -1035,6 +1035,124 @@ export class PaperRenderer {
     return { survivors: [], changedItems };
   }
 
+  /**
+   * Transform an unattached item from screen (viewport) space into world
+   * space using the camera's inverse matrix. Used by shape-primitive tools
+   * that build their geometry directly in viewport coordinates rather than
+   * going through an SVG trace.
+   */
+  private transformScreenToWorld(item: paper.Item): void {
+    if (this.camera) {
+      const [a, b, c, d, tx, ty] = this.camera.getInverseTransformMatrix();
+      const screenToWorldMatrix = new paper.Matrix(a, b, c, d, tx, ty);
+      item.transform(screenToWorldMatrix);
+    } else {
+      item.position = paper.view.center;
+    }
+  }
+
+  /**
+   * Add a pre-built shape (given in viewport/screen coordinates) into the
+   * active layer, mirroring the add-path merge pipeline used by traced
+   * strokes.
+   */
+  addShape(shape: paper.PathItem, color: string = "#000000"): void {
+    const layer = paper.project.activeLayer;
+    const paperColor = new paper.Color(color);
+
+    this.transformScreenToWorld(shape);
+    this.applyPathStyle(shape, paperColor);
+    if (shape.parent !== layer) layer.addChild(shape);
+
+    const merged = this.mergeAddInto(layer, [shape]);
+    this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
+    this.flattenGroups();
+    paper.view.update();
+  }
+
+  /**
+   * Subtract a pre-built shape (in viewport/screen coordinates) from the
+   * active layer, mirroring `subtractPath`.
+   */
+  subtractShape(shape: paper.PathItem): void {
+    this.transformScreenToWorld(shape);
+
+    const merged = this.mergeSubtractInto([shape]);
+    this.normalizeAfterLocalEdit(merged.changedItems);
+    this.flattenGroups();
+    paper.view.update();
+  }
+
+  /**
+   * Add a pre-built shape clipped by intersect with a target item (or behind
+   * existing geometry when `clipPathItem` is null), mirroring
+   * `addPathIntersectClip`.
+   */
+  addShapeIntersectClip(
+    shape: paper.PathItem,
+    color: string = "#000000",
+    clipPathItem: paper.PathItem | null,
+  ): void {
+    const layer = paper.project.activeLayer;
+    const paperColor = new paper.Color(color);
+
+    this.transformScreenToWorld(shape);
+    if (shape.parent !== layer) layer.addChild(shape);
+
+    const clippedPaths: paper.PathItem[] = [];
+    if (clipPathItem) {
+      const clip = clipPathItem.clone({ insert: false });
+      try {
+        const clipped = this.tryIntersect(shape, clip);
+        shape.remove();
+        if (clipped) {
+          this.applyPathStyle(clipped, paperColor);
+          layer.addChild(clipped);
+          clippedPaths.push(clipped);
+        }
+      } finally {
+        clip.remove();
+      }
+    } else {
+      const padding = 2;
+      let remaining: paper.PathItem | null = shape;
+      const existing = this.queryByBounds(shape.bounds, padding).filter(
+        (it) => it.layer === layer,
+      );
+      for (const ex of existing) {
+        if (!remaining || !ex.parent) break;
+        const diff = this.trySubtract(remaining, ex);
+        if (diff) {
+          remaining.remove();
+          remaining = diff;
+          continue;
+        }
+        if (this.likelyFullyCovered(ex, remaining)) {
+          remaining.remove();
+          remaining = null;
+          break;
+        }
+      }
+      if (remaining && !remaining.isEmpty()) {
+        this.applyPathStyle(remaining, paperColor);
+        if (remaining.parent !== layer) layer.addChild(remaining);
+        clippedPaths.push(remaining);
+      } else {
+        remaining?.remove();
+      }
+    }
+
+    if (clippedPaths.length === 0) {
+      paper.view.update();
+      return;
+    }
+
+    const merged = this.mergeAddInto(layer, clippedPaths);
+    this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
+    this.flattenGroups();
+    paper.view.update();
+  }
+
   async addPath(svg: string, color: string = "#000000"): Promise<void> {
     const layer = paper.project.activeLayer;
     const paperColor = new paper.Color(color);
