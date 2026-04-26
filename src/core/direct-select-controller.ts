@@ -3,19 +3,47 @@
  *
  * Simple model:
  *
- *   While the direct-select tool is active, EVERY anchor on the active layer
- *   is exposed. There is no "which shapes show anchors" derivation — it's
- *   always all of them.
+ *   Anchor visibility is per-shape and gated on two states:
+ *     1. The shape owns at least one PICKED anchor (real selection), or
+ *     2. The shape is EXPOSED — single-clicked by the user as a peek-only
+ *        gesture that reveals its anchors + outline without picking
+ *        anything (so color-picker / functions panel stay empty).
+ *   Shapes that are neither picked-into nor exposed render no chrome.
+ *
+ *   Click semantics on a shape's interior fill:
+ *     - Single click → expose that shape (replaces any prior exposure;
+ *                      clears picks).
+ *     - Double click → pick every anchor of that shape (legacy behavior).
+ *                      Peek persists since the shape is still "in focus".
+ *
+ *   Peek lifetime: a peek-exposure stays in place across every gesture
+ *   that targets a shape (anchor click, edge click, marquee drag,
+ *   vertex deletion, anchor moves, handle drags, etc.). The ONLY things
+ *   that clear it are:
+ *     - A click outside any shape (empty-area tap → "deselect"),
+ *     - A single click on a different shape (peek shifts to that shape),
+ *     - A clearSelection() call (tool switch / undo / layer change),
+ *     - The exposed item disappearing from the layer entirely.
+ *
+ *   Hit-testing and marquee still see every anchor on the layer, so the
+ *   user can pick into a "blank" shape by clicking its edge or marqueeing
+ *   across it.
  *
  *   The only state the tool holds is:
- *     pickedAnchors : Set<AnchorKey>   — anchors the user selected (click /
- *                                        marquee / lasso). Drag moves these.
- *     anchorHandles : AnchorHandle[]   — cached per-frame, one handle per
- *                                        anchor of every active-layer item.
+ *     pickedAnchors  : Set<AnchorKey>  — anchors the user picked (anchor
+ *                                        click / marquee / lasso / shape
+ *                                        double-click). Drag moves these.
+ *     exposedItemIds : Set<number>     — shapes shown via single-click
+ *                                        peek; not part of the published
+ *                                        selection.
+ *     anchorHandles  : AnchorHandle[]  — cached per-frame, one handle per
+ *                                        anchor of every active-layer item;
+ *                                        used for hit-testing and marquee
+ *                                        regardless of visibility state.
  *
  *   What gets published to the shared selectionStore:
- *     items owning any picked anchor. Empty when nothing is picked.
- *     That's what the color picker and functions panel operate on.
+ *     items owning any picked anchor. Exposed-only shapes are NOT
+ *     published (single-click is purely visual).
  */
 import type { Point, CanvasConfig } from "./types";
 import type { PaperRenderer } from "./paper-renderer";
@@ -65,6 +93,35 @@ export class DirectSelectController {
 
   private pickedAnchors: Set<AnchorKey> = new Set();
   private anchorHandles: AnchorHandle[] = [];
+
+  /**
+   * Shapes the user single-clicked to expose. Exposed shapes show their
+   * anchors + outline like picked shapes, but no anchors are actually
+   * picked (selectionStore is not populated). Replaced (not augmented) by
+   * each new single-click; cleared by any pick-changing gesture.
+   */
+  private exposedItemIds: Set<number> = new Set();
+
+  /**
+   * Last shape-interior click. Used to detect a double-click on the same
+   * shape: a second `handleStart` within `doubleClickWindowMs` and within
+   * `doubleClickDistanceSq` viewport-pixels² of the first promotes the
+   * single-click peek into a "pick all anchors" gesture.
+   */
+  private lastShapeClick: {
+    timestampMs: number;
+    point: Point;
+    itemId: number;
+  } | null = null;
+  private readonly doubleClickWindowMs = 350;
+  private readonly doubleClickDistanceSq = 6 * 6;
+
+  /**
+   * True when the in-flight marquee was armed by a shape-interior tap
+   * (peek). On finalize, a tap that never crossed the marquee threshold
+   * keeps the peek-exposure visible; an empty-area tap clears it instead.
+   */
+  private marqueeFromShapePeek = false;
 
   private isDraggingAnchor = false;
   private dragStartPoint: Point | null = null;
@@ -165,13 +222,15 @@ export class DirectSelectController {
   }
 
   /**
-   * True when the tool has any transient UI to draw beyond the baseline
-   * "all anchors on the layer" state — i.e. a pick, a drag, or an in-progress
-   * marquee. The baseline itself is drawn whenever the tool is active.
+   * True when the tool currently has anything to draw — a pick, an
+   * exposed shape, an in-flight drag, or a marquee. The tool no longer
+   * has a "baseline" draw state; without one of these flags the chrome
+   * canvas is fully empty.
    */
   hasTransientUI(): boolean {
     return (
       this.hasSelection() ||
+      this.exposedItemIds.size > 0 ||
       this.marquee.isTracking() ||
       this.isDraggingAnchor ||
       this.handleDrag !== null ||
@@ -363,6 +422,8 @@ export class DirectSelectController {
 
   clearSelection(): void {
     this.pickedAnchors.clear();
+    this.exposedItemIds.clear();
+    this.lastShapeClick = null;
     this.resetDragState();
     this.resetMarqueeState();
     this.resetTransformState();
@@ -401,6 +462,7 @@ export class DirectSelectController {
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
       this.didMoveHandle = false;
+      this.lastShapeClick = null;
       this.drawUI();
       return;
     }
@@ -411,10 +473,14 @@ export class DirectSelectController {
       if (!this.pickedAnchors.has(hit.key)) {
         this.pickedAnchors = new Set([hit.key]);
       }
+      // Anchor click is "on a shape" — leave peek intact. Only the
+      // double-click detector is invalidated.
+      this.lastShapeClick = null;
       this.isDraggingAnchor = true;
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
       this.didMoveAnchor = false;
+      this.bringInteractedItemsToFront();
       this.publishPickedItems();
       this.drawUI();
       return;
@@ -426,10 +492,13 @@ export class DirectSelectController {
         anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.startSegmentIndex),
         anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.endSegmentIndex),
       ]);
+      // Edge click is "on a shape" — leave peek intact.
+      this.lastShapeClick = null;
       this.edgeDrag = edgeHit;
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
       this.didMoveEdge = false;
+      this.bringInteractedItemsToFront();
       this.publishPickedItems();
       this.drawUI();
       return;
@@ -439,18 +508,71 @@ export class DirectSelectController {
       this.paperRenderer.hitTest(viewportPoint),
     );
     if (shapeHit) {
-      this.pickAllAnchorsOfItem(shapeHit);
-      this.isDraggingAnchor = true;
-      this.dragStartPoint = viewportPoint;
-      this.beginDragThreshold(viewportPoint);
-      this.didMoveAnchor = false;
+      const now = performance.now();
+      const isDoubleClick = this.isDoubleClickOnShape(viewportPoint, shapeHit.id, now);
+
+      if (isDoubleClick) {
+        // Double-click on an already-exposed shape: promote to a real
+        // selection of every anchor + start the same drag-to-move
+        // gesture the legacy single-click used to start. Peek stays as
+        // it was — the shape is still "on screen" via picks anyway, and
+        // keeping the peek means the next tap on this shape's interior
+        // doesn't blow it away.
+        this.pickAllAnchorsOfItem(shapeHit);
+        this.lastShapeClick = null;
+        this.isDraggingAnchor = true;
+        this.dragStartPoint = viewportPoint;
+        this.beginDragThreshold(viewportPoint);
+        this.didMoveAnchor = false;
+        this.bringInteractedItemsToFront();
+        this.publishPickedItems();
+        this.drawUI();
+        return;
+      }
+
+      // Single click on a shape: peek-only. Drop any prior picks /
+      // exposures and show just this shape's anchors + outline. Arm a
+      // marquee from the same point so that if the user keeps the
+      // pointer down and drags, it promotes into a marquee selection
+      // (matching the historical "drag-from-shape" gesture). A pure
+      // tap that never crosses the marquee threshold leaves the peek
+      // exposure in place — see finalizeMarquee.
+      this.pickedAnchors.clear();
+      this.exposedItemIds = new Set([shapeHit.id]);
+      this.lastShapeClick = { timestampMs: now, point: viewportPoint, itemId: shapeHit.id };
+      this.marqueeFromShapePeek = true;
+      this.marquee.start(viewportPoint);
+      this.bringInteractedItemsToFront();
       this.publishPickedItems();
       this.drawUI();
       return;
     }
 
+    this.lastShapeClick = null;
+    this.marqueeFromShapePeek = false;
     this.marquee.start(viewportPoint);
     this.drawUI();
+  }
+
+  /**
+   * Treat the current `handleStart` as a double-click iff the previous
+   * click was on the same shape, recent (< doubleClickWindowMs ago), and
+   * landed within doubleClickDistanceSq viewport-pixels². Otherwise it's
+   * either a fresh single-click or the second half of a triple-click that
+   * we choose to handle as a single-click.
+   */
+  private isDoubleClickOnShape(
+    viewportPoint: Point,
+    itemId: number,
+    nowMs: number,
+  ): boolean {
+    const last = this.lastShapeClick;
+    if (!last) return false;
+    if (last.itemId !== itemId) return false;
+    if (nowMs - last.timestampMs > this.doubleClickWindowMs) return false;
+    const dx = viewportPoint.x - last.point.x;
+    const dy = viewportPoint.y - last.point.y;
+    return dx * dx + dy * dy <= this.doubleClickDistanceSq;
   }
 
   handleMove(point: Point): void {
@@ -563,8 +685,19 @@ export class DirectSelectController {
     const ctx = this.chromeCtx;
     ctx.save();
 
-    // Outline every item that owns at least one picked anchor.
+    // Shown shapes = picked-into shapes ∪ peek-exposed shapes. Outline
+    // every shown shape; the anchor loop below uses the same set so verts
+    // and outline always appear (or disappear) together.
+    const shownItemIds = new Set<number>();
     for (const item of this.getPickedItems()) {
+      shownItemIds.add(item.id);
+      this.paperRenderer.strokeSelectionShapeOutline(ctx, item);
+    }
+    for (const itemId of this.exposedItemIds) {
+      if (shownItemIds.has(itemId)) continue;
+      const item = this.paperRenderer.getPathById(itemId);
+      if (!item || !item.parent) continue;
+      shownItemIds.add(item.id);
       this.paperRenderer.strokeSelectionShapeOutline(ctx, item);
     }
 
@@ -576,11 +709,14 @@ export class DirectSelectController {
     }
 
     // Anchor nodes: picked = black / white; exposed unpicked = solid grey (dim).
+    // Only shown shapes (picked-into or peek-exposed) render their anchor
+    // squares — every other shape draws nothing.
     const unpickedR = 3;
     const pickedR = 5;
     const unpickedFill = "#6e6e6e";
     const unpickedStroke = "#b8b8b8";
     for (const h of this.anchorHandles) {
+      if (!shownItemIds.has(h.item.id)) continue;
       const isPicked = this.pickedAnchors.has(h.key);
       const r = isPicked ? pickedR : unpickedR;
       ctx.fillStyle = isPicked ? "#000000" : unpickedFill;
@@ -659,8 +795,10 @@ export class DirectSelectController {
   private rebuildAnchorHandles(): void {
     const handles: AnchorHandle[] = [];
     const liveKeys = new Set<AnchorKey>();
+    const liveItemIds = new Set<number>();
 
     for (const item of this.paperRenderer.getAllPaths()) {
+      liveItemIds.add(item.id);
       this.forEachSegment(item, (ci, si, seg) => {
         const screen = this.camera.worldToScreen(seg.point.x, seg.point.y);
         const key = anchorKey(item.id, ci, si);
@@ -685,6 +823,17 @@ export class DirectSelectController {
       }
       if (pruned.size !== this.pickedAnchors.size) {
         this.pickedAnchors = pruned;
+      }
+    }
+
+    // Drop peek-exposures that reference shapes no longer on the layer.
+    if (this.exposedItemIds.size > 0) {
+      const pruned = new Set<number>();
+      for (const id of this.exposedItemIds) {
+        if (liveItemIds.has(id)) pruned.add(id);
+      }
+      if (pruned.size !== this.exposedItemIds.size) {
+        this.exposedItemIds = pruned;
       }
     }
   }
@@ -966,10 +1115,23 @@ export class DirectSelectController {
     const matchedKeys = new Set(matched.map((h) => h.key));
 
     if (this.hasActiveMarquee()) {
+      // User actually dragged a marquee. Picks update to whatever the
+      // marquee covered; peek stays intact (a drag is not "a click
+      // outside the shape").
       this.pickedAnchors = matchedKeys;
+      this.lastShapeClick = null;
+      this.bringInteractedItemsToFront();
+    } else if (this.marqueeFromShapePeek) {
+      // Pure tap on a shape: handleStart already cleared picks and
+      // installed the new exposure + lastShapeClick. Leave them be so
+      // the peek persists and the next click can register as a
+      // double-click.
     } else {
-      // Empty click below the drag threshold: clear picks.
+      // Tap on empty area — the "click outside the shape" gesture.
+      // Clears picks, peek, and the double-click memory.
       this.pickedAnchors.clear();
+      this.exposedItemIds.clear();
+      this.lastShapeClick = null;
     }
 
     this.publishPickedItems();
@@ -982,6 +1144,15 @@ export class DirectSelectController {
    * active-layer anchor is exposed automatically, the user always sees the
    * boolean result. Remap is purely about keeping the "picked" set meaningful
    * across the reconcile.
+   *
+   * Special case: when an item that was FULLY picked gets absorbed into a
+   * same-color union (its anchors are now interior to a survivor and don't
+   * exist on any path's outline), the position-based remap would silently
+   * drop the interior picks and leave only the union's silhouette anchors
+   * selected. We detect this by sampling each fully-picked item's interior
+   * point post-rotation and re-picking every anchor of whichever survivor
+   * contains that sample. This keeps "rotate a multi-shape selection" from
+   * collapsing the pick set down to the silhouette of the merged result.
    */
   private finalizeAnchorMove(): void {
     const targets: paper.Point[] = [];
@@ -1005,6 +1176,25 @@ export class DirectSelectController {
     const affectedItems = [...affectedIds]
       .map((id) => this.paperRenderer.getPathById(id))
       .filter((item): item is paper.PathItem => !!item?.parent);
+
+    // Capture interior sample points for every fully-picked affected
+    // item, BEFORE reconcile potentially removes them. We use these
+    // post-reconcile to find the survivor that absorbed the original
+    // item, so we can re-pick all of its anchors instead of losing
+    // the interior anchors to a same-color union.
+    const fullyPickedSamples: paper.Point[] = [];
+    for (const item of affectedItems) {
+      let total = 0;
+      let picked = 0;
+      this.forEachSegment(item, (ci, si) => {
+        total++;
+        if (this.pickedAnchors.has(anchorKey(item.id, ci, si))) picked++;
+      });
+      if (total > 0 && picked === total) {
+        fullyPickedSamples.push(item.bounds.center.clone());
+      }
+    }
+
     this.onReconcile(affectedItems);
 
     const epsilon = 1e-3;
@@ -1019,8 +1209,26 @@ export class DirectSelectController {
         }
       }
     }
+
+    // For each fully-picked item, find the surviving path that
+    // contains its interior sample and pick every one of that
+    // survivor's anchors. If the item itself survived, this is a
+    // no-op (we just re-add the picks we already had); if the item
+    // was absorbed into a union, this rescues every "now interior"
+    // anchor by picking the absorbing shape in its entirety.
+    for (const sample of fullyPickedSamples) {
+      for (const candidate of layerItems) {
+        if (!candidate.contains(sample)) continue;
+        this.forEachSegment(candidate, (ci, si) => {
+          newKeys.add(anchorKey(candidate.id, ci, si));
+        });
+        break;
+      }
+    }
+
     this.pickedAnchors = newKeys;
 
+    this.bringInteractedItemsToFront();
     this.onSnapshot?.();
     this.publishPickedItems();
   }
@@ -1068,6 +1276,27 @@ export class DirectSelectController {
     this.selectionChangeCallback?.(items.length > 0);
   }
 
+  /**
+   * Move every shape we're currently interacting with — picked-into or
+   * peek-exposed — to the top of the active layer's z-order. Mirrors the
+   * select tool's "click to bring to front" behavior so direct-select
+   * gestures (anchor / edge / shape click, marquee, double-click) also
+   * surface the touched shapes above their neighbors. Iterates in current
+   * layer order so calling `bringToFront` repeatedly preserves relative
+   * order among the lifted items.
+   */
+  private bringInteractedItemsToFront(): void {
+    const ids = new Set<number>();
+    for (const key of this.pickedAnchors) ids.add(parseAnchorKey(key).itemId);
+    for (const id of this.exposedItemIds) ids.add(id);
+    if (ids.size === 0) return;
+
+    for (const item of this.paperRenderer.getAllPaths()) {
+      if (!ids.has(item.id)) continue;
+      this.paperRenderer.bringToFront(item);
+    }
+  }
+
   private resetDragState(): void {
     this.isDraggingAnchor = false;
     this.dragStartPoint = null;
@@ -1081,6 +1310,7 @@ export class DirectSelectController {
 
   private resetMarqueeState(): void {
     this.marquee.reset();
+    this.marqueeFromShapePeek = false;
   }
 
   private resetTransformState(): void {

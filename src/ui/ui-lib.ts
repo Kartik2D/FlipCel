@@ -6,6 +6,7 @@
  */
 import { LitElement, html, css, nothing, type TemplateResult, type PropertyValues } from "lit";
 import { unsafeSVG } from "lit/directives/unsafe-svg.js";
+import { repeat } from "lit/directives/repeat.js";
 import { customElement, property, state } from "lit/decorators.js";
 import { tools, type ToolId, type SettingsSchema, type SettingDef, getTool } from "../core/tools";
 import {
@@ -36,6 +37,7 @@ import {
 } from "../core/stores";
 import type { FunctionMenuItem } from "../core/functions";
 import { historyStateStore } from "../core/history";
+import Sortable from "sortablejs";
 
 // ============================================================
 // Phosphor Icons — Duotone weight, inline paths (MIT)
@@ -294,6 +296,28 @@ export class Block extends LitElement {
       font-weight: var(--block-font-weight);
       line-height: 1.35;
       color: var(--block-font-color);
+    }
+
+    :host,
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--inkwell-scrollbar-thumb, rgba(120, 120, 120, 0.34)) transparent;
+    }
+
+    *::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    *::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    *::-webkit-scrollbar-thumb {
+      background-color: var(--inkwell-scrollbar-thumb, rgba(120, 120, 120, 0.34));
+      background-clip: content-box;
+      border: 1px solid transparent;
+      border-radius: 999px;
     }
 
     :host([dragging]) {
@@ -687,11 +711,18 @@ export class Block extends LitElement {
     window.addEventListener("pointerup", this._onResizeEnd);
   }
 
+  protected getResizeMinWidth(): number {
+    return 100;
+  }
+
+  protected getResizeMinHeight(_width: number): number {
+    return 80;
+  }
+
   protected _onResizeMove = (e: PointerEvent) => {
     if (!this._isResizing) return;
 
-    const minWidth = 100;
-    const minHeight = 80;
+    const minWidth = this.getResizeMinWidth();
 
     // Calculate new bounds based on which corner is being dragged
     // The dragged corner follows the cursor, opposite corner stays fixed
@@ -719,6 +750,8 @@ export class Block extends LitElement {
       }
       newWidth = minWidth;
     }
+
+    const minHeight = this.getResizeMinHeight(newWidth);
     if (newHeight < minHeight) {
       newHeight = minHeight;
     }
@@ -992,12 +1025,40 @@ export class GenericColorPicker extends BaseColorPicker {
   private lastPlaneSignature = "";
 
   static styles = [pickerVars, handleStyles, sliderColumnStyles, css`
-    :host { display: block; height: 100%; }
+    :host {
+      display: block;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+    }
 
-    .picker-main { display: flex; gap: var(--picker-gap); width: 100%; align-items: stretch; }
-    .plane-area { flex: 1; min-width: 0; }
+    .picker-main {
+      display: flex;
+      gap: var(--picker-gap);
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      align-items: stretch;
+    }
 
-    .plane-square { position: relative; width: 100%; height: 0; padding-bottom: 100%; }
+    .plane-area {
+      flex: 1 1 auto;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      align-items: stretch;
+    }
+
+    .plane-square {
+      position: relative;
+      flex: 1 1 auto;
+      width: auto;
+      height: 100%;
+      min-width: 0;
+      max-width: 100%;
+      aspect-ratio: 1;
+    }
     .plane-square-inner {
       position: absolute; inset: 0; cursor: crosshair;
       border-radius: var(--panel-control-radius, 8px);
@@ -1005,7 +1066,15 @@ export class GenericColorPicker extends BaseColorPicker {
       border: var(--picker-border-width) solid var(--picker-border-color); box-sizing: border-box;
     }
 
-    .plane-circle-wrap { position: relative; width: 100%; height: 0; padding-bottom: 100%; }
+    .plane-circle-wrap {
+      position: relative;
+      flex: 1 1 auto;
+      width: auto;
+      height: 100%;
+      min-width: 0;
+      max-width: 100%;
+      aspect-ratio: 1;
+    }
     .plane-circle-inner { position: absolute; inset: 0; cursor: crosshair; }
     .circle-disk {
       position: absolute;
@@ -1017,9 +1086,24 @@ export class GenericColorPicker extends BaseColorPicker {
     }
 
     canvas { display: block; width: 100%; height: 100%; image-rendering: auto; }
-    .slider-column { flex-shrink: 0; }
-    .sliders-stack { flex: 1; display: flex; flex-direction: column; gap: 6px; min-height: 48px; }
-    .sliders-stack .s-slider { flex: 1; min-height: 36px; }
+    .slider-column {
+      flex: 0 1 var(--picker-slider-width);
+      min-width: 12px;
+      min-height: 0;
+    }
+
+    .sliders-stack {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 0;
+    }
+
+    .sliders-stack .s-slider {
+      flex: 1;
+      min-height: 0;
+    }
   `];
 
   private getAdapter(): ColorSpaceAdapter { return getColorSpaceAdapter(this.prefs.space); }
@@ -1370,6 +1454,7 @@ export class FloatingPanel extends Block {
       /* Stable default width so content changes (toggles, tool schema) do not reflow the shell */
       width: var(--panel-width, 280px);
       min-width: var(--panel-min-width, 200px);
+      min-height: var(--panel-min-height, auto);
       max-width: calc(100vw - 16px);
       box-sizing: border-box;
       display: flex;
@@ -1441,14 +1526,20 @@ export class FloatingPanel extends Block {
       justify-content: flex-start;
     }
 
-    /* One centered drag affordance per panel (not repeated per section title) */
+    /* Sticky drag affordance stays visible while panel content scrolls. */
     .panel-drag-pill-wrap {
+      position: sticky;
+      top: calc(-1 * var(--block-face-padding));
+      z-index: 20;
       display: flex;
       justify-content: center;
       align-items: center;
-      width: 100%;
+      width: calc(100% + (var(--block-face-padding) * 2));
       min-width: 0;
       flex-shrink: 0;
+      margin: calc(-1 * var(--block-face-padding)) calc(-1 * var(--block-face-padding)) 0;
+      padding: var(--block-face-padding) var(--block-face-padding) 6px;
+      background: var(--block-face-bg);
     }
 
     /* Horizontal grab pill — flat, no shadow */
@@ -1851,11 +1942,24 @@ export class InkwellColorPanel extends FloatingPanel {
       --panel-width: 288px;
     }
 
+    .face {
+      overflow: hidden;
+    }
+
+    .panel-form {
+      height: 100%;
+      min-height: 0;
+    }
+
+    .row {
+      flex: 0 0 auto;
+    }
+
     .picker-wrap {
-      min-height: 140px;
-      flex-shrink: 0;
+      flex: 1 1 auto;
       width: 100%;
       min-width: 0;
+      min-height: 0;
     }
   `;
 
@@ -2424,6 +2528,9 @@ const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
 
 @customElement("inkwell-top-bar-panel")
 export class InkwellTopBarPanel extends FloatingPanel {
+  /** Quick info row (zoom / rotation / tool / mode). Disabled until a new placement is chosen. */
+  private static readonly DOCK_QUICK_INFO_ROW_ENABLED = false;
+
   @property({ type: Number }) zoomLevel = 100;
   @property({ type: Number }) rotation = 0;
 
@@ -2447,6 +2554,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
       --panel-left: 50%;
       --panel-width: min(300px, calc(100vw - 16px));
       --panel-min-width: 0;
+      --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-canvas-bg, #ffffff));
       transform: translateX(-50%);
       z-index: 1200;
       max-width: calc(100vw - 16px);
@@ -2671,6 +2779,45 @@ export class InkwellTopBarPanel extends FloatingPanel {
     `;
   }
 
+  private renderDockQuickInfoRow() {
+    if (!InkwellTopBarPanel.DOCK_QUICK_INFO_ROW_ENABLED) return nothing;
+    const paintMode = this.effectivePaintModeLabel();
+    const prevToolName = getTool(this.prevTool.value).name;
+    const currentToolName = getTool(this.tool.value).name;
+    const toolTip =
+      this.prevTool.value !== this.tool.value
+        ? `Click to switch back to ${prevToolName}`
+        : `Current tool: ${currentToolName}`;
+    return html`
+      <div class="dock-status">
+        ${this.renderDockWidget({
+          label: "zoom",
+          value: `${this.zoomLevel}%`,
+          title: "Reset zoom to 100%",
+          onClick: () => this.emitDock("zoom-reset"),
+        })}
+        ${this.renderDockWidget({
+          label: "rotation",
+          value: `${Math.round(this.rotation)}°`,
+          title: "Reset rotation to 0°",
+          onClick: () => this.emitDock("rotate-reset"),
+        })}
+        ${this.renderDockWidget({
+          label: "tool",
+          value: currentToolName,
+          title: toolTip,
+          onClick: () => this.emitDock("tool-cycle"),
+        })}
+        ${this.renderDockWidget({
+          label: "mode",
+          value: paintMode,
+          title: "Click to cycle paint mode",
+          onClick: () => this.emitDock("mode-cycle"),
+        })}
+      </div>
+    `;
+  }
+
   private initializeAllPanelsHidden() {
     this.panelVisibility = this.panelVisibility.map((panel) => {
       const el = document.getElementById(panel.id) as ToggleablePanel | null;
@@ -2780,45 +2927,12 @@ export class InkwellTopBarPanel extends FloatingPanel {
   }
 
   render() {
-    const paintMode = this.effectivePaintModeLabel();
-    const prevToolName = getTool(this.prevTool.value).name;
-    const currentToolName = getTool(this.tool.value).name;
-    const toolTip =
-      this.prevTool.value !== this.tool.value
-        ? `Click to switch back to ${prevToolName}`
-        : `Current tool: ${currentToolName}`;
-
     return html`
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
           <div class="unified-dock">
-            <div class="dock-status">
-              ${this.renderDockWidget({
-                label: "zoom",
-                value: `${this.zoomLevel}%`,
-                title: "Reset zoom to 100%",
-                onClick: () => this.emitDock("zoom-reset"),
-              })}
-              ${this.renderDockWidget({
-                label: "rotation",
-                value: `${Math.round(this.rotation)}°`,
-                title: "Reset rotation to 0°",
-                onClick: () => this.emitDock("rotate-reset"),
-              })}
-              ${this.renderDockWidget({
-                label: "tool",
-                value: currentToolName,
-                title: toolTip,
-                onClick: () => this.emitDock("tool-cycle"),
-              })}
-              ${this.renderDockWidget({
-                label: "mode",
-                value: paintMode,
-                title: "Click to cycle paint mode",
-                onClick: () => this.emitDock("mode-cycle"),
-              })}
-            </div>
+            ${this.renderDockQuickInfoRow()}
             <div class="bar">
               ${this.panelVisibility.map(
                 (panel) => html`
@@ -3012,99 +3126,147 @@ import { layerStore, generateLayerId } from "../core/stores";
 @customElement("inkwell-layers-panel")
 export class InkwellLayersPanel extends FloatingPanel {
   private layers = new StoreController(this, layerStore);
-  @state() private draggedLayerId: string | null = null;
-  @state() private dropTargetLayerId: string | null = null;
   @state() private editingLayerId: string | null = null;
   @state() private editingName = "";
-  private layerDragGhost: HTMLElement | null = null;
+  private sortable: Sortable | null = null;
 
   static styles = css`
     ${FloatingPanel.styles}
 
     :host {
-      --panel-width: 220px;
+      --panel-width: 280px;
+      --layers-control-size: 24px;
+    }
+
+    .block {
+      height: 100%;
+      min-height: 0;
+    }
+
+    .face {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .panel-form {
+      flex: 1 1 auto;
+      height: auto;
+      min-height: 0;
+    }
+
+    .layers-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
     }
 
     .layer-list {
       display: flex;
       flex-direction: column;
       gap: 4px;
-      max-height: 200px;
+      flex: 1 1 auto;
+      max-height: none;
       overflow-y: auto;
       margin: 0;
       min-width: 0;
+      min-height: 0;
     }
 
-    /* Match flat blocky-button: depth face + border-colored label; active = accent + contrast text */
     .layer-item {
-      display: flex;
+      display: grid;
+      grid-template-columns:
+        var(--layers-control-size)
+        var(--layers-control-size)
+        minmax(0, 1fr);
       align-items: center;
-      gap: 6px;
-      padding: 6px 8px;
-      border-radius: var(--panel-control-radius, 8px);
-      cursor: pointer;
-      transition: background-color 100ms ease, color 100ms ease, filter 100ms ease;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
-      border: none;
+      gap: 4px;
+      min-width: 0;
+      flex: 0 0 auto;
+      cursor: grab;
+      touch-action: none;
       color: var(--block-border, var(--inkwell-panel-border));
     }
 
-    .layer-item:hover:not(.active) {
-      filter: brightness(0.97);
-    }
-
-    .layer-item.active {
-      background: var(--inkwell-accent, var(--panel-accent, #4a6fb5));
-      color: var(--inkwell-danger-contrast, #ffffff);
+    .layer-item:active {
+      cursor: grabbing;
     }
 
     .layer-item.hidden {
       opacity: 0.5;
     }
 
-    .layer-item.dragging {
-      opacity: 0.45;
+    /* SortableJS drag state classes */
+    .layer-item.sortable-ghost {
+      opacity: 0.35;
     }
 
-    .layer-item.drop-target {
-      background: color-mix(
-        in srgb,
-        var(--inkwell-accent, var(--panel-accent, #4a6fb5)) 38%,
-        var(--block-depth-color, var(--inkwell-panel-depth))
-      );
+    .layer-item.sortable-chosen {
+      filter: brightness(0.96);
     }
 
-    .layer-item.active.drop-target {
-      background: color-mix(
-        in srgb,
-        var(--inkwell-accent, var(--panel-accent, #4a6fb5)) 88%,
-        var(--inkwell-panel-surface, white)
-      );
-    }
-
-    .layer-drag-handle {
-      flex-shrink: 0;
-      width: 12px;
-      height: 22px;
-      cursor: grab;
-      touch-action: none;
-      border-radius: 999px;
-      align-self: center;
-      background: color-mix(
-        in srgb,
-        var(--inkwell-text-muted) 32%,
-        var(--block-depth-color, var(--inkwell-panel-depth))
-      );
-      box-shadow: inset 0 0 0 1px
-        color-mix(in srgb, var(--inkwell-panel-border) 22%, transparent);
-    }
-
-    .layer-drag-handle:active {
+    .layer-item.sortable-drag {
       cursor: grabbing;
+      box-shadow: var(--inkwell-shadow-soft, 0 6px 18px rgba(0, 0, 0, 0.18));
     }
 
-    .layer-drag-ghost {
-      box-shadow: var(--inkwell-shadow-soft, 0 6px 18px rgba(0, 0, 0, 0.18));
+    .layer-add-button,
+    .layer-control,
+    .layer-name-cell {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+      min-height: 24px;
+      border-radius: 6px;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      color: var(--block-border, var(--inkwell-panel-border));
+    }
+
+    .layer-add-button,
+    .layer-control {
+      padding: 0;
+      border: none;
+      cursor: pointer;
+    }
+
+    .layer-add-button {
+      width: var(--layers-control-size);
+      height: var(--layers-control-size);
+      flex: 0 0 auto;
+      font: inherit;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--inkwell-text-muted, #666);
+    }
+
+    .layer-name-cell {
+      justify-content: flex-start;
+      padding: 0 8px;
+    }
+
+    .layer-name-cell {
+      gap: 5px;
+    }
+
+    .layer-item:hover:not(.active) .layer-control,
+    .layer-item:hover:not(.active) .layer-name-cell,
+    .layer-add-button:hover {
+      filter: brightness(0.97);
+    }
+
+    .layer-item.active .layer-control,
+    .layer-item.active .layer-name-cell {
+      background: var(--inkwell-accent, var(--panel-accent, #b5a04a));
+      color: var(--inkwell-danger-contrast, #ffffff);
+    }
+
+    .layer-name-cell {
+      overflow: hidden;
     }
 
     .layer-name {
@@ -3130,7 +3292,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       background: color-mix(in srgb, var(--inkwell-panel-surface) 55%, transparent);
       border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
       border-radius: 4px;
-      padding: 2px 5px;
+      padding: 1px 5px;
     }
 
     .layer-item.active .layer-name-input {
@@ -3140,19 +3302,9 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     .visibility-btn,
     .delete-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      width: 26px;
-      height: 26px;
-      padding: 0;
-      cursor: pointer;
-      border-radius: var(--panel-control-radius, 8px);
-      border: none;
-      background: transparent;
+      width: 100%;
+      height: 100%;
       color: inherit;
-      transition: background-color 100ms ease, color 100ms ease, filter 100ms ease, opacity 100ms ease;
     }
 
     .visibility-btn svg,
@@ -3161,7 +3313,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .layer-item:not(.active) .visibility-btn:hover:not(:disabled) {
-      filter: brightness(0.95);
+      filter: brightness(0.88);
     }
 
     .layer-item:not(.active) .delete-btn:hover:not(:disabled) {
@@ -3175,7 +3327,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .layer-item.active .visibility-btn:hover:not(:disabled) {
-      background: color-mix(in srgb, var(--inkwell-danger-contrast, #fff) 14%, transparent);
+      background: color-mix(in srgb, var(--inkwell-danger-contrast, #fff) 32%, transparent);
       filter: none;
     }
 
@@ -3188,10 +3340,6 @@ export class InkwellLayersPanel extends FloatingPanel {
     .delete-btn:disabled {
       opacity: 0.45;
       cursor: not-allowed;
-    }
-
-    .add-layer-btn {
-      width: 100%;
     }
   `;
 
@@ -3269,98 +3417,63 @@ export class InkwellLayersPanel extends FloatingPanel {
     this.emit("layer-add", { id: newId, name: `Layer ${layerNumber}` });
   }
 
-  private clearLayerDragGhost() {
-    if (this.layerDragGhost?.isConnected) {
-      this.layerDragGhost.remove();
-    }
-    this.layerDragGhost = null;
+  private destroySortable() {
+    this.sortable?.destroy();
+    this.sortable = null;
   }
 
-  private onLayerDragStart(layerId: string, e: DragEvent) {
-    this.cancelLayerRename();
-    this.draggedLayerId = layerId;
-    this.dropTargetLayerId = null;
-    const dt = e.dataTransfer;
-    if (dt) {
-      dt.effectAllowed = "move";
-      dt.setData("text/plain", layerId);
-    }
+  firstUpdated(changedProperties: PropertyValues) {
+    super.firstUpdated(changedProperties);
+    this.initSortable();
+  }
 
-    const handle = e.currentTarget as HTMLElement | null;
-    const row = handle?.closest(".layer-item") as HTMLElement | null;
-    if (!row || !dt || typeof dt.setDragImage !== "function") return;
+  disconnectedCallback() {
+    this.destroySortable();
+    super.disconnectedCallback();
+  }
 
-    this.clearLayerDragGhost();
-    const ghost = row.cloneNode(true) as HTMLElement;
-    ghost.classList.add("layer-drag-ghost");
-    ghost.classList.remove("dragging", "drop-target");
-    ghost.querySelectorAll<HTMLElement>(".layer-drag-handle").forEach((el) => {
-      el.removeAttribute("draggable");
+  private initSortable() {
+    const list = this.renderRoot.querySelector<HTMLElement>(".layer-list");
+    if (!list || this.sortable) return;
+
+    this.sortable = Sortable.create(list, {
+      // Don't initiate drag from controls that should remain clickable.
+      filter: ".visibility-btn, .delete-btn, .layer-name-input",
+      preventOnFilter: false,
+      ghostClass: "sortable-ghost",
+      chosenClass: "sortable-chosen",
+      dragClass: "sortable-drag",
+      forceFallback: false,
+      onStart: () => {
+        this.cancelLayerRename();
+      },
+      onEnd: (evt) => {
+        const { oldIndex, newIndex } = evt;
+        if (
+          oldIndex == null ||
+          newIndex == null ||
+          oldIndex === newIndex
+        ) {
+          return;
+        }
+
+        // SortableJS has already mutated the DOM into the new visual order.
+        // Read the new top-to-bottom order straight from the DOM so we don't
+        // have to second-guess SortableJS's own index math.
+        const list = evt.to as HTMLElement;
+        const orderedTopToBottom = Array.from(
+          list.querySelectorAll<HTMLElement>(".layer-item"),
+        )
+          .map((el) => el.dataset.layerId)
+          .filter((id): id is string => Boolean(id));
+
+        if (orderedTopToBottom.length !== this.layers.value.layers.length) {
+          return;
+        }
+
+        this.emit("layer-reorder", orderedTopToBottom);
+      },
     });
-
-    const rect = row.getBoundingClientRect();
-    ghost.style.cssText = `
-      box-sizing: border-box;
-      width: ${rect.width}px;
-      position: fixed;
-      left: -9999px;
-      top: 0;
-      pointer-events: none;
-      opacity: 0.96;
-      z-index: 2147483647;
-    `;
-
-    this.renderRoot.appendChild(ghost);
-    this.layerDragGhost = ghost;
-    void ghost.offsetWidth;
-
-    const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
-    const offsetY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
-    dt.setDragImage(ghost, offsetX, offsetY);
-  }
-
-  private onLayerDragOver(layerId: string, e: DragEvent) {
-    if (!this.draggedLayerId || this.draggedLayerId === layerId) return;
-    e.preventDefault();
-    this.dropTargetLayerId = layerId;
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-  }
-
-  private onLayerDrop(targetLayerId: string, e: DragEvent) {
-    e.preventDefault();
-    const draggedLayerId = this.draggedLayerId ?? e.dataTransfer?.getData("text/plain");
-    if (!draggedLayerId || draggedLayerId === targetLayerId) {
-      this.draggedLayerId = null;
-      this.dropTargetLayerId = null;
-      return;
-    }
-
-    const displayLayers = [...this.layers.value.layers].reverse();
-    const fromIndex = displayLayers.findIndex((layer) => layer.id === draggedLayerId);
-    const toIndex = displayLayers.findIndex((layer) => layer.id === targetLayerId);
-    if (fromIndex < 0 || toIndex < 0) {
-      this.draggedLayerId = null;
-      this.dropTargetLayerId = null;
-      return;
-    }
-
-    const reordered = [...displayLayers];
-    const [moved] = reordered.splice(fromIndex, 1);
-    reordered.splice(toIndex, 0, moved);
-
-    this.emit(
-      "layer-reorder",
-      reordered.map((layer) => layer.id),
-    );
-
-    this.draggedLayerId = null;
-    this.dropTargetLayerId = null;
-  }
-
-  private onLayerDragEnd() {
-    this.clearLayerDragGhost();
-    this.draggedLayerId = null;
-    this.dropTargetLayerId = null;
   }
 
   render() {
@@ -3374,56 +3487,30 @@ export class InkwellLayersPanel extends FloatingPanel {
         <div class="face">
           <div class="panel-form">
             ${this.renderDragHandlePill()}
-            ${this.renderPanelTitle("Layers")}
+            <div class="layers-header">
+              ${this.renderPanelTitle("Layers")}
+              <button
+                type="button"
+                class="layer-add-button"
+                title="Add layer above selected"
+                aria-label="Add layer"
+                @click=${() => this.addLayer()}
+              >+</button>
+            </div>
             <div class="layer-list">
-            ${displayLayers.map(
+            ${repeat(
+              displayLayers,
+              (layer) => layer.id,
               (layer) => html`
                 <div
-                  class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""} ${this.draggedLayerId === layer.id ? "dragging" : ""} ${this.dropTargetLayerId === layer.id ? "drop-target" : ""}"
+                  class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
+                  data-layer-id=${layer.id}
                   data-interactive
                   @click=${() => this.selectLayer(layer.id)}
-                  @dragover=${(e: DragEvent) => this.onLayerDragOver(layer.id, e)}
-                  @drop=${(e: DragEvent) => this.onLayerDrop(layer.id, e)}
                 >
-                  <span
-                    class="layer-drag-handle"
-                    draggable="true"
-                    title="Drag to reorder"
-                    role="img"
-                    aria-label="Drag to reorder layer"
-                    @dragstart=${(e: DragEvent) => this.onLayerDragStart(layer.id, e)}
-                    @dragend=${() => this.onLayerDragEnd()}
-                  ></span>
-                  ${this.editingLayerId === layer.id
-                    ? html`
-                        <input
-                          type="text"
-                          class="layer-name-input"
-                          data-layer-edit=${layer.id}
-                          .value=${this.editingName}
-                          aria-label="Layer name"
-                          @input=${(e: Event) => {
-                            this.editingName = (e.target as HTMLInputElement).value;
-                          }}
-                          @keydown=${(e: KeyboardEvent) =>
-                            this.onRenameKeydown(layer.id, e)}
-                          @blur=${() => this.commitLayerRename(layer.id)}
-                          @click=${(e: Event) => e.stopPropagation()}
-                          @pointerdown=${(e: Event) => e.stopPropagation()}
-                        />
-                      `
-                    : html`
-                        <span
-                          class="layer-name"
-                          title="Double-click to rename"
-                          @dblclick=${(e: Event) =>
-                            this.startLayerRename(layer.id, layer.name, e)}
-                          >${layer.name}</span
-                        >
-                      `}
                   <button
                     type="button"
-                    class="visibility-btn ${!layer.visible ? "dim" : ""}"
+                    class="layer-control visibility-btn ${!layer.visible ? "dim" : ""}"
                     @click=${(e: Event) => this.toggleVisibility(layer.id, e)}
                     title="${layer.visible ? "Hide layer" : "Show layer"}"
                   >
@@ -3431,20 +3518,46 @@ export class InkwellLayersPanel extends FloatingPanel {
                   </button>
                   <button
                     type="button"
-                    class="delete-btn"
+                    class="layer-control delete-btn"
                     @click=${(e: Event) => this.deleteLayer(layer.id, e)}
                     title="Delete layer"
                     ?disabled=${layers.length <= 1}
                   >
                     ${phosphorIcon("trash", 14)}
                   </button>
+                  <div class="layer-name-cell">
+                    ${this.editingLayerId === layer.id
+                      ? html`
+                          <input
+                            type="text"
+                            class="layer-name-input"
+                            data-layer-edit=${layer.id}
+                            .value=${this.editingName}
+                            aria-label="Layer name"
+                            @input=${(e: Event) => {
+                              this.editingName = (e.target as HTMLInputElement).value;
+                            }}
+                            @keydown=${(e: KeyboardEvent) =>
+                              this.onRenameKeydown(layer.id, e)}
+                            @blur=${() => this.commitLayerRename(layer.id)}
+                            @click=${(e: Event) => e.stopPropagation()}
+                            @pointerdown=${(e: Event) => e.stopPropagation()}
+                          />
+                        `
+                      : html`
+                          <span
+                            class="layer-name"
+                            title="Double-click to rename"
+                            @dblclick=${(e: Event) =>
+                              this.startLayerRename(layer.id, layer.name, e)}
+                            >${layer.name}</span
+                          >
+                        `}
+                  </div>
                 </div>
               `
             )}
             </div>
-            <blocky-button class="add-layer-btn" flat @click=${() => this.addLayer()}>
-              + Add Layer
-            </blocky-button>
           </div>
         </div>
         ${this.resizable

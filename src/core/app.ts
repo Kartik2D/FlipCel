@@ -156,7 +156,7 @@ class App {
 
     // Initialize components
     this.pixelCanvasManager = new PixelCanvas(this.pixelCanvas, this.pixelCanvas2D, this.config);
-    this.tracer = new Tracer(potrace);
+    this.tracer = new Tracer(potrace, init);
     this.paperRenderer = new PaperRenderer(this.paperCanvas, this.config);
     this.paperRenderer.setCamera(this.camera);
     this.uiOverlay = new UIOverlay(this.uiCanvas, this.uiCanvas2D, this.config);
@@ -489,8 +489,10 @@ class App {
   private redrawActiveSelectionUI() {
     const currentTool = toolStore.get();
     if (currentTool === "direct-select") {
-      // Direct-select always paints: every active-layer anchor is exposed
-      // whenever the tool is active, even with nothing picked yet.
+      // Direct-select still calls drawUI() unconditionally so the chrome
+      // canvas is cleared every frame. The controller decides what (if
+      // anything) to paint — nothing is drawn until at least one anchor
+      // is picked.
       this.directSelectController.drawUI();
       return;
     }
@@ -768,6 +770,7 @@ class App {
     try {
       const svg = await this.tracer.trace(this.pixelCanvas);
       if (!svg) {
+        this.pixelCanvasManager.clear();
         return;
       }
 
@@ -784,6 +787,7 @@ class App {
       this.historyManager.snapshot(); // Record history after drawing
     } catch (error) {
       console.error("Tracing failed:", error);
+      this.pixelCanvasManager.clear();
     }
   }
 
@@ -1208,19 +1212,33 @@ class App {
   // ============================================================
 
   private onLayerAdd(id: string, name: string) {
-    // Create the layer in Paper.js
+    // Create the layer in Paper.js (it lands at the top of z-order by default).
     this.paperRenderer.createLayer(id, name);
-    
-    // Update the store
-    layerStore.update((state) => ({
-      layers: [...state.layers, { id, name, visible: true }],
-      activeLayerId: id,
-    }));
-    
+
+    // Insert the new layer directly above the currently active layer in the
+    // store's bottom->top ordering. If there's no active layer, fall back to
+    // appending on top.
+    layerStore.update((state) => {
+      const activeIndex = state.layers.findIndex(
+        (layer) => layer.id === state.activeLayerId,
+      );
+      const insertAt = activeIndex < 0 ? state.layers.length : activeIndex + 1;
+      const nextLayers = [...state.layers];
+      nextLayers.splice(insertAt, 0, { id, name, visible: true });
+      return {
+        layers: nextLayers,
+        activeLayerId: id,
+      };
+    });
+
+    // Sync Paper.js z-order to match the store.
+    const orderedBottomToTop = layerStore.get().layers.map((layer) => layer.id);
+    this.paperRenderer.reorderLayers(orderedBottomToTop);
+
     // Clear selection when switching layers
     this.selectionController.clearSelection();
     this.directSelectController.clearSelection();
-    
+
     // Snapshot for undo/redo
     this.historyManager.snapshot();
   }
@@ -1244,6 +1262,10 @@ class App {
       layers: remainingLayers,
       activeLayerId: newActiveId,
     });
+
+    // Keep Paper.js aligned with the store. PaperRenderer.deleteLayer() picks
+    // an arbitrary survivor when the active layer is deleted.
+    this.paperRenderer.setActiveLayer(newActiveId);
     
     // Clear selection when deleting layers
     this.selectionController.clearSelection();
@@ -1254,6 +1276,19 @@ class App {
   }
 
   private onLayerSelect(layerId: string) {
+    const state = layerStore.get();
+    const isAlreadyActive = state.activeLayerId === layerId;
+
+    if (
+      isAlreadyActive &&
+      (this.selectionController.hasSelection() || this.directSelectController.hasSelection())
+    ) {
+      this.selectionController.clearSelection();
+      this.directSelectController.clearSelection();
+      this.functionsPanel.close("hidden");
+      return;
+    }
+
     // Set active layer in Paper.js
     if (!this.paperRenderer.setActiveLayer(layerId)) return;
 

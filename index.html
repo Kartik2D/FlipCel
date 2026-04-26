@@ -35,9 +35,10 @@
 
                 --inkwell-app-bg: #f3efe8;
                 --inkwell-canvas-bg: #fffdf9;
-                --inkwell-panel-surface: rgba(255, 253, 249, 0.94);
+                --inkwell-panel-surface: #fffdf9;
                 --inkwell-panel-depth: #d8d0c7;
                 --inkwell-panel-border: #5f584f;
+                --inkwell-topbar-surface: #fffdf9;
                 --inkwell-text-primary: #29241e;
                 --inkwell-text-secondary: #5f584f;
                 --inkwell-text-muted: #80786d;
@@ -55,14 +56,16 @@
                 --inkwell-shadow-soft: 0 6px 18px rgba(34, 24, 10, 0.14);
                 --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.22);
                 --inkwell-panel-active-danger: rgba(255, 122, 122, 0.58);
+                --inkwell-scrollbar-thumb: rgba(95, 88, 79, 0.36);
             }
 
             html[data-theme="dark"] {
                 --inkwell-app-bg: #111317;
                 --inkwell-canvas-bg: #1a1e25;
-                --inkwell-panel-surface: rgba(33, 38, 47, 0.96);
+                --inkwell-panel-surface: #21262f;
                 --inkwell-panel-depth: #434c5c;
                 --inkwell-panel-border: #798498;
+                --inkwell-topbar-surface: #21262f;
                 --inkwell-text-primary: #f5f7fb;
                 --inkwell-text-secondary: #d2d8e4;
                 --inkwell-text-muted: #9ea8bc;
@@ -80,6 +83,7 @@
                 --inkwell-shadow-soft: 0 10px 24px rgba(0, 0, 0, 0.32);
                 --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.15);
                 --inkwell-panel-active-danger: rgba(255, 124, 124, 0.42);
+                --inkwell-scrollbar-thumb: rgba(245, 247, 251, 0.32);
             }
 
             *,
@@ -87,6 +91,27 @@
             *::after {
                 margin: 0;
                 box-sizing: border-box;
+            }
+
+            * {
+                scrollbar-width: thin;
+                scrollbar-color: var(--inkwell-scrollbar-thumb) transparent;
+            }
+
+            *::-webkit-scrollbar {
+                width: 6px;
+                height: 6px;
+            }
+
+            *::-webkit-scrollbar-track {
+                background: transparent;
+            }
+
+            *::-webkit-scrollbar-thumb {
+                background-color: var(--inkwell-scrollbar-thumb);
+                background-clip: content-box;
+                border: 1px solid transparent;
+                border-radius: 999px;
             }
 
             html,
@@ -159,7 +184,7 @@
         <inkwell-top-bar-panel id="top-bar-panel"></inkwell-top-bar-panel>
         <inkwell-tools-panel id="tools-panel" draggable resizable style="--panel-top: 28%; --panel-right: 1%; display: none;"></inkwell-tools-panel>
         <inkwell-universal-panel id="universal-panel" draggable resizable style="--panel-top: 50%; --panel-left: 1%; display: none;"></inkwell-universal-panel>
-        <inkwell-layers-panel id="layers-panel" draggable resizable style="--panel-bottom: 2%; --panel-right: 1%; display: none;"></inkwell-layers-panel>
+        <inkwell-layers-panel id="layers-panel" draggable resizable style="--panel-bottom: 2%; --panel-left: 1%; display: none;"></inkwell-layers-panel>
         <inkwell-functions-panel id="functions-panel"></inkwell-functions-panel>
 
         <script type="module" src="/src/main.ts"></script>
