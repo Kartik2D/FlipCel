@@ -35,7 +35,11 @@ export class PaperRenderer {
   private config: CanvasConfig;
   private camera: Camera | null = null;
   private aliasFixEnabled = true;
+  /** Legacy fixed width in world space when there is no camera. */
   private readonly aliasFixStrokeWidth = 0.5;
+  /** Target on-screen width (CSS px) of the same-color “alias fix” stroke; world width = this / camera.zoom. */
+  private readonly aliasFixScreenWidthPx = 1;
+  private lastAliasFixCameraZoom: number | null = null;
   private readonly selectionFramePaddingPx = 10;
   private nextSelectionMarkerId = 1;
   private markerByItemId = new Map<number, string>();
@@ -312,6 +316,8 @@ export class PaperRenderer {
 
     // Reset and apply the matrix to Paper.js view
     paper.view.matrix.set(a, b, c, d, tx, ty);
+
+    this.updateAliasFixStrokesForCurrentZoom();
 
     paper.view.update();
   }
@@ -798,6 +804,41 @@ export class PaperRenderer {
   }
 
   /**
+   * World-space width so the stroke stays ~`aliasFixScreenWidthPx` CSS pixels on screen
+   * after the camera view scale (no camera: fixed hairline in world space).
+   */
+  private worldSpaceAliasFixStrokeWidth(): number {
+    if (this.camera) {
+      return this.aliasFixScreenWidthPx / this.camera.zoom;
+    }
+    return this.aliasFixStrokeWidth;
+  }
+
+  /**
+   * Keep only stroke width in sync with zoom; avoids fill clone when `applyCamera` runs every frame.
+   */
+  private updateAliasFixStrokesForCurrentZoom(): void {
+    if (!this.camera || !this.aliasFixEnabled) return;
+    const z = this.camera.zoom;
+    if (
+      this.lastAliasFixCameraZoom != null &&
+      Math.abs(z - this.lastAliasFixCameraZoom) < 1e-5
+    ) {
+      return;
+    }
+    this.lastAliasFixCameraZoom = z;
+    for (const layer of paper.project.layers) {
+      for (const child of layer.children) {
+        if (child instanceof paper.Path || child instanceof paper.CompoundPath) {
+          if (child.fillColor) {
+            child.strokeWidth = this.worldSpaceAliasFixStrokeWidth();
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Apply fill and tiny same-color stroke to hide anti-aliased seams.
    */
   private applyPathStyle(item: paper.PathItem, fill: paper.Color | null): void {
@@ -810,7 +851,7 @@ export class PaperRenderer {
     item.fillColor = fill.clone();
     if (this.aliasFixEnabled) {
       item.strokeColor = fill.clone();
-      item.strokeWidth = this.aliasFixStrokeWidth;
+      item.strokeWidth = this.worldSpaceAliasFixStrokeWidth();
     } else {
       item.strokeColor = null;
       item.strokeWidth = 0;
@@ -826,6 +867,8 @@ export class PaperRenderer {
         }
       }
     }
+    this.lastAliasFixCameraZoom =
+      this.aliasFixEnabled && this.camera != null ? this.camera.zoom : null;
     paper.view.update();
   }
 

@@ -198,7 +198,7 @@ export const prevToolStore = new Store<ToolId>("select");
  * View overlay preferences (grid, etc.) — Settings panel + UI canvas
  */
 export interface ViewOverlaySettings {
-  /** When false, the alignment grid is hidden. */
+  /** When false, the world grid overlay is hidden. */
   gridEnabled: boolean;
 }
 
@@ -217,8 +217,8 @@ export interface StageSettings {
 }
 
 export const stageStore = new Store<StageSettings>({
-  width: 630,
-  height: 380,
+  width: 1920,
+  height: 1080,
   color: "#ffffff",
 });
 

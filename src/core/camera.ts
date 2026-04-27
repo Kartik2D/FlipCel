@@ -7,8 +7,9 @@
  * - Rotation (angle in radians)
  * - Coordinate transformations between screen and world space
  *
- * **Smoothing:** Target vs present poses; during **two-finger pinch** the present pose eases toward
- * target each frame. All other inputs (wheel, UI, single-pointer pan) keep present locked to target.
+ * **Smoothing:** Target vs present poses — the **present** pose eases toward **target** every frame
+ * (exponential decay). Input updates target only; discrete jumps use `setState` / `reset` /
+ * `fitToBounds({ immediate: true })` or `syncPresentToTarget()` when an instant snap is required.
  *
  * Transformation (screen to world) uses the **present** pose so the drawn view matches picking.
  */
@@ -36,6 +37,22 @@ function lerpAngle(from: number, to: number, t: number): number {
   return normalizeAngle(from + d * t);
 }
 
+export interface ViewportInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+export interface FitToBoundsOptions {
+  /** Fractional margin around `bounds` (default 0.06). */
+  padding?: number;
+  /** Reserve space on each viewport edge (e.g. top-bar docks); bounds are fit inside and centered in that rect. */
+  viewportInsets?: ViewportInsets;
+  /** When false, only the target pose updates so `stepLerp` can ease. Default true (snap present + target). */
+  immediate?: boolean;
+}
+
 export class Camera {
   /** Present — used for getTransformMatrix, screenToWorld, worldToScreen */
   private x = 0;
@@ -50,16 +67,14 @@ export class Camera {
   private targetRotation = 0;
 
   private minZoom = 0.1;
-  private maxZoom = 3;
+  /** Upper clamp for world→screen scale (pinch / wheel / fit). High enough for anchor-level editing. */
+  private maxZoom = 16;
 
   private viewportWidth = 0;
   private viewportHeight = 0;
 
-  /** Higher = snappier follow (1/s time constant scale). Lower = gentler pinch easing. */
+  /** Higher = snappier follow (1/s time constant scale). Lower = gentler easing. */
   private readonly lerpLambda = 50;
-
-  /** When true (two-finger pinch), `stepLerp` eases present toward target; otherwise present matches target. */
-  private pinchViewEasing = false;
 
   constructor(viewportWidth: number, viewportHeight: number) {
     this.viewportWidth = viewportWidth;
@@ -77,24 +92,12 @@ export class Camera {
     this.viewportHeight = height;
   }
 
-  /**
-   * Enable view easing only during multitouch pinch; disabling snaps present to target immediately.
-   */
-  setPinchViewEasing(active: boolean): void {
-    this.pinchViewEasing = active;
-    if (!active) {
-      this.syncPresentToTarget();
-    }
-  }
-
   get zoom(): number {
     return this._zoom;
   }
 
   set zoom(value: number) {
-    const z = Math.max(this.minZoom, Math.min(this.maxZoom, value));
-    this._zoom = z;
-    this.targetZoom = z;
+    this.targetZoom = Math.max(this.minZoom, Math.min(this.maxZoom, value));
   }
 
   get rotation(): number {
@@ -102,9 +105,7 @@ export class Camera {
   }
 
   set rotation(value: number) {
-    const r = normalizeAngle(value);
-    this._rotation = r;
-    this.targetRotation = r;
+    this.targetRotation = normalizeAngle(value);
   }
 
   getRotationDegrees(): number {
@@ -120,8 +121,6 @@ export class Camera {
   }
 
   setPosition(x: number, y: number): void {
-    this.x = x;
-    this.y = y;
     this.targetX = x;
     this.targetY = y;
   }
@@ -170,10 +169,6 @@ export class Camera {
    */
   stepLerp(dtSeconds: number): void {
     if (dtSeconds <= 0 || !Number.isFinite(dtSeconds)) return;
-    if (!this.pinchViewEasing) {
-      this.syncPresentToTarget();
-      return;
-    }
     const k = 1 - Math.exp(-this.lerpLambda * Math.min(dtSeconds, 0.25));
     this.x += (this.targetX - this.x) * k;
     this.y += (this.targetY - this.y) * k;
@@ -323,29 +318,54 @@ export class Camera {
   }
 
   resetRotation(): void {
-    this._rotation = 0;
     this.targetRotation = 0;
   }
 
+  /**
+   * Frame `bounds` in the viewport (optionally inset, e.g. for floating docks), axis-aligned, rotation 0.
+   * World center is shifted so the bounds center appears at the center of the inset rectangle.
+   */
   fitToBounds(
     bounds: { x: number; y: number; width: number; height: number },
-    padding = 0.1,
+    arg?: number | FitToBoundsOptions,
   ): void {
+    const opts: FitToBoundsOptions = typeof arg === "number" ? { padding: arg } : { ...(arg ?? {}) };
+    const padding = opts.padding ?? 0.06;
+    const immediate = opts.immediate ?? true;
+    const ins = opts.viewportInsets;
+    const top = ins?.top ?? 0;
+    const right = ins?.right ?? 0;
+    const bottom = ins?.bottom ?? 0;
+    const left = ins?.left ?? 0;
+
     const cx = bounds.x + bounds.width / 2;
     const cy = bounds.y + bounds.height / 2;
-    const paddedWidth = bounds.width * (1 + padding * 2);
-    const paddedHeight = bounds.height * (1 + padding * 2);
-    const zoomX = this.viewportWidth / paddedWidth;
-    const zoomY = this.viewportHeight / paddedHeight;
+    const paddedWidth = Math.max(1e-6, bounds.width * (1 + padding * 2));
+    const paddedHeight = Math.max(1e-6, bounds.height * (1 + padding * 2));
+    const availW = Math.max(1, this.viewportWidth - left - right);
+    const availH = Math.max(1, this.viewportHeight - top - bottom);
+    const zoomX = availW / paddedWidth;
+    const zoomY = availH / paddedHeight;
     const z = Math.max(this.minZoom, Math.min(this.maxZoom, Math.min(zoomX, zoomY)));
-    this.x = cx;
-    this.y = cy;
-    this._zoom = z;
-    this._rotation = 0;
-    this.targetX = cx;
-    this.targetY = cy;
+
+    const vw = this.viewportWidth;
+    const vh = this.viewportHeight;
+    const safeCx = left + availW / 2;
+    const safeCy = top + availH / 2;
+    const tx = cx - (safeCx - vw / 2) / z;
+    const ty = cy - (safeCy - vh / 2) / z;
+
+    this.targetX = tx;
+    this.targetY = ty;
     this.targetZoom = z;
     this.targetRotation = 0;
+
+    if (immediate) {
+      this.x = tx;
+      this.y = ty;
+      this._zoom = z;
+      this._rotation = 0;
+    }
   }
 
   getWorldBounds(): { x: number; y: number; width: number; height: number } {

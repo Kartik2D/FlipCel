@@ -5,13 +5,18 @@
  *
  * Key responsibilities:
  * - Optional brush-size ring (max brush diameter) while the brush tool is active
- * - Draws world-space alignment grid (pan/zoom/rotate with camera)
+ * - Draws world-space grid at fixed spacing (pan/zoom/rotate with camera)
  * - Maps pixel coordinates back to viewport for display
  */
 import type { Point, CanvasConfig } from "./types";
 import type { Camera } from "./camera";
 import type { ViewOverlaySettings } from "./stores";
 import type { ToolId } from "./tools";
+
+/** World-space spacing between grid lines (world units). */
+const GRID_STEP_WORLD = 100;
+/** Every Nth line is drawn slightly stronger (e.g. 0, 500, 1000… when step is 100). */
+const GRID_MAJOR_EVERY = 5;
 
 export class UIOverlay {
   private ctx: CanvasRenderingContext2D;
@@ -141,39 +146,14 @@ export class UIOverlay {
   }
 
   /**
-   * Round to a “nice” step in world units (1–2–5 × 10^n) for grid spacing.
-   */
-  private niceWorldStep(approx: number): number {
-    if (!Number.isFinite(approx) || approx <= 0) return 1;
-    const exp = Math.floor(Math.log10(approx));
-    const pow = 10 ** exp;
-    const f = approx / pow;
-    const nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
-    return nf * pow;
-  }
-
-  /**
-   * World-aligned grid: spacing retargets ~48px on screen as you zoom.
+   * Fixed-spacing grid in world units (lines stay on the same world coordinates when zooming).
    */
   private drawGrid() {
     if (!this.gridEnabled || !this.camera) return;
 
     const ctx = this.ctx;
     const bounds = this.camera.getWorldBounds();
-    const midY = this.config.viewportHeight / 2;
-
-    const a = this.camera.screenToWorld(0, midY);
-    const b = this.camera.screenToWorld(48, midY);
-    const approx = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-    let step = this.niceWorldStep(approx);
-
-    const maxLinePairs = 100;
-    while (
-      bounds.width / step + bounds.height / step > maxLinePairs * 2 &&
-      step < 1e15
-    ) {
-      step *= 2;
-    }
+    const step = GRID_STEP_WORLD;
 
     const pad = step;
     const x0 = bounds.x - pad;
@@ -198,14 +178,14 @@ export class UIOverlay {
     };
 
     for (let wx = startX; wx <= endX + 1e-9; wx += step) {
-      const major = Math.round(wx / step) % 5 === 0;
+      const major = Math.round(wx / step) % GRID_MAJOR_EVERY === 0;
       const p0 = this.worldToScreen(wx, y0);
       const p1 = this.worldToScreen(wx, y1);
       drawLine(p0.x, p0.y, p1.x, p1.y, major);
     }
 
     for (let wy = startY; wy <= endY + 1e-9; wy += step) {
-      const major = Math.round(wy / step) % 5 === 0;
+      const major = Math.round(wy / step) % GRID_MAJOR_EVERY === 0;
       const p0 = this.worldToScreen(x0, wy);
       const p1 = this.worldToScreen(x1, wy);
       drawLine(p0.x, p0.y, p1.x, p1.y, major);

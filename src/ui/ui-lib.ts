@@ -2967,7 +2967,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
         return {
           label: "zoom",
           value: `${this.zoomLevel}%`,
-          title: "Reset zoom to 100%",
+          title: "Fit stage in view",
           onClick: () => this.emitDock("zoom-reset"),
         };
       case "angle":

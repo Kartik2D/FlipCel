@@ -65,6 +65,7 @@ import {
   STAGE_LAYER_ID,
   type ThemeMode,
 } from "./stores";
+import { getStageFitViewportInsets } from "./stage-fit-insets";
 
 /**
  * Snap to 0° when |view rotation| is strictly inside this bound (degrees), i.e. |θ| < 15°.
@@ -172,9 +173,9 @@ class App {
     // Calculate configuration
     this.config = this.calculateConfig();
 
-    // Initialize camera
+    // Initialize camera: frame stage in view (same as dock zoom chip — see fitStageInView)
     this.camera = new Camera(this.config.viewportWidth, this.config.viewportHeight);
-    this.camera.setPosition(stageStore.get().width / 2, stageStore.get().height / 2);
+    this.fitStageInView(true);
 
     // Initialize components
     this.pixelCanvasManager = new PixelCanvas(this.pixelCanvas, this.pixelCanvas2D, this.config);
@@ -264,10 +265,8 @@ class App {
     bus.on(Events.CAMERA_ROTATE, (d: { delta: number; x: number; y: number }) => this.onCameraRotate(d.delta, d.x, d.y));
     bus.on(Events.PINCH_GESTURE_START, () => {
       this.cancelRotationSnapAnimation();
-      this.camera.setPinchViewEasing(true);
     });
     bus.on(Events.PINCH_GESTURE_END, () => {
-      this.camera.setPinchViewEasing(false);
       this.maybeSnapRotationToZero();
     });
     bus.on(Events.TOOL_CHANGE, (tool: ToolId) => this.onInputToolChange(tool));
@@ -460,7 +459,7 @@ class App {
   }
 
   /**
-   * Smooth camera follow: targets update on input; present pose lerps each frame for Paper + UI.
+   * Camera: targets update on input; present pose eases toward target each frame for Paper + UI.
    */
   private startCameraFrameLoop() {
     const step = (now: number) => {
@@ -631,11 +630,24 @@ class App {
     this.rotationSnapRaf = requestAnimationFrame(tick);
   }
 
+  /**
+   * Fit the stage rect in the viewport with margins for top-bar docks (see `getStageFitViewportInsets`).
+   * @param immediate — snap present pose; false when easing should run (dock zoom chip).
+   */
+  private fitStageInView(immediate: boolean): void {
+    const stage = stageStore.get();
+    const w = Math.max(1, stage.width);
+    const h = Math.max(1, stage.height);
+    const insets = getStageFitViewportInsets(this.config.viewportWidth, this.config.viewportHeight);
+    this.camera.fitToBounds(
+      { x: 0, y: 0, width: w, height: h },
+      { padding: 0.06, viewportInsets: insets, immediate },
+    );
+  }
+
   private onDockZoomReset() {
-    const cx = this.config.viewportWidth / 2;
-    const cy = this.config.viewportHeight / 2;
-    this.camera.setPosition(cx, cy);
-    this.camera.zoom = 1;
+    this.cancelRotationSnapAnimation();
+    this.fitStageInView(false);
   }
 
   private onDockRotationReset() {
