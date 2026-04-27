@@ -113,8 +113,24 @@ export class DirectSelectController {
     point: Point;
     itemId: number;
   } | null = null;
+
+  /**
+   * Last edge-interior click. Used to detect a double-click on the same
+   * curve segment of the same path: a second `handleStart` within
+   * `doubleClickWindowMs` and within `doubleClickEdgeDistanceSq`
+   * viewport-pixels² of the first inserts a new vertex on that edge.
+   */
+  private lastEdgeClick: {
+    timestampMs: number;
+    point: Point;
+    itemId: number;
+    childIndex: number;
+    curveIndex: number;
+  } | null = null;
   private readonly doubleClickWindowMs = 350;
   private readonly doubleClickDistanceSq = 6 * 6;
+  /** Slightly larger window for edges since the cursor target is a thin line. */
+  private readonly doubleClickEdgeDistanceSq = 10 * 10;
 
   /**
    * True when the in-flight marquee was armed by a shape-interior tap
@@ -424,6 +440,7 @@ export class DirectSelectController {
     this.pickedAnchors.clear();
     this.exposedItemIds.clear();
     this.lastShapeClick = null;
+    this.lastEdgeClick = null;
     this.resetDragState();
     this.resetMarqueeState();
     this.resetTransformState();
@@ -463,6 +480,7 @@ export class DirectSelectController {
       this.beginDragThreshold(viewportPoint);
       this.didMoveHandle = false;
       this.lastShapeClick = null;
+      this.lastEdgeClick = null;
       this.drawUI();
       return;
     }
@@ -474,8 +492,9 @@ export class DirectSelectController {
         this.pickedAnchors = new Set([hit.key]);
       }
       // Anchor click is "on a shape" — leave peek intact. Only the
-      // double-click detector is invalidated.
+      // double-click detectors are invalidated.
       this.lastShapeClick = null;
+      this.lastEdgeClick = null;
       this.isDraggingAnchor = true;
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
@@ -488,12 +507,53 @@ export class DirectSelectController {
 
     const edgeHit = this.hitTestEdge(viewportPoint);
     if (edgeHit) {
+      const now = performance.now();
+      const isDoubleClickEdge = this.isDoubleClickOnEdge(viewportPoint, edgeHit, now);
+
+      if (isDoubleClickEdge) {
+        const inserted = this.insertVertexOnEdge(viewportPoint, edgeHit);
+        if (inserted) {
+          // Pick the freshly inserted anchor and arm an anchor-drag so
+          // the user can immediately reposition it without lifting
+          // the pointer.
+          const newKey = anchorKey(
+            edgeHit.itemId,
+            edgeHit.childIndex,
+            inserted.newSegmentIndex,
+          );
+          this.pickedAnchors = new Set([newKey]);
+          this.lastShapeClick = null;
+          this.lastEdgeClick = null;
+          this.isDraggingAnchor = true;
+          this.dragStartPoint = viewportPoint;
+          this.beginDragThreshold(viewportPoint);
+          this.didMoveAnchor = false;
+          this.bringInteractedItemsToFront();
+          // Snapshot the insertion now so undo always recovers the
+          // pre-insert state, even if the user never drags.
+          this.onSnapshot?.();
+          this.rebuildAnchorHandles();
+          this.publishPickedItems();
+          this.drawUI();
+          return;
+        }
+      }
+
       this.pickedAnchors = new Set([
         anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.startSegmentIndex),
         anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.endSegmentIndex),
       ]);
-      // Edge click is "on a shape" — leave peek intact.
+      // Edge click is "on a shape" — leave peek intact, but record the
+      // edge click so a quick second tap on the same curve can promote
+      // into a vertex-insert.
       this.lastShapeClick = null;
+      this.lastEdgeClick = {
+        timestampMs: now,
+        point: viewportPoint,
+        itemId: edgeHit.itemId,
+        childIndex: edgeHit.childIndex,
+        curveIndex: edgeHit.startSegmentIndex,
+      };
       this.edgeDrag = edgeHit;
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
@@ -520,6 +580,7 @@ export class DirectSelectController {
         // doesn't blow it away.
         this.pickAllAnchorsOfItem(shapeHit);
         this.lastShapeClick = null;
+        this.lastEdgeClick = null;
         this.isDraggingAnchor = true;
         this.dragStartPoint = viewportPoint;
         this.beginDragThreshold(viewportPoint);
@@ -540,6 +601,7 @@ export class DirectSelectController {
       this.pickedAnchors.clear();
       this.exposedItemIds = new Set([shapeHit.id]);
       this.lastShapeClick = { timestampMs: now, point: viewportPoint, itemId: shapeHit.id };
+      this.lastEdgeClick = null;
       this.marqueeFromShapePeek = true;
       this.marquee.start(viewportPoint);
       this.bringInteractedItemsToFront();
@@ -549,6 +611,7 @@ export class DirectSelectController {
     }
 
     this.lastShapeClick = null;
+    this.lastEdgeClick = null;
     this.marqueeFromShapePeek = false;
     this.marquee.start(viewportPoint);
     this.drawUI();
@@ -573,6 +636,67 @@ export class DirectSelectController {
     const dx = viewportPoint.x - last.point.x;
     const dy = viewportPoint.y - last.point.y;
     return dx * dx + dy * dy <= this.doubleClickDistanceSq;
+  }
+
+  /**
+   * Treat the current `handleStart` as a double-click on the SAME edge
+   * iff the previous click landed on the same item/child/curve, recent
+   * (< doubleClickWindowMs ago), and within doubleClickEdgeDistanceSq
+   * viewport-pixels² of the first.
+   */
+  private isDoubleClickOnEdge(
+    viewportPoint: Point,
+    edgeHit: { itemId: number; childIndex: number; startSegmentIndex: number },
+    nowMs: number,
+  ): boolean {
+    const last = this.lastEdgeClick;
+    if (!last) return false;
+    if (last.itemId !== edgeHit.itemId) return false;
+    if (last.childIndex !== edgeHit.childIndex) return false;
+    if (last.curveIndex !== edgeHit.startSegmentIndex) return false;
+    if (nowMs - last.timestampMs > this.doubleClickWindowMs) return false;
+    const dx = viewportPoint.x - last.point.x;
+    const dy = viewportPoint.y - last.point.y;
+    return dx * dx + dy * dy <= this.doubleClickEdgeDistanceSq;
+  }
+
+  /**
+   * Insert a new segment on the curve identified by `edgeHit` at the
+   * point closest to `viewportPoint`. Uses Paper.js's `Curve#divideAt`,
+   * which subdivides the curve in-place via De Casteljau so the path
+   * shape is preserved (the two resulting curves get correctly adjusted
+   * handles).
+   *
+   * Returns the inserted segment's index in `path.segments`, or null if
+   * the location was too close to an existing endpoint to safely split
+   * (which would create a duplicate segment).
+   */
+  private insertVertexOnEdge(
+    viewportPoint: Point,
+    edgeHit: { itemId: number; childIndex: number; startSegmentIndex: number },
+  ): { newSegmentIndex: number } | null {
+    const item = this.paperRenderer.getPathById(edgeHit.itemId);
+    if (!item) return null;
+    const path = this.paperRenderer.getChildPaths(item)[edgeHit.childIndex];
+    if (!path) return null;
+    const curve = path.curves[edgeHit.startSegmentIndex];
+    if (!curve) return null;
+
+    const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
+    const queryPoint = new paper.Point(worldPoint.x, worldPoint.y);
+    const location = curve.getNearestLocation(queryPoint);
+    if (!location) return null;
+
+    // Don't split if we're effectively on top of an endpoint — that
+    // would just clone an existing segment in place.
+    const epsilon = 1e-3;
+    if (location.time <= epsilon || location.time >= 1 - epsilon) return null;
+
+    const newCurve = curve.divideAt(location);
+    if (!newCurve) return null;
+
+    paper.view.update();
+    return { newSegmentIndex: edgeHit.startSegmentIndex + 1 };
   }
 
   handleMove(point: Point): void {
@@ -1120,6 +1244,7 @@ export class DirectSelectController {
       // outside the shape").
       this.pickedAnchors = matchedKeys;
       this.lastShapeClick = null;
+      this.lastEdgeClick = null;
       this.bringInteractedItemsToFront();
     } else if (this.marqueeFromShapePeek) {
       // Pure tap on a shape: handleStart already cleared picks and
@@ -1132,6 +1257,7 @@ export class DirectSelectController {
       this.pickedAnchors.clear();
       this.exposedItemIds.clear();
       this.lastShapeClick = null;
+      this.lastEdgeClick = null;
     }
 
     this.publishPickedItems();

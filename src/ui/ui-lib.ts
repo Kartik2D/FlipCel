@@ -2522,6 +2522,14 @@ const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
   { id: "color-panel", label: "Color", visible: false },
 ];
 
+type TopBarSide = "left" | "right";
+
+/** Which panel buttons render in each top-bar dock instance. */
+const TOP_BAR_SIDE_PANELS: Record<TopBarSide, readonly string[]> = {
+  left: ["universal-panel", "layers-panel"],
+  right: ["tools-panel", "color-panel"],
+};
+
 // ============================================================
 // Top Bar Panel (panel visibility toggles)
 // ============================================================
@@ -2531,6 +2539,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
   /** Quick info row (zoom / rotation / tool / mode). Disabled until a new placement is chosen. */
   private static readonly DOCK_QUICK_INFO_ROW_ENABLED = false;
 
+  /** Which side of the screen this dock anchors to. Reflected for CSS attribute selectors. */
+  @property({ type: String, reflect: true }) side: TopBarSide = "left";
   @property({ type: Number }) zoomLevel = 100;
   @property({ type: Number }) rotation = 0;
 
@@ -2551,13 +2561,22 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
     :host {
       --panel-top: 8px;
-      --panel-left: 50%;
-      --panel-width: min(300px, calc(100vw - 16px));
+      --panel-width: auto;
       --panel-min-width: 0;
       --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-canvas-bg, #ffffff));
-      transform: translateX(-50%);
       z-index: 1200;
-      max-width: calc(100vw - 16px);
+      width: auto;
+      max-width: calc(50vw - 16px);
+    }
+
+    :host([side="left"]) {
+      --panel-left: 8px;
+      --panel-right: auto;
+    }
+
+    :host([side="right"]) {
+      --panel-left: auto;
+      --panel-right: 8px;
     }
 
     .face {
@@ -2670,14 +2689,23 @@ export class InkwellTopBarPanel extends FloatingPanel {
       flex-wrap: nowrap;
       align-items: stretch;
       gap: 6px;
-      width: 100%;
       box-sizing: border-box;
     }
 
     .bar > blocky-button {
-      flex: 1 1 0;
       min-width: 0;
       height: auto;
+    }
+
+    /* Compact buttons: icon-only (settings, layers) and color swatch. */
+    .bar > blocky-button.dock-btn-icon {
+      flex: 0 0 44px;
+    }
+
+    /* Flexible button: tool-name label needs room for the longest tool name. */
+    .bar > blocky-button.dock-btn-flex {
+      flex: 0 1 auto;
+      min-width: 96px;
     }
 
     .btn-content {
@@ -2687,6 +2715,20 @@ export class InkwellTopBarPanel extends FloatingPanel {
     }
     .btn-content svg {
       flex-shrink: 0;
+    }
+    .btn-content-text {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      padding: 0 4px;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
   `;
 
@@ -2926,30 +2968,46 @@ export class InkwellTopBarPanel extends FloatingPanel {
     panelEl.style.zIndex = `${maxZIndex + 1}`;
   }
 
+  private renderPanelTriggerContent(panelId: string) {
+    if (panelId === "color-panel") return nothing;
+    if (panelId === "tools-panel") {
+      const currentToolName = getTool(this.tool.value).name;
+      return html`<span class="btn-content btn-content-text">${currentToolName}</span>`;
+    }
+    return html`<span class="btn-content">${phosphorIcon(PANEL_ICON_MAP[panelId], 14)}</span>`;
+  }
+
+  /** Buttons that belong to this dock's side, in the order configured. */
+  private visiblePanelsForSide(): PanelVisibility[] {
+    const ids = TOP_BAR_SIDE_PANELS[this.side];
+    return ids
+      .map((id) => this.panelVisibility.find((p) => p.id === id))
+      .filter((p): p is PanelVisibility => Boolean(p));
+  }
+
   render() {
+    const currentToolName = getTool(this.tool.value).name;
+    const sidePanels = this.visiblePanelsForSide();
     return html`
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
           <div class="unified-dock">
-            ${this.renderDockQuickInfoRow()}
+            ${this.side === "left" ? this.renderDockQuickInfoRow() : nothing}
             <div class="bar">
-              ${this.panelVisibility.map(
+              ${sidePanels.map(
                 (panel) => html`
                   <blocky-button
                     data-panel-trigger=${panel.id}
-                    title=${panel.label}
+                    class=${panel.id === "tools-panel" ? "dock-btn-flex" : "dock-btn-icon"}
+                    title=${panel.id === "tools-panel" ? currentToolName : panel.label}
                     data-interactive
                     stretch
                     style=${panel.id === "color-panel" ? this.dockColorBlockChromeStyle() : nothing}
                     ?active=${panel.visible}
                     @click=${(e: Event) =>
                       this.togglePanel(panel.id, e.currentTarget as HTMLElement)}
-                    >${panel.id === "color-panel"
-                      ? nothing
-                      : html`<span class="btn-content"
-                          >${phosphorIcon(PANEL_ICON_MAP[panel.id], 14)}</span
-                        >`}</blocky-button
+                    >${this.renderPanelTriggerContent(panel.id)}</blocky-button
                   >
                 `,
               )}

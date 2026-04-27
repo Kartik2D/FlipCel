@@ -96,7 +96,7 @@ class App {
   private colorPanel: InkwellColorPanel;
   private toolsPanel: InkwellToolsPanel;
   private universalPanel: InkwellUniversalPanel;
-  private topBarPanel: InkwellTopBarPanel;
+  private topBarPanels: InkwellTopBarPanel[] = [];
   private layersPanel: InkwellLayersPanel;
   private functionsPanel: InkwellFunctionsPanel;
   private camera: Camera;
@@ -118,6 +118,16 @@ class App {
         lastWorldDelta: { x: number; y: number };
       }
     | null = null;
+  /**
+   * Safety net: duplicate drags start from the floating functions panel.
+   * If that panel hides/re-renders mid-gesture, its pointerup/cancel can be
+   * dropped, leaving duplicateDragSession stuck forever. Global listeners
+   * guarantee we always finalize the session.
+   */
+  private readonly globalDuplicateDragEndHandler = () => {
+    if (!this.duplicateDragSession) return;
+    this.finalizeDuplicateDragSession();
+  };
 
   constructor() {
     // Get canvas elements
@@ -192,10 +202,15 @@ class App {
     this.colorPanel = document.getElementById("color-panel") as InkwellColorPanel;
     this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
-    this.topBarPanel = document.getElementById("top-bar-panel") as InkwellTopBarPanel;
+    this.topBarPanels = Array.from(
+      document.querySelectorAll<InkwellTopBarPanel>("inkwell-top-bar-panel"),
+    );
     this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
     this.functionsPanel = document.getElementById("functions-panel") as InkwellFunctionsPanel;
     this.setupPanelEvents();
+    window.addEventListener("pointerup", this.globalDuplicateDragEndHandler);
+    window.addEventListener("pointercancel", this.globalDuplicateDragEndHandler);
+    window.addEventListener("blur", this.globalDuplicateDragEndHandler);
 
     viewOverlayStore.subscribeImmediate((prefs) => {
       this.uiOverlay.setViewOverlayPrefs(prefs);
@@ -269,10 +284,12 @@ class App {
     this.universalPanel.addEventListener("clear", () => this.onClear());
     this.universalPanel.addEventListener("undo", () => this.onUndo());
     this.universalPanel.addEventListener("redo", () => this.onRedo());
-    this.topBarPanel.addEventListener("zoom-reset", () => this.onDockZoomReset());
-    this.topBarPanel.addEventListener("rotate-reset", () => this.onDockRotationReset());
-    this.topBarPanel.addEventListener("tool-cycle", () => this.onToolCycle());
-    this.topBarPanel.addEventListener("mode-cycle", () => this.onModeCycle());
+    this.topBarPanels.forEach((panel) => {
+      panel.addEventListener("zoom-reset", () => this.onDockZoomReset());
+      panel.addEventListener("rotate-reset", () => this.onDockRotationReset());
+      panel.addEventListener("tool-cycle", () => this.onToolCycle());
+      panel.addEventListener("mode-cycle", () => this.onModeCycle());
+    });
     this.universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {
       this.onAliasFixToggle((e as CustomEvent<boolean>).detail);
     });
@@ -510,8 +527,10 @@ class App {
   private updateDisplays() {
     const zoom = this.camera.getZoomPercent();
     const rotation = this.camera.getRotationDegrees();
-    this.topBarPanel.zoomLevel = zoom;
-    this.topBarPanel.rotation = rotation;
+    this.topBarPanels.forEach((panel) => {
+      panel.zoomLevel = zoom;
+      panel.rotation = rotation;
+    });
   }
 
   // ============================================================
@@ -1390,8 +1409,20 @@ class App {
 
   private onFunctionDragEnd(functionId: string, dx: number, dy: number) {
     if (functionId !== "duplicate" || !this.duplicateDragSession) return;
+    this.finalizeDuplicateDragSession({ dx, dy });
+  }
 
-    this.onFunctionDragMove(functionId, dx, dy);
+  /**
+   * Finalize an in-progress duplicate drag and keep the duplicates selected.
+   * Optional `screenDelta` applies the final pointerup delta so the last
+   * movement frame is not lost.
+   */
+  private finalizeDuplicateDragSession(screenDelta?: { dx: number; dy: number }) {
+    if (!this.duplicateDragSession) return;
+
+    if (screenDelta) {
+      this.onFunctionDragMove("duplicate", screenDelta.dx, screenDelta.dy);
+    }
 
     const items = this.duplicateDragSession.items.filter((item) => item.parent);
     this.duplicateDragSession = null;
