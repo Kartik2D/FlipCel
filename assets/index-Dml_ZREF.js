@@ -1481,9 +1481,9 @@ return module.exports;`;var _=z.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
     .layer-item {
       display: grid;
       grid-template-columns:
+        minmax(0, 1fr)
         var(--layers-control-size)
-        var(--layers-control-size)
-        minmax(0, 1fr);
+        var(--layers-control-size);
       align-items: center;
       gap: 4px;
       min-width: 0;
@@ -1557,7 +1557,8 @@ return module.exports;`;var _=z.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
     .layer-name-cell {
       justify-content: flex-start;
       padding: 0 8px;
-      grid-column: 3;
+      grid-column: 1;
+      min-width: 0;
     }
 
     .layer-name-cell {
@@ -1676,26 +1677,6 @@ return module.exports;`;var _=z.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
                   data-interactive
                   @click=${()=>this.selectLayer(e.id)}
                 >
-                  ${e.kind===`stage`?K`<div class="layer-control" aria-hidden="true"></div>
-                        <div class="layer-control" aria-hidden="true"></div>`:K`
-                  <button
-                    type="button"
-                    class="layer-control visibility-btn ${e.visible?``:`dim`}"
-                    @click=${t=>this.toggleVisibility(e.id,t)}
-                    title="${e.visible?`Hide layer`:`Show layer`}"
-                  >
-                    ${bo(e.visible?`eye`:`eye-slash`,14)}
-                  </button>
-                  <button
-                    type="button"
-                    class="layer-control delete-btn"
-                    @click=${t=>this.deleteLayer(e.id,t)}
-                    title="Delete layer"
-                    ?disabled=${r<=1}
-                  >
-                    ${bo(`trash`,14)}
-                  </button>
-                  `}
                   <div class="layer-name-cell">
                     ${this.editingLayerId===e.id?K`
                           <input
