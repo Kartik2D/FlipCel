@@ -27,7 +27,6 @@ import {
   colorPanelPrefsStore,
   normalizeColorPanelPrefs,
   toolStore,
-  prevToolStore,
   modifiersStore,
   toolSettingsStore,
   viewOverlayStore,
@@ -2524,11 +2523,29 @@ const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
 
 type TopBarSide = "left" | "right";
 
-/** Which panel buttons render in each top-bar dock instance. */
+/** Which dock variant a `<inkwell-top-bar-panel>` instance renders. */
+type TopBarVariant = "panels" | "info";
+
+/** Quick-info chip kinds shown in the info-variant dock. */
+type DockInfoChip = "zoom" | "angle" | "mode";
+
+/** Which panel buttons render in each top-bar dock instance (panels variant). */
 const TOP_BAR_SIDE_PANELS: Record<TopBarSide, readonly string[]> = {
   left: ["universal-panel", "layers-panel"],
   right: ["tools-panel", "color-panel"],
 };
+
+/** Which info chips render in each side's info-variant dock. */
+const TOP_BAR_SIDE_INFO_CHIPS: Record<TopBarSide, readonly DockInfoChip[]> = {
+  left: ["zoom", "angle"],
+  right: ["mode"],
+};
+
+/** Pixel gap between the panels dock and its sibling info dock. */
+const TOP_BAR_INFO_GAP_PX = 8;
+
+/** Outer screen-edge offset shared by both panels/info docks (matches `:host([side])` rule). */
+const TOP_BAR_EDGE_OFFSET_PX = 8;
 
 // ============================================================
 // Top Bar Panel (panel visibility toggles)
@@ -2536,11 +2553,15 @@ const TOP_BAR_SIDE_PANELS: Record<TopBarSide, readonly string[]> = {
 
 @customElement("inkwell-top-bar-panel")
 export class InkwellTopBarPanel extends FloatingPanel {
-  /** Quick info row (zoom / rotation / tool / mode). Disabled until a new placement is chosen. */
-  private static readonly DOCK_QUICK_INFO_ROW_ENABLED = false;
-
   /** Which side of the screen this dock anchors to. Reflected for CSS attribute selectors. */
   @property({ type: String, reflect: true }) side: TopBarSide = "left";
+  /**
+   * Dock contents:
+   *   panels — the floating-panel toggle buttons (default).
+   *   info   — a compact quick-info dock (zoom/angle on the left, mode on the right).
+   *            Anchors itself just inside the matching panels dock.
+   */
+  @property({ type: String, reflect: true }) variant: TopBarVariant = "panels";
   @property({ type: Number }) zoomLevel = 100;
   @property({ type: Number }) rotation = 0;
 
@@ -2549,38 +2570,62 @@ export class InkwellTopBarPanel extends FloatingPanel {
   }));
   private dockColor = new StoreController(this, colorStore);
   private tool = new StoreController(this, toolStore);
-  private prevTool = new StoreController(this, prevToolStore);
   private settings = new StoreController(this, toolSettingsStore);
   private modifiers = new StoreController(this, modifiersStore);
   private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
   private readonly panelVisibilityChangeHandler = (e: Event) =>
     this.onPanelVisibilityChange(e as CustomEvent<{ id: string; visible: boolean }>);
+  /** Tracks the sibling panels dock so the info dock stays glued to its inner edge. */
+  private siblingResizeObserver: ResizeObserver | null = null;
+  /** Window-resize handler used by the info variant; kept for clean teardown. */
+  private siblingWindowResizeHandler: (() => void) | null = null;
 
   static styles = css`
     ${FloatingPanel.styles}
 
     :host {
-      --panel-top: 8px;
+      /* Below Safari iOS / iPadOS chrome; env() needs viewport-fit=cover. */
+      --panel-top: max(8px, calc(env(safe-area-inset-top, 0px) + 2px));
       --panel-width: auto;
       --panel-min-width: 0;
       --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-canvas-bg, #ffffff));
       z-index: 1200;
       width: auto;
-      max-width: calc(50vw - 16px);
+      max-width: min(calc(50vw - 16px), calc(100vw - 32px));
+      /* Slightly lighter than the full floating-panels default on compact docks. */
+      --inkwell-shadow-panel: 0 4px 16px rgba(0, 0, 0, 0.2);
+      /* Panel row + min info row; icon / info column width. */
+      --inkwell-dock-row-h: 44px;
+      --inkwell-dock-control: 44px;
+      --inkwell-dock-face-pt: 6px;
+      --inkwell-dock-face-pb: 8px;
     }
 
     :host([side="left"]) {
-      --panel-left: 8px;
+      --panel-left: max(8px, env(safe-area-inset-left, 0px));
       --panel-right: auto;
     }
 
     :host([side="right"]) {
       --panel-left: auto;
-      --panel-right: 8px;
+      --panel-right: max(8px, env(safe-area-inset-right, 0px));
+    }
+
+    /* Info-variant dock hugs its content; sibling positioning is set inline by JS. */
+    :host([variant="info"]) {
+      width: auto;
+      max-width: min(calc(50vw - 16px), calc(100vw - 32px));
     }
 
     .face {
-      padding: 6px 10px 8px;
+      /* FloatingPanel uses overflow-x: hidden for scroll; dock rows must not clip. */
+      overflow-x: visible;
+      overflow-y: visible;
+      padding: var(--inkwell-dock-face-pt) 12px var(--inkwell-dock-face-pb);
+      /* Same minimum shell for panel + info variants (row + vertical padding). */
+      min-height: calc(
+        var(--inkwell-dock-row-h) + var(--inkwell-dock-face-pt) + var(--inkwell-dock-face-pb)
+      );
     }
 
     .unified-dock {
@@ -2617,6 +2662,33 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
     .dock-cell:first-child {
       padding-left: 0;
+    }
+
+    /* Never shorter than the panel .bar; can grow for long labels. Vertically center when short. */
+    :host([variant="info"]) .dock-status {
+      min-height: var(--inkwell-dock-row-h);
+      align-items: center;
+      gap: 6px;
+    }
+
+    :host([variant="info"]) .dock-cell {
+      flex: 0 0 var(--inkwell-dock-control);
+      width: var(--inkwell-dock-control);
+      min-width: var(--inkwell-dock-control);
+      max-width: var(--inkwell-dock-control);
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :host([variant="info"]) .dock-cell .dock-chip-stacked,
+    :host([variant="info"]) .dock-cell .dock-chip-reset {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
     }
 
     .dock-chip {
@@ -2689,23 +2761,29 @@ export class InkwellTopBarPanel extends FloatingPanel {
       flex-wrap: nowrap;
       align-items: stretch;
       gap: 6px;
+      height: var(--inkwell-dock-row-h);
+      min-height: var(--inkwell-dock-row-h);
+      max-height: var(--inkwell-dock-row-h);
       box-sizing: border-box;
     }
 
     .bar > blocky-button {
-      min-width: 0;
-      height: auto;
+      height: 100%;
+      min-height: 0;
+      align-self: stretch;
     }
 
-    /* Compact buttons: icon-only (settings, layers) and color swatch. */
-    .bar > blocky-button.dock-btn-icon {
-      flex: 0 0 44px;
-    }
-
-    /* Flexible button: tool-name label needs room for the longest tool name. */
+    /* Let the tool label collapse with ellipsis when the bar hits max-width; 96px min was clipping. */
     .bar > blocky-button.dock-btn-flex {
       flex: 0 1 auto;
-      min-width: 96px;
+      min-width: 0;
+    }
+
+    /* Icon-only and color: fixed size, never flex-shrink (avoids right-edge clip). */
+    .bar > blocky-button.dock-btn-icon {
+      flex: 0 0 var(--inkwell-dock-control);
+      min-width: var(--inkwell-dock-control);
+      max-width: var(--inkwell-dock-control);
     }
 
     .btn-content {
@@ -2736,6 +2814,11 @@ export class InkwellTopBarPanel extends FloatingPanel {
     super.connectedCallback();
     this.pinned = true;
     this.showPinnedClose = false;
+    if (this.variant === "info") {
+      // The info dock has no panel-toggle buttons; it just shows status chips
+      // and anchors itself to the matching panels dock. Skip panel state setup.
+      return;
+    }
     this.initializeAllPanelsHidden();
     document.addEventListener("pointerdown", this.outsidePointerHandler, true);
     document.addEventListener("panel-visibility-change", this.panelVisibilityChangeHandler as EventListener);
@@ -2743,6 +2826,10 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    if (this.variant === "info") {
+      this.teardownSiblingResizeObserver();
+      return;
+    }
     document.removeEventListener("pointerdown", this.outsidePointerHandler, true);
     document.removeEventListener(
       "panel-visibility-change",
@@ -2752,7 +2839,59 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   firstUpdated(_changed: PropertyValues<this>) {
     super.firstUpdated(_changed);
+    if (this.variant === "info") {
+      this.attachToSiblingPanelsDock();
+      return;
+    }
     this.positionAllVisiblePanels();
+  }
+
+  /**
+   * Find the sibling panels-variant dock on the same side and observe its size,
+   * keeping this info dock glued to its inner edge with a small gap. The panels
+   * dock is resized as tool names change, so a one-time measurement isn't enough.
+   */
+  private attachToSiblingPanelsDock() {
+    const sibling = document.querySelector<InkwellTopBarPanel>(
+      `inkwell-top-bar-panel[side="${this.side}"]:not([variant="info"])`,
+    );
+    if (!sibling) return;
+    const apply = () => this.applySiblingOffset(sibling);
+    apply();
+    this.siblingResizeObserver = new ResizeObserver(apply);
+    this.siblingResizeObserver.observe(sibling);
+    this.siblingWindowResizeHandler = apply;
+    window.addEventListener("resize", apply);
+  }
+
+  private applySiblingOffset(sibling: HTMLElement) {
+    const w = sibling.offsetWidth;
+    if (!w) return;
+    const offset = TOP_BAR_EDGE_OFFSET_PX + w + TOP_BAR_INFO_GAP_PX;
+    if (this.side === "left") {
+      this.style.setProperty(
+        "--panel-left",
+        `max(${offset}px, env(safe-area-inset-left, 0px))`,
+      );
+      this.style.removeProperty("--panel-right");
+    } else {
+      this.style.setProperty(
+        "--panel-right",
+        `max(${offset}px, env(safe-area-inset-right, 0px))`,
+      );
+      this.style.removeProperty("--panel-left");
+    }
+  }
+
+  private teardownSiblingResizeObserver() {
+    if (this.siblingResizeObserver) {
+      this.siblingResizeObserver.disconnect();
+      this.siblingResizeObserver = null;
+    }
+    if (this.siblingWindowResizeHandler) {
+      window.removeEventListener("resize", this.siblingWindowResizeHandler);
+      this.siblingWindowResizeHandler = null;
+    }
   }
 
   private emitDock(name: string) {
@@ -2821,41 +2960,42 @@ export class InkwellTopBarPanel extends FloatingPanel {
     `;
   }
 
-  private renderDockQuickInfoRow() {
-    if (!InkwellTopBarPanel.DOCK_QUICK_INFO_ROW_ENABLED) return nothing;
-    const paintMode = this.effectivePaintModeLabel();
-    const prevToolName = getTool(this.prevTool.value).name;
-    const currentToolName = getTool(this.tool.value).name;
-    const toolTip =
-      this.prevTool.value !== this.tool.value
-        ? `Click to switch back to ${prevToolName}`
-        : `Current tool: ${currentToolName}`;
-    return html`
-      <div class="dock-status">
-        ${this.renderDockWidget({
+  /** Build the descriptor for a single info chip — tied to chip kind so each side can pick its own. */
+  private buildInfoChip(kind: DockInfoChip) {
+    switch (kind) {
+      case "zoom":
+        return {
           label: "zoom",
           value: `${this.zoomLevel}%`,
           title: "Reset zoom to 100%",
           onClick: () => this.emitDock("zoom-reset"),
-        })}
-        ${this.renderDockWidget({
-          label: "rotation",
+        };
+      case "angle":
+        return {
+          label: "angle",
           value: `${Math.round(this.rotation)}°`,
-          title: "Reset rotation to 0°",
+          title: "Reset angle to 0°",
           onClick: () => this.emitDock("rotate-reset"),
-        })}
-        ${this.renderDockWidget({
-          label: "tool",
-          value: currentToolName,
-          title: toolTip,
-          onClick: () => this.emitDock("tool-cycle"),
-        })}
-        ${this.renderDockWidget({
+        };
+      case "mode":
+        return {
           label: "mode",
-          value: paintMode,
+          value: this.effectivePaintModeLabel(),
           title: "Click to cycle paint mode",
           onClick: () => this.emitDock("mode-cycle"),
-        })}
+        };
+    }
+  }
+
+  private renderInfoDock() {
+    const chips = TOP_BAR_SIDE_INFO_CHIPS[this.side];
+    return html`
+      <div class="block">
+        <div class="face">
+          <div class="dock-status">
+            ${chips.map((kind) => this.renderDockWidget(this.buildInfoChip(kind)))}
+          </div>
+        </div>
       </div>
     `;
   }
@@ -2986,6 +3126,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
   }
 
   render() {
+    if (this.variant === "info") return this.renderInfoDock();
     const currentToolName = getTool(this.tool.value).name;
     const sidePanels = this.visiblePanelsForSide();
     return html`
@@ -2993,7 +3134,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
       <div class="block">
         <div class="face">
           <div class="unified-dock">
-            ${this.side === "left" ? this.renderDockQuickInfoRow() : nothing}
             <div class="bar">
               ${sidePanels.map(
                 (panel) => html`
@@ -3471,6 +3611,9 @@ export class InkwellLayersPanel extends FloatingPanel {
       // Don't initiate drag from controls that should remain clickable.
       filter: ".visibility-btn, .delete-btn, .layer-name-input, .layer-item--stage",
       preventOnFilter: false,
+      /* iPad / touch: without this, a tap is treated as a drag and @click (select) never wins. */
+      delay: 220,
+      delayOnTouchOnly: true,
       ghostClass: "sortable-ghost",
       chosenClass: "sortable-chosen",
       dragClass: "sortable-drag",
