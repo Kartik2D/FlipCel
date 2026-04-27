@@ -3417,6 +3417,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     .layer-name-cell {
       justify-content: flex-start;
       padding: 0 8px;
+      grid-column: 3;
     }
 
     .layer-name-cell {
@@ -3742,6 +3743,28 @@ export class InkwellLayersPanel extends FloatingPanel {
                           >
                         `}
                   </div>
+                  ${layer.kind === "stage"
+                    ? html`<div class="layer-control" aria-hidden="true"></div>
+                        <div class="layer-control" aria-hidden="true"></div>`
+                    : html`
+                  <button
+                    type="button"
+                    class="layer-control visibility-btn ${!layer.visible ? "dim" : ""}"
+                    @click=${(e: Event) => this.toggleVisibility(layer.id, e)}
+                    title="${layer.visible ? "Hide layer" : "Show layer"}"
+                  >
+                    ${phosphorIcon(layer.visible ? "eye" : "eye-slash", 14)}
+                  </button>
+                  <button
+                    type="button"
+                    class="layer-control delete-btn"
+                    @click=${(e: Event) => this.deleteLayer(layer.id, e)}
+                    title="Delete layer"
+                    ?disabled=${nonStageCount <= 1}
+                  >
+                    ${phosphorIcon("trash", 14)}
+                  </button>
+                  `}
                 </div>
               `
             )}
