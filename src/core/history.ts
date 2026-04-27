@@ -8,11 +8,13 @@
  * Uses JSON serialization of Paper.js layer state for efficient storage.
  */
 import paper from "paper";
-import { Store } from "./stores";
+import { Store, stageStore } from "./stores";
 
 interface HistoryEntry {
   layerJSON: string;
   timestamp: number;
+  /** Stage fill color at this snapshot (undo/redo restores it). */
+  stageColor: string;
 }
 
 /**
@@ -50,6 +52,7 @@ export class HistoryManager {
     if (this.isRestoring) return;
 
     const json = paper.project.activeLayer.exportJSON();
+    const stageColor = stageStore.get().color;
 
     // Truncate any redo entries (we're starting a new branch)
     this.stack = this.stack.slice(0, this.index + 1);
@@ -58,6 +61,7 @@ export class HistoryManager {
     this.stack.push({
       layerJSON: json,
       timestamp: Date.now(),
+      stageColor,
     });
 
     // Enforce max size (remove oldest entries)
@@ -151,6 +155,7 @@ export class HistoryManager {
       // Import the saved state
       const entry = this.stack[this.index];
       paper.project.activeLayer.importJSON(entry.layerJSON);
+      stageStore.update((s) => ({ ...s, color: entry.stageColor ?? "#ffffff" }));
 
       // Update view
       paper.view.update();

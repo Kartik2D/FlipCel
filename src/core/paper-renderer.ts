@@ -15,6 +15,7 @@
 import paper from "paper";
 import type { CanvasConfig } from "./types";
 import type { Camera } from "./camera";
+import { STAGE_LAYER_ID } from "./stores";
 
 export type SelectionHandleId =
   | "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "rotate";
@@ -352,10 +353,23 @@ export class PaperRenderer {
   // ============================================================
 
   /**
+   * Logical layer id for a path item’s Paper.js layer, or null if unknown.
+   */
+  getLayerIdForPathItem(item: paper.PathItem): string | null {
+    const pl = item.layer;
+    if (!pl) return null;
+    for (const [id, layer] of this.layerMap) {
+      if (layer === pl) return id;
+    }
+    return null;
+  }
+
+  /**
    * Create a new layer with the given ID and name.
    * The new layer becomes the active layer.
    */
   createLayer(id: string, name: string): void {
+    if (id === STAGE_LAYER_ID) return;
     // Create a new Paper.js layer - it automatically gets added to the project and becomes active
     const newLayer = new paper.Layer();
     newLayer.name = name;
@@ -370,6 +384,7 @@ export class PaperRenderer {
    * Returns false if layer doesn't exist or is the only layer.
    */
   deleteLayer(id: string): boolean {
+    if (id === STAGE_LAYER_ID) return false;
     const layer = this.layerMap.get(id);
     if (!layer) return false;
     
@@ -399,6 +414,7 @@ export class PaperRenderer {
    * Returns false if layer doesn't exist.
    */
   setActiveLayer(id: string): boolean {
+    if (id === STAGE_LAYER_ID) return false;
     const layer = this.layerMap.get(id);
     if (!layer) return false;
     this.activeLayerId = id;
@@ -418,6 +434,7 @@ export class PaperRenderer {
    * Set layer visibility
    */
   setLayerVisibility(id: string, visible: boolean): void {
+    if (id === STAGE_LAYER_ID) return;
     const layer = this.layerMap.get(id);
     if (!layer) return;
     
@@ -429,6 +446,7 @@ export class PaperRenderer {
    * Rename a logical layer (Paper.js layer name).
    */
   setLayerName(id: string, name: string): boolean {
+    if (id === STAGE_LAYER_ID) return false;
     const layer = this.layerMap.get(id);
     if (!layer) return false;
     layer.name = name;
@@ -477,10 +495,11 @@ export class PaperRenderer {
    * Returns false if the provided list doesn't match existing layers.
    */
   reorderLayers(layerIdsBottomToTop: string[]): boolean {
-    if (layerIdsBottomToTop.length !== this.layerMap.size) return false;
+    const filtered = layerIdsBottomToTop.filter((id) => id !== STAGE_LAYER_ID);
+    if (filtered.length !== this.layerMap.size) return false;
 
     const orderedLayers: paper.Layer[] = [];
-    for (const id of layerIdsBottomToTop) {
+    for (const id of filtered) {
       const layer = this.layerMap.get(id);
       if (!layer) return false;
       orderedLayers.push(layer);

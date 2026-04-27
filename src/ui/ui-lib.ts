@@ -3098,42 +3098,6 @@ export class InkwellUniversalPanel extends FloatingPanel {
               />
             </div>
 
-            <div class="toggle">
-              <span>Show origin</span>
-              <input
-                type="checkbox"
-                .checked=${this.viewOverlay.value.originEnabled}
-                @change=${(e: Event) => {
-                  const checked = (e.target as HTMLInputElement).checked;
-                  this.viewOverlay.update((v) => ({ ...v, originEnabled: checked }));
-                }}
-              />
-            </div>
-
-            <div class="toggle">
-              <span>Show screen size</span>
-              <input
-                type="checkbox"
-                .checked=${this.viewOverlay.value.screenSizeEnabled}
-                @change=${(e: Event) => {
-                  const checked = (e.target as HTMLInputElement).checked;
-                  this.viewOverlay.update((v) => ({ ...v, screenSizeEnabled: checked }));
-                }}
-              />
-            </div>
-
-            <div class="toggle">
-              <span>Grid follows zoom</span>
-              <input
-                type="checkbox"
-                .checked=${this.viewOverlay.value.gridLiveWhileZooming}
-                @change=${(e: Event) => {
-                  const checked = (e.target as HTMLInputElement).checked;
-                  this.viewOverlay.update((v) => ({ ...v, gridLiveWhileZooming: checked }));
-                }}
-              />
-            </div>
-
             <div class="row">
               <blocky-button
                 flat
@@ -3179,7 +3143,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
 // Layers Panel
 // ============================================================
 
-import { layerStore, generateLayerId } from "../core/stores";
+import { layerStore, generateLayerId, STAGE_LAYER_ID } from "../core/stores";
 
 @customElement("inkwell-layers-panel")
 export class InkwellLayersPanel extends FloatingPanel {
@@ -3269,6 +3233,14 @@ export class InkwellLayersPanel extends FloatingPanel {
     .layer-item.sortable-drag {
       cursor: grabbing;
       box-shadow: var(--inkwell-shadow-soft, 0 6px 18px rgba(0, 0, 0, 0.18));
+    }
+
+    .layer-item--stage {
+      cursor: default;
+    }
+
+    .layer-item--stage:active {
+      cursor: default;
     }
 
     .layer-add-button,
@@ -3471,7 +3443,8 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   private addLayer() {
     const newId = generateLayerId();
-    const layerNumber = this.layers.value.layers.length + 1;
+    const nonStage = this.layers.value.layers.filter((l) => l.kind !== "stage");
+    const layerNumber = nonStage.length + 1;
     this.emit("layer-add", { id: newId, name: `Layer ${layerNumber}` });
   }
 
@@ -3496,7 +3469,7 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     this.sortable = Sortable.create(list, {
       // Don't initiate drag from controls that should remain clickable.
-      filter: ".visibility-btn, .delete-btn, .layer-name-input",
+      filter: ".visibility-btn, .delete-btn, .layer-name-input, .layer-item--stage",
       preventOnFilter: false,
       ghostClass: "sortable-ghost",
       chosenClass: "sortable-chosen",
@@ -3519,7 +3492,7 @@ export class InkwellLayersPanel extends FloatingPanel {
         // Read the new top-to-bottom order straight from the DOM so we don't
         // have to second-guess SortableJS's own index math.
         const list = evt.to as HTMLElement;
-        const orderedTopToBottom = Array.from(
+        let orderedTopToBottom = Array.from(
           list.querySelectorAll<HTMLElement>(".layer-item"),
         )
           .map((el) => el.dataset.layerId)
@@ -3527,6 +3500,12 @@ export class InkwellLayersPanel extends FloatingPanel {
 
         if (orderedTopToBottom.length !== this.layers.value.layers.length) {
           return;
+        }
+
+        // Stage must stay at the bottom of the stack (last in top-to-bottom DOM order).
+        if (orderedTopToBottom[orderedTopToBottom.length - 1] !== STAGE_LAYER_ID) {
+          const rest = orderedTopToBottom.filter((id) => id !== STAGE_LAYER_ID);
+          orderedTopToBottom = [...rest, STAGE_LAYER_ID];
         }
 
         this.emit("layer-reorder", orderedTopToBottom);
@@ -3538,6 +3517,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     const { layers, activeLayerId } = this.layers.value;
     // Display layers in reverse order (top layer first)
     const displayLayers = [...layers].reverse();
+    const nonStageCount = layers.filter((l) => l.kind !== "stage").length;
 
     return html`
       ${this.renderPinnedClose()}
@@ -3561,11 +3541,15 @@ export class InkwellLayersPanel extends FloatingPanel {
               (layer) => layer.id,
               (layer) => html`
                 <div
-                  class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
+                  class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""} ${layer.kind === "stage" ? "layer-item--stage" : ""}"
                   data-layer-id=${layer.id}
                   data-interactive
                   @click=${() => this.selectLayer(layer.id)}
                 >
+                  ${layer.kind === "stage"
+                    ? html`<div class="layer-control" aria-hidden="true"></div>
+                        <div class="layer-control" aria-hidden="true"></div>`
+                    : html`
                   <button
                     type="button"
                     class="layer-control visibility-btn ${!layer.visible ? "dim" : ""}"
@@ -3579,10 +3563,11 @@ export class InkwellLayersPanel extends FloatingPanel {
                     class="layer-control delete-btn"
                     @click=${(e: Event) => this.deleteLayer(layer.id, e)}
                     title="Delete layer"
-                    ?disabled=${layers.length <= 1}
+                    ?disabled=${nonStageCount <= 1}
                   >
                     ${phosphorIcon("trash", 14)}
                   </button>
+                  `}
                   <div class="layer-name-cell">
                     ${this.editingLayerId === layer.id
                       ? html`
@@ -3605,8 +3590,10 @@ export class InkwellLayersPanel extends FloatingPanel {
                       : html`
                           <span
                             class="layer-name"
-                            title="Double-click to rename"
-                            @dblclick=${(e: Event) =>
+                            title=${layer.kind === "stage" ? "Stage" : "Double-click to rename"}
+                            @dblclick=${layer.kind === "stage"
+                              ? undefined
+                              : (e: Event) =>
                               this.startLayerRename(layer.id, layer.name, e)}
                             >${layer.name}</span
                           >

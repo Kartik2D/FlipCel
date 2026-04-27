@@ -200,23 +200,33 @@ export const prevToolStore = new Store<ToolId>("select");
 export interface ViewOverlaySettings {
   /** When false, the alignment grid is hidden. */
   gridEnabled: boolean;
-  /** When true, draw the world origin axes and origin marker. */
-  originEnabled: boolean;
-  /** When true, draw bottom and right screen-size guides in world space. */
-  screenSizeEnabled: boolean;
-  /**
-   * When true, grid spacing is recomputed from zoom so line density stays ~even on screen.
-   * When false, world-space spacing stays fixed while you zoom (pan/rotate still apply).
-   */
-  gridLiveWhileZooming: boolean;
 }
 
 export const viewOverlayStore = new Store<ViewOverlaySettings>({
   gridEnabled: true,
-  originEnabled: true,
-  screenSizeEnabled: true,
-  gridLiveWhileZooming: false,
 });
+
+// ============================================================
+// Stage (background rect under vector art)
+// ============================================================
+
+export interface StageSettings {
+  width: number;
+  height: number;
+  color: string;
+}
+
+export const stageStore = new Store<StageSettings>({
+  width: 630,
+  height: 380,
+  color: "#ffffff",
+});
+
+/** True when the Stage row is selected in the layer panel (color panel edits stage fill). */
+export const stageSelectedStore = new Store<boolean>(false);
+
+/** Logical layer id for the non-Paper stage row (bottom of stack, immovable). */
+export const STAGE_LAYER_ID = "stage";
 
 // ============================================================
 // Theme
@@ -273,10 +283,14 @@ export const selectionStore = new Store<SelectionState>({
 /**
  * Layer definition
  */
+export type LayerKind = "stage" | "regular";
+
 export interface Layer {
   id: string;
   name: string;
   visible: boolean;
+  /** Stage is UI-only; no Paper.js layer. Omitted means regular. */
+  kind?: LayerKind;
 }
 
 /**
@@ -300,7 +314,10 @@ export function generateLayerId(): string {
 function createInitialLayerState(): LayerState {
   const defaultLayerId = generateLayerId();
   return {
-    layers: [{ id: defaultLayerId, name: "Layer 1", visible: true }],
+    layers: [
+      { id: STAGE_LAYER_ID, name: "Stage", visible: true, kind: "stage" },
+      { id: defaultLayerId, name: "Layer 1", visible: true, kind: "regular" },
+    ],
     activeLayerId: defaultLayerId,
   };
 }

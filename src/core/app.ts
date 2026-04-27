@@ -23,6 +23,7 @@ import { PixelCanvas } from "./pixel-canvas";
 import { Tracer } from "./tracer";
 import { PaperRenderer } from "./paper-renderer";
 import { UIOverlay } from "./ui-overlay";
+import { StageCanvas } from "./stage-canvas";
 import { ChromeOverlay } from "./chrome-overlay";
 import { Camera } from "./camera";
 import { SelectionController } from "./selection-controller";
@@ -59,6 +60,9 @@ import {
   selectionStore,
   viewOverlayStore,
   themeModeStore,
+  stageStore,
+  stageSelectedStore,
+  STAGE_LAYER_ID,
   type ThemeMode,
 } from "./stores";
 
@@ -76,9 +80,11 @@ function easeInOutCubic(t: number): number {
 
 class App {
   private paperCanvas: HTMLCanvasElement;
+  private stageCanvas: HTMLCanvasElement;
   private pixelCanvas: HTMLCanvasElement;
   private uiCanvas: HTMLCanvasElement;
   private chromeCanvas: HTMLCanvasElement;
+  private stageCanvas2D: CanvasRenderingContext2D;
   private pixelCanvas2D: CanvasRenderingContext2D;
   private uiCanvas2D: CanvasRenderingContext2D;
   private chromeCanvas2D: CanvasRenderingContext2D;
@@ -88,6 +94,7 @@ class App {
   private tracer: Tracer;
   private paperRenderer: PaperRenderer;
   private uiOverlay: UIOverlay;
+  private stageOverlay: StageCanvas;
   private chromeOverlay: ChromeOverlay;
   private selectionController: SelectionController;
   private directSelectController: DirectSelectController;
@@ -131,12 +138,14 @@ class App {
 
   constructor() {
     // Get canvas elements
+    this.stageCanvas = document.getElementById("stage-canvas") as HTMLCanvasElement;
     this.paperCanvas = document.getElementById("paper-canvas") as HTMLCanvasElement;
     this.pixelCanvas = document.getElementById("pixel-canvas") as HTMLCanvasElement;
     this.uiCanvas = document.getElementById("ui-canvas") as HTMLCanvasElement;
     this.chromeCanvas = document.getElementById("chrome-canvas") as HTMLCanvasElement;
 
     if (
+      !this.stageCanvas ||
       !this.paperCanvas ||
       !this.pixelCanvas ||
       !this.uiCanvas ||
@@ -146,14 +155,16 @@ class App {
     }
 
     // Get 2D contexts
+    const stageCtx = this.stageCanvas.getContext("2d");
     const pixelCtx = this.pixelCanvas.getContext("2d");
     const uiCtx = this.uiCanvas.getContext("2d");
     const chromeCtx = this.chromeCanvas.getContext("2d");
 
-    if (!pixelCtx || !uiCtx || !chromeCtx) {
+    if (!stageCtx || !pixelCtx || !uiCtx || !chromeCtx) {
       throw new Error("Could not get 2D contexts");
     }
 
+    this.stageCanvas2D = stageCtx;
     this.pixelCanvas2D = pixelCtx;
     this.uiCanvas2D = uiCtx;
     this.chromeCanvas2D = chromeCtx;
@@ -163,6 +174,7 @@ class App {
 
     // Initialize camera
     this.camera = new Camera(this.config.viewportWidth, this.config.viewportHeight);
+    this.camera.setPosition(stageStore.get().width / 2, stageStore.get().height / 2);
 
     // Initialize components
     this.pixelCanvasManager = new PixelCanvas(this.pixelCanvas, this.pixelCanvas2D, this.config);
@@ -171,6 +183,8 @@ class App {
     this.paperRenderer.setCamera(this.camera);
     this.uiOverlay = new UIOverlay(this.uiCanvas, this.uiCanvas2D, this.config);
     this.uiOverlay.setCamera(this.camera);
+    this.stageOverlay = new StageCanvas(this.stageCanvas, this.stageCanvas2D, this.config);
+    this.stageOverlay.setCamera(this.camera);
     this.chromeOverlay = new ChromeOverlay(
       this.chromeCanvas,
       this.chromeCanvas2D,
@@ -218,6 +232,17 @@ class App {
     });
 
     selectionStore.subscribeImmediate((selection) => {
+      if (stageSelectedStore.get() && selection.items.some((i) => i.parent)) {
+        stageSelectedStore.set(false);
+        const first = selection.items.find((i) => i.parent);
+        if (first) {
+          const lid = this.paperRenderer.getLayerIdForPathItem(first);
+          if (lid) {
+            this.paperRenderer.setActiveLayer(lid);
+            layerStore.update((s) => ({ ...s, activeLayerId: lid }));
+          }
+        }
+      }
       this.onSelectionItemsChange(selection.items);
     });
 
@@ -360,6 +385,8 @@ class App {
     const { viewportWidth, viewportHeight } = this.config;
 
     // Set display size (CSS)
+    this.stageCanvas.style.width = `${viewportWidth}px`;
+    this.stageCanvas.style.height = `${viewportHeight}px`;
     this.paperCanvas.style.width = `${viewportWidth}px`;
     this.paperCanvas.style.height = `${viewportHeight}px`;
     this.pixelCanvas.style.width = `${viewportWidth}px`;
@@ -372,6 +399,7 @@ class App {
     this.pixelCanvas.width = this.config.pixelWidth;
     this.pixelCanvas.height = this.config.pixelHeight;
     this.uiOverlay.updateConfig(this.config);
+    this.stageOverlay.updateConfig(this.config);
     this.chromeOverlay.updateConfig(this.config);
 
     // Configure pixel canvas context
@@ -394,7 +422,8 @@ class App {
 
     // Initialize the default layer - map Paper.js activeLayer to our layer store
     const initialLayerState = layerStore.get();
-    const defaultLayer = initialLayerState.layers[0];
+    const defaultLayer =
+      initialLayerState.layers.find((l) => l.kind !== "stage") ?? initialLayerState.layers[0];
     this.paperRenderer.initializeDefaultLayer(defaultLayer.id, defaultLayer.name);
 
     // Resize canvases
@@ -439,8 +468,9 @@ class App {
       this.cameraLoopLastMs = now;
       this.camera.stepLerp(dt);
       this.paperRenderer.applyCamera();
-      // Grid/origin/brush ring live on #ui-canvas and move with the camera.
+      // Grid + brush ring live on #ui-canvas; stage fill on #stage-canvas.
       this.uiOverlay.redraw();
+      this.stageOverlay.redraw();
       // Selection chrome lives on a separate canvas; repaint independently.
       this.redrawActiveSelectionUI();
       this.syncFunctionsPanelPosition();
@@ -461,6 +491,7 @@ class App {
     configStore.subscribe((config) => {
       this.pixelCanvasManager.updateConfig(config);
       this.uiOverlay.updateConfig(config);
+      this.stageOverlay.updateConfig(config);
       this.inputManager.updateConfig(config);
       this.paperRenderer.updateConfig(config);
     });
@@ -618,6 +649,10 @@ class App {
 
   private onToolStart(point: Point, tool: ToolId) {
     if (tool === "pan") return;
+
+    if (tool !== "select" && tool !== "direct-select") {
+      stageSelectedStore.set(false);
+    }
 
     if (tool === "select") {
       this.selectionGestureActive = true;
@@ -929,6 +964,7 @@ class App {
 
   private onToolChange(tool: ToolId) {
     if (tool !== "select") {
+      stageSelectedStore.set(false);
       this.selectionController.clearSelection();
     }
     if (tool !== "direct-select") {
@@ -1099,6 +1135,10 @@ class App {
   }
 
   private onColorPickerChange(color: string) {
+    if (stageSelectedStore.get()) {
+      stageStore.update((s) => ({ ...s, color }));
+      return;
+    }
     const items = selectionStore.get().items.filter((item) => item.parent);
     if (items.length === 0) return;
     for (const item of items) {
@@ -1109,6 +1149,11 @@ class App {
   }
 
   private onColorPickerChangeEnd(color: string) {
+    if (stageSelectedStore.get()) {
+      stageStore.update((s) => ({ ...s, color }));
+      this.historyManager.snapshot();
+      return;
+    }
     const items = selectionStore.get().items.filter((item) => item.parent);
     if (items.length === 0) return;
     for (const item of items) {
@@ -1159,10 +1204,19 @@ class App {
       const state = layerStore.get();
       const survivingLayer =
         state.layers.find((layer) => layer.id === flattenedLayerId) ?? state.layers[0];
+      const stageRow = state.layers.find((l) => l.kind === "stage");
 
-      if (survivingLayer) {
+      if (survivingLayer && stageRow) {
         layerStore.set({
-          layers: [{ ...survivingLayer, visible: true }],
+          layers: [
+            { ...stageRow, visible: true },
+            { ...survivingLayer, visible: true, kind: survivingLayer.kind ?? "regular" },
+          ],
+          activeLayerId: survivingLayer.id,
+        });
+      } else if (survivingLayer) {
+        layerStore.set({
+          layers: [{ ...survivingLayer, visible: true, kind: survivingLayer.kind ?? "regular" }],
           activeLayerId: survivingLayer.id,
         });
       }
@@ -1231,6 +1285,7 @@ class App {
   // ============================================================
 
   private onLayerAdd(id: string, name: string) {
+    stageSelectedStore.set(false);
     // Create the layer in Paper.js (it lands at the top of z-order by default).
     this.paperRenderer.createLayer(id, name);
 
@@ -1243,7 +1298,7 @@ class App {
       );
       const insertAt = activeIndex < 0 ? state.layers.length : activeIndex + 1;
       const nextLayers = [...state.layers];
-      nextLayers.splice(insertAt, 0, { id, name, visible: true });
+      nextLayers.splice(insertAt, 0, { id, name, visible: true, kind: "regular" });
       return {
         layers: nextLayers,
         activeLayerId: id,
@@ -1263,10 +1318,10 @@ class App {
   }
 
   private onLayerDelete(layerId: string) {
+    if (layerId === STAGE_LAYER_ID) return;
     const state = layerStore.get();
-    
-    // Don't delete the last layer
-    if (state.layers.length <= 1) return;
+    const nonStage = state.layers.filter((l) => l.kind !== "stage");
+    if (nonStage.length <= 1) return;
     
     // Delete from Paper.js
     if (!this.paperRenderer.deleteLayer(layerId)) return;
@@ -1295,6 +1350,35 @@ class App {
   }
 
   private onLayerSelect(layerId: string) {
+    if (layerId === STAGE_LAYER_ID) {
+      const state = layerStore.get();
+      const isAlreadyActive = state.activeLayerId === STAGE_LAYER_ID;
+      if (
+        isAlreadyActive &&
+        (this.selectionController.hasSelection() || this.directSelectController.hasSelection())
+      ) {
+        this.selectionController.clearSelection();
+        this.directSelectController.clearSelection();
+        this.functionsPanel.close("hidden");
+        return;
+      }
+
+      this.selectionController.clearSelection();
+      this.directSelectController.clearSelection();
+      this.functionsPanel.close("hidden");
+      stageSelectedStore.set(true);
+      const sc = stageStore.get().color;
+      colorStore.set(sc);
+      prevColorStore.set(sc);
+      layerStore.update((s) => ({ ...s, activeLayerId: STAGE_LAYER_ID }));
+      if (toolStore.get() !== "select") {
+        this.switchTool("select");
+      }
+      return;
+    }
+
+    stageSelectedStore.set(false);
+
     const state = layerStore.get();
     const isAlreadyActive = state.activeLayerId === layerId;
 
@@ -1327,6 +1411,7 @@ class App {
   }
 
   private onLayerRename(layerId: string, name: string) {
+    if (layerId === STAGE_LAYER_ID) return;
     const trimmed = name.trim();
     if (!trimmed) return;
     const state = layerStore.get();
@@ -1340,6 +1425,7 @@ class App {
   }
 
   private onLayerVisibilityToggle(layerId: string) {
+    if (layerId === STAGE_LAYER_ID) return;
     const state = layerStore.get();
     const layer = state.layers.find((l) => l.id === layerId);
     if (!layer) return;
@@ -1447,7 +1533,13 @@ class App {
     const layersById = new Map(state.layers.map((layer) => [layer.id, layer]));
 
     // Store and renderer use bottom->top order; panel emits top->bottom.
-    const orderedBottomToTop = [...orderedTopToBottom].reverse();
+    let orderedBottomToTop = [...orderedTopToBottom].reverse();
+    if (orderedBottomToTop[0] !== STAGE_LAYER_ID) {
+      orderedBottomToTop = [
+        STAGE_LAYER_ID,
+        ...orderedBottomToTop.filter((id) => id !== STAGE_LAYER_ID),
+      ];
+    }
     if (orderedBottomToTop.length !== state.layers.length) return;
 
     const reorderedLayers = orderedBottomToTop
