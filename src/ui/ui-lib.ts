@@ -74,6 +74,8 @@ const PHOSPHOR_ICONS: Record<string, string> = {
     '<path d="M48 192c20-52 44-84 80-84s60 32 80 84" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M88 88h80" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="88" cy="88" r="10"/><circle cx="168" cy="88" r="10"/><circle cx="208" cy="192" r="10"/>',
   "point-asymmetric":
     '<path d="M48 192c22-52 46-84 80-84s58 28 80 84" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M128 108c10-22 28-36 48-44" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="128" cy="108" r="10"/><circle cx="176" cy="64" r="10"/><circle cx="208" cy="192" r="10"/>',
+  "film-strip":
+    '<rect x="28" y="56" width="200" height="144" rx="12" stroke="currentColor" stroke-width="16" fill="none"/><path d="M28 92h200M28 164h200" stroke="currentColor" stroke-width="12" fill="none"/><path d="M76 56v36M128 56v36M180 56v36M76 164v36M128 164v36M180 164v36" stroke="currentColor" stroke-width="12" fill="none"/>',
 };
 
 const PANEL_ICON_MAP: Record<string, string> = {
@@ -3272,6 +3274,18 @@ export class InkwellUniversalPanel extends FloatingPanel {
                 >Export view to SVG</blocky-button
               >
             </div>
+
+            <div class="row">
+              <blocky-button flat @click=${() => this.emit("doc-save")}
+                >Save</blocky-button
+              >
+              <blocky-button flat @click=${() => this.emit("doc-open")}
+                >Open</blocky-button
+              >
+              <blocky-button flat danger @click=${() => this.emit("doc-new")}
+                >New</blocky-button
+              >
+            </div>
           </div>
         </div>
       </div>
@@ -3284,10 +3298,12 @@ export class InkwellUniversalPanel extends FloatingPanel {
 // ============================================================
 
 import { layerStore, generateLayerId, STAGE_LAYER_ID } from "../core/stores";
+import { timelineStore } from "../core/document";
 
 @customElement("inkwell-layers-panel")
 export class InkwellLayersPanel extends FloatingPanel {
   private layers = new StoreController(this, layerStore);
+  private timeline = new StoreController(this, timelineStore);
   @state() private editingLayerId: string | null = null;
   @state() private editingName = "";
   private sortable: Sortable | null = null;
@@ -3304,8 +3320,10 @@ export class InkwellLayersPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      --panel-width: 280px;
+      --panel-width: 480px;
       --layers-control-size: 24px;
+      --layers-side-width: 168px;
+      --frame-cell-w: 15px;
     }
 
     .block {
@@ -3338,12 +3356,10 @@ export class InkwellLayersPanel extends FloatingPanel {
       display: flex;
       flex-direction: column;
       gap: 4px;
-      flex: 1 1 auto;
-      max-height: none;
-      overflow-y: auto;
+      flex: 0 0 auto;
+      overflow: visible;
       margin: 0;
       min-width: 0;
-      min-height: 0;
     }
 
     .layer-item {
@@ -3354,6 +3370,7 @@ export class InkwellLayersPanel extends FloatingPanel {
         var(--layers-control-size);
       align-items: center;
       gap: 4px;
+      height: var(--layers-control-size);
       min-width: 0;
       flex: 0 0 auto;
       cursor: grab;
@@ -3521,6 +3538,303 @@ export class InkwellLayersPanel extends FloatingPanel {
       opacity: 0.45;
       cursor: not-allowed;
     }
+
+    /* ---- Timeline (Flash-style frames grid merged into the layer rows) ---- */
+
+    .header-actions {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 4px;
+      flex: 1 1 auto;
+      min-width: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .tl-btn {
+      min-width: 30px;
+      height: var(--layers-control-size);
+      padding: 0 7px;
+      border: none;
+      border-radius: 6px;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      color: var(--inkwell-text-muted, #666);
+      font: inherit;
+      font-weight: 600;
+      line-height: 1;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .tl-btn:hover {
+      filter: brightness(0.95);
+    }
+
+    .tl-btn.on {
+      background: var(--inkwell-accent, var(--panel-accent, #4a6fb5));
+      color: var(--inkwell-danger-contrast, #ffffff);
+    }
+
+    .frame-counter {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      font-variant-numeric: tabular-nums;
+      color: var(--inkwell-text-muted, #666);
+      padding: 0 4px;
+      white-space: nowrap;
+    }
+
+    .fps-field {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--inkwell-text-muted, #666);
+    }
+
+    .duration-input,
+    .fps-field input {
+      width: 40px;
+      font: inherit;
+      padding: 3px 4px;
+      border: none;
+      border-radius: 6px;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      color: var(--block-border, var(--inkwell-panel-border));
+      text-align: center;
+    }
+
+    .duration-input:focus,
+    .fps-field input:focus {
+      outline: none;
+      box-shadow: 0 0 0 2px var(--panel-accent-muted, rgba(74, 111, 181, 0.35));
+    }
+
+    /* Two real columns: a fixed name/controls column and a frames column
+       that is the only horizontal scroller. Vertical scrolling happens in
+       .layer-scroll and moves both columns together. */
+    .layer-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    .layers-body {
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .side-column {
+      display: flex;
+      flex-direction: column;
+      width: var(--layers-side-width, 168px);
+      flex: 0 0 auto;
+    }
+
+    /* Keeps the first name row aligned with the first frame row by
+       mirroring the ruler's height (14px) + bottom margin (2px). */
+    .ruler-spacer {
+      height: 14px;
+      margin-bottom: 2px;
+      flex: 0 0 auto;
+    }
+
+    .frames-viewport {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+
+    .strip-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      width: max-content;
+      min-width: 100%;
+    }
+
+    .strip-row {
+      display: flex;
+      align-items: center;
+      height: var(--layers-control-size);
+      width: max-content;
+      min-width: 100%;
+      flex: 0 0 auto;
+    }
+
+    .strip-row.hidden {
+      opacity: 0.5;
+    }
+
+    /* Two stacked layers: frame squares underneath, span overlay on top. */
+    .frame-strip {
+      position: relative;
+      flex: 0 0 auto;
+    }
+
+    .frame-cells {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+    }
+
+    .frame-cell,
+    .ruler-cell {
+      width: var(--frame-cell-w, 15px);
+      flex: 0 0 var(--frame-cell-w, 15px);
+      box-sizing: border-box;
+    }
+
+    /* Flat cells: each frame is its own rounded rect separated by a tiny
+       gap. The margins keep the 15px pitch so the ruler and span overlay
+       stay aligned. */
+    .frame-cell {
+      width: calc(var(--frame-cell-w, 15px) - 2px);
+      flex: 0 0 calc(var(--frame-cell-w, 15px) - 2px);
+      height: calc(var(--layers-control-size) - 4px);
+      padding: 0;
+      margin: 0 1px;
+      border: none;
+      border-radius: 4px;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* Aseprite-style cross shading: the playhead column is tinted in every
+       row, the selected layer's row is tinted across every frame, and only
+       their intersection gets the solid box. */
+    .frame-cell.current {
+      background: color-mix(
+        in srgb,
+        var(--inkwell-accent, #4a6fb5) 18%,
+        var(--block-depth-color, var(--inkwell-panel-depth))
+      );
+    }
+
+    .strip-row.active .frame-cell {
+      background: color-mix(
+        in srgb,
+        var(--inkwell-accent, #4a6fb5) 12%,
+        var(--block-depth-color, var(--inkwell-panel-depth))
+      );
+    }
+
+    .strip-row.active .frame-cell.current {
+      box-shadow: inset 0 0 0 2px var(--inkwell-playhead, #f2c14e);
+    }
+
+    .frame-cell:hover {
+      filter: brightness(0.92);
+    }
+
+    /* Span overlay: one pill per keyframe span, one hollow dot per blank
+       keyframe. Positioned by --f (start frame) / --len (frames). Clicks
+       fall through to the cells underneath. */
+    .span-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .span-pill {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      left: calc(var(--f) * var(--frame-cell-w, 15px) + 3px);
+      width: calc(var(--len) * var(--frame-cell-w, 15px) - 6px);
+      height: 6px;
+      border-radius: 999px;
+      background: var(--block-border, #555555);
+    }
+
+    .span-dot {
+      position: absolute;
+      top: 50%;
+      left: calc((var(--f) + 0.5) * var(--frame-cell-w, 15px));
+      transform: translate(-50%, -50%);
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      box-sizing: border-box;
+      border: 1.5px solid var(--block-border, #555555);
+    }
+
+    /* Single-frame keyframe: filled dot instead of a crammed pill. */
+    .span-dot--filled {
+      background: var(--block-border, #555555);
+    }
+
+    .strip-row.active .span-pill {
+      background: var(--inkwell-accent, #4a6fb5);
+    }
+
+    .strip-row.active .span-dot {
+      border-color: var(--inkwell-accent, #4a6fb5);
+    }
+
+    .strip-row.active .span-dot--filled {
+      background: var(--inkwell-accent, #4a6fb5);
+    }
+
+    /* Stage row: fixed below the scroll area, stretches the panel width. */
+    .stage-row {
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
+      min-height: 24px;
+      padding: 0 8px;
+      border-radius: 6px;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      color: var(--block-border, var(--inkwell-panel-border));
+      font-weight: 600;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .stage-row:hover:not(.active) {
+      filter: brightness(0.97);
+    }
+
+    .stage-row.active {
+      background: var(--inkwell-accent, var(--panel-accent, #b5a04a));
+      color: var(--inkwell-danger-contrast, #ffffff);
+    }
+
+    .ruler-row {
+      display: flex;
+      flex-direction: row;
+      align-items: flex-end;
+      width: max-content;
+      min-width: 100%;
+      height: 14px;
+      margin-bottom: 2px;
+    }
+
+    .ruler-cell {
+      font-size: 9px;
+      line-height: 12px;
+      text-align: center;
+      color: var(--inkwell-text-muted, #666);
+      white-space: nowrap;
+      overflow: visible;
+      user-select: none;
+      cursor: pointer;
+    }
+
+    .ruler-cell.current {
+      color: var(--inkwell-playhead, #f2c14e);
+      font-weight: 700;
+    }
   `;
 
   private emit(name: string, detail?: unknown) {
@@ -3620,7 +3934,7 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     this.sortable = Sortable.create(list, {
       // Don't initiate drag from controls that should remain clickable.
-      filter: ".visibility-btn, .delete-btn, .layer-name-input, .layer-item--stage",
+      filter: ".visibility-btn, .delete-btn, .layer-name-input, .frame-cell",
       preventOnFilter: false,
       /* iPad / touch: without this, a tap is treated as a drag and @click (select) never wins. */
       delay: 220,
@@ -3633,18 +3947,6 @@ export class InkwellLayersPanel extends FloatingPanel {
         this.cancelLayerRename();
         this.dragOriginNextSibling = evt.item.nextSibling;
       },
-      onMove: (evt) => {
-        // Stage must stay at the bottom: block drops below the stage row
-        // during the drag instead of "correcting" the order afterwards.
-        const related = evt.related as HTMLElement | null;
-        if (
-          related?.classList?.contains("layer-item--stage") &&
-          evt.willInsertAfter
-        ) {
-          return false;
-        }
-        return true;
-      },
       onEnd: (evt) => {
         const { oldIndex, newIndex } = evt;
         const originNext = this.dragOriginNextSibling;
@@ -3653,7 +3955,7 @@ export class InkwellLayersPanel extends FloatingPanel {
         // Read the new top-to-bottom order from the DOM while Sortable's
         // mutation is still in place.
         const list = evt.to as HTMLElement;
-        let orderedTopToBottom = Array.from(
+        const orderedTopToBottom = Array.from(
           list.querySelectorAll<HTMLElement>(".layer-item"),
         )
           .map((el) => el.dataset.layerId)
@@ -3671,26 +3973,124 @@ export class InkwellLayersPanel extends FloatingPanel {
           return;
         }
 
-        if (orderedTopToBottom.length !== this.layers.value.layers.length) {
+        // The list holds regular layers only; Stage renders outside it and
+        // always sits at the bottom of the stack (last in top-to-bottom).
+        const regularCount = this.layers.value.layers.filter(
+          (l) => l.kind !== "stage",
+        ).length;
+        if (orderedTopToBottom.length !== regularCount) {
           return;
         }
 
-        // Stage must stay at the bottom of the stack (last in top-to-bottom DOM order).
-        if (orderedTopToBottom[orderedTopToBottom.length - 1] !== STAGE_LAYER_ID) {
-          const rest = orderedTopToBottom.filter((id) => id !== STAGE_LAYER_ID);
-          orderedTopToBottom = [...rest, STAGE_LAYER_ID];
-        }
-
-        this.emit("layer-reorder", orderedTopToBottom);
+        this.emit("layer-reorder", [...orderedTopToBottom, STAGE_LAYER_ID]);
       },
     });
   }
 
+  /**
+   * A layer's frames: a flat row of clickable squares, with the span
+   * markers (one pill per filled keyframe span, one hollow dot per blank
+   * keyframe) drawn in a single overlay on top. `keyframes` is sorted
+   * ascending and always contains frame 0.
+   */
+  private renderFrameStrip(
+    layerId: string,
+    keyframes: Array<{ frame: number; blank: boolean }>,
+    duration: number,
+    currentFrame: number,
+  ) {
+    const cells = Array.from({ length: duration }, (_, f) => html`
+      <button
+        type="button"
+        class="frame-cell ${f === currentFrame ? "current" : ""}"
+        title=${`Frame ${f + 1}`}
+        @click=${(e: Event) => {
+          // Don't bubble into the row's layer-select (which switches tools).
+          e.stopPropagation();
+          this.emit("frame-select", { frame: f, layerId });
+        }}
+      ></button>
+    `);
+
+    const spans = keyframes.map((kf, i) => {
+      if (kf.blank) {
+        return html`<div class="span-dot" style="--f: ${kf.frame}"></div>`;
+      }
+      const spanEnd = (keyframes[i + 1]?.frame ?? duration) - 1;
+      const len = spanEnd - kf.frame + 1;
+      // A one-frame span is just a keyframe: filled dot, no pill.
+      if (len === 1) {
+        return html`<div class="span-dot span-dot--filled" style="--f: ${kf.frame}"></div>`;
+      }
+      return html`<div class="span-pill" style="--f: ${kf.frame}; --len: ${len}"></div>`;
+    });
+
+    return html`
+      <div class="frame-strip">
+        <div class="frame-cells">${cells}</div>
+        <div class="span-overlay">${spans}</div>
+      </div>
+    `;
+  }
+
+  /** All timeline controls; live in the single header row next to + layer. */
+  private renderFrameActions() {
+    const t = this.timeline.value;
+    return html`
+      <button type="button" class="tl-btn" title="Insert keyframe (copies current artwork)"
+        @click=${() => this.emit("keyframe-add", { blank: false })}>+K</button>
+      <button type="button" class="tl-btn" title="Insert blank keyframe"
+        @click=${() => this.emit("keyframe-add", { blank: true })}>+B</button>
+      <button type="button" class="tl-btn" title="Remove keyframe at playhead"
+        @click=${() => this.emit("keyframe-remove")}>&#215;K</button>
+      <button type="button" class="tl-btn ${t.onionSkin ? "on" : ""}"
+        title="Onion skin (ghost neighboring frames)"
+        @click=${() => this.emit("onion-toggle")}>&#9789;</button>
+      <button type="button" class="tl-btn ${t.playing ? "on" : ""}"
+        title=${t.playing ? "Stop" : "Play"}
+        @click=${() => this.emit("play-toggle")}
+        >${t.playing ? html`&#9632;` : html`&#9654;`}</button>
+      <span class="frame-counter">
+        ${t.currentFrame + 1}/<input
+          class="duration-input"
+          type="number"
+          min="1"
+          max="9999"
+          title="Total frames (shrinking deletes trailing keyframes)"
+          .value=${String(t.duration)}
+          @change=${(e: Event) => {
+            const value = Number((e.target as HTMLInputElement).value);
+            if (Number.isFinite(value)) this.emit("duration-set", value);
+          }}
+        />
+      </span>
+      <span class="fps-field">
+        fps
+        <input
+          type="number"
+          min="1"
+          max="60"
+          .value=${String(t.frameRate)}
+          @change=${(e: Event) => {
+            const value = Number((e.target as HTMLInputElement).value);
+            if (Number.isFinite(value)) this.emit("frame-rate-change", value);
+          }}
+        />
+      </span>
+    `;
+  }
+
   render() {
     const { layers, activeLayerId } = this.layers.value;
-    // Display layers in reverse order (top layer first)
-    const displayLayers = [...layers].reverse();
-    const nonStageCount = layers.filter((l) => l.kind !== "stage").length;
+    const t = this.timeline.value;
+    // Regular layers only, top layer first; Stage renders as its own fixed
+    // row below the scroll area.
+    const displayLayers = layers.filter((l) => l.kind !== "stage").reverse();
+    const nonStageCount = displayLayers.length;
+    const frames = Array.from({ length: t.duration }, (_, i) => i);
+    const keyframesByTrack = new Map(
+      t.tracks.map((track) => [track.id, track.keyframes]),
+    );
 
     return html`
       ${this.renderPinnedClose()}
@@ -3700,81 +4100,125 @@ export class InkwellLayersPanel extends FloatingPanel {
             ${this.renderDragHandlePill()}
             <div class="layers-header">
               ${this.renderPanelTitle("Layers")}
-              <button
-                type="button"
-                class="layer-add-button"
-                title="Add layer above selected"
-                aria-label="Add layer"
-                @click=${() => this.addLayer()}
-              >+</button>
+              <div class="header-actions">
+                <button
+                  type="button"
+                  class="layer-add-button"
+                  title="Add layer above selected"
+                  aria-label="Add layer"
+                  @click=${() => this.addLayer()}
+                >+</button>
+                ${this.renderFrameActions()}
+              </div>
             </div>
-            <div class="layer-list">
-            ${repeat(
-              displayLayers,
-              (layer) => layer.id,
-              (layer) => html`
-                <div
-                  class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""} ${layer.kind === "stage" ? "layer-item--stage" : ""}"
-                  data-layer-id=${layer.id}
-                  data-interactive
-                  @click=${() => this.selectLayer(layer.id)}
-                >
-                  <div class="layer-name-cell">
-                    ${this.editingLayerId === layer.id
-                      ? html`
-                          <input
-                            type="text"
-                            class="layer-name-input"
-                            data-layer-edit=${layer.id}
-                            .value=${this.editingName}
-                            aria-label="Layer name"
-                            @input=${(e: Event) => {
-                              this.editingName = (e.target as HTMLInputElement).value;
-                            }}
-                            @keydown=${(e: KeyboardEvent) =>
-                              this.onRenameKeydown(layer.id, e)}
-                            @blur=${() => this.commitLayerRename(layer.id)}
-                            @click=${(e: Event) => e.stopPropagation()}
-                            @pointerdown=${(e: Event) => e.stopPropagation()}
-                          />
-                        `
-                      : html`
-                          <span
-                            class="layer-name"
-                            title=${layer.kind === "stage" ? "Stage" : "Double-click to rename"}
-                            @dblclick=${layer.kind === "stage"
-                              ? undefined
-                              : (e: Event) =>
-                              this.startLayerRename(layer.id, layer.name, e)}
-                            >${layer.name}</span
+            <div class="layer-scroll">
+              <div class="layers-body">
+                <div class="side-column">
+                  <div class="ruler-spacer"></div>
+                  <div class="layer-list">
+                    ${repeat(
+                      displayLayers,
+                      (layer) => layer.id,
+                      (layer) => html`
+                        <div
+                          class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
+                          data-layer-id=${layer.id}
+                          data-interactive
+                          @click=${() => this.selectLayer(layer.id)}
+                        >
+                          <div class="layer-name-cell">
+                            ${this.editingLayerId === layer.id
+                              ? html`
+                                  <input
+                                    type="text"
+                                    class="layer-name-input"
+                                    data-layer-edit=${layer.id}
+                                    .value=${this.editingName}
+                                    aria-label="Layer name"
+                                    @input=${(e: Event) => {
+                                      this.editingName = (e.target as HTMLInputElement).value;
+                                    }}
+                                    @keydown=${(e: KeyboardEvent) =>
+                                      this.onRenameKeydown(layer.id, e)}
+                                    @blur=${() => this.commitLayerRename(layer.id)}
+                                    @click=${(e: Event) => e.stopPropagation()}
+                                    @pointerdown=${(e: Event) => e.stopPropagation()}
+                                  />
+                                `
+                              : html`
+                                  <span
+                                    class="layer-name"
+                                    title="Double-click to rename"
+                                    @dblclick=${(e: Event) =>
+                                      this.startLayerRename(layer.id, layer.name, e)}
+                                    >${layer.name}</span
+                                  >
+                                `}
+                          </div>
+                          <button
+                            type="button"
+                            class="layer-control visibility-btn ${!layer.visible ? "dim" : ""}"
+                            @click=${(e: Event) => this.toggleVisibility(layer.id, e)}
+                            title="${layer.visible ? "Hide layer" : "Show layer"}"
                           >
-                        `}
+                            ${phosphorIcon(layer.visible ? "eye" : "eye-slash", 14)}
+                          </button>
+                          <button
+                            type="button"
+                            class="layer-control delete-btn"
+                            @click=${(e: Event) => this.deleteLayer(layer.id, e)}
+                            title="Delete layer"
+                            ?disabled=${nonStageCount <= 1}
+                          >
+                            ${phosphorIcon("trash", 14)}
+                          </button>
+                        </div>
+                      `
+                    )}
                   </div>
-                  ${layer.kind === "stage"
-                    ? html`<div class="layer-control" aria-hidden="true"></div>
-                        <div class="layer-control" aria-hidden="true"></div>`
-                    : html`
-                  <button
-                    type="button"
-                    class="layer-control visibility-btn ${!layer.visible ? "dim" : ""}"
-                    @click=${(e: Event) => this.toggleVisibility(layer.id, e)}
-                    title="${layer.visible ? "Hide layer" : "Show layer"}"
-                  >
-                    ${phosphorIcon(layer.visible ? "eye" : "eye-slash", 14)}
-                  </button>
-                  <button
-                    type="button"
-                    class="layer-control delete-btn"
-                    @click=${(e: Event) => this.deleteLayer(layer.id, e)}
-                    title="Delete layer"
-                    ?disabled=${nonStageCount <= 1}
-                  >
-                    ${phosphorIcon("trash", 14)}
-                  </button>
-                  `}
                 </div>
-              `
-            )}
+                <div class="frames-viewport">
+                  <div class="ruler-row">
+                    ${frames.map(
+                      (f) => html`
+                        <div
+                          class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
+                          title=${`Go to frame ${f + 1}`}
+                          @click=${() => this.emit("frame-select", { frame: f })}
+                        >
+                          ${f === 0 || (f + 1) % 5 === 0 || f === t.currentFrame ? f + 1 : ""}
+                        </div>
+                      `,
+                    )}
+                  </div>
+                  <div class="strip-list">
+                    ${repeat(
+                      displayLayers,
+                      (layer) => layer.id,
+                      (layer) => html`
+                        <div
+                          class="strip-row ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
+                        >
+                          ${this.renderFrameStrip(
+                            layer.id,
+                            keyframesByTrack.get(layer.id) ?? [],
+                            t.duration,
+                            t.currentFrame,
+                          )}
+                        </div>
+                      `
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="stage-row ${activeLayerId === STAGE_LAYER_ID ? "active" : ""}"
+              data-interactive
+              title="Stage"
+              @click=${() => this.selectLayer(STAGE_LAYER_ID)}
+            >
+              Stage
             </div>
           </div>
         </div>

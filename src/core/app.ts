@@ -30,6 +30,20 @@ import { SelectionController } from "./selection-controller";
 import { DirectSelectController } from "./direct-select-controller";
 import { MagnetController } from "./magnet-controller";
 import { HistoryManager } from "./history";
+import {
+  DocumentManager,
+  EMPTY_CONTENT_ID,
+  DEFAULT_FRAME_RATE,
+  DEFAULT_DURATION,
+  type SerializedDocument,
+} from "./document";
+import {
+  downloadDocument,
+  pickDocumentFile,
+  saveAutosave,
+  loadAutosave,
+  debounce,
+} from "./persistence";
 import { bus, Events } from "./event-bus";
 import type { CanvasConfig, Point, Modifiers } from "./types";
 import { cycleDockMode, type ToolId, type AllToolSettings } from "./tools";
@@ -63,6 +77,7 @@ import {
   stageStore,
   stageSelectedStore,
   STAGE_LAYER_ID,
+  generateLayerId,
   type ThemeMode,
 } from "./stores";
 import { getStageFitViewportInsets } from "./stage-fit-insets";
@@ -101,6 +116,14 @@ class App {
   private directSelectController: DirectSelectController;
   private magnetController: MagnetController;
   private historyManager: HistoryManager;
+  private documentManager: DocumentManager;
+  /** Accumulates wall-clock time between animation frame advances during playback. */
+  private playbackAccumulatorMs = 0;
+  private readonly scheduleAutosave = debounce(() => {
+    void saveAutosave(this.serializeDocument()).catch((err) => {
+      console.error("Autosave failed:", err);
+    });
+  }, 800);
   private colorPanel: InkwellColorPanel;
   private toolsPanel: InkwellToolsPanel;
   private universalPanel: InkwellUniversalPanel;
@@ -206,7 +229,9 @@ class App {
       this.chromeOverlay,
     );
     this.magnetController = new MagnetController(this.paperRenderer, this.camera);
-    this.historyManager = new HistoryManager(this.paperRenderer);
+    this.documentManager = new DocumentManager(this.paperRenderer);
+    this.historyManager = new HistoryManager(this.documentManager);
+    this.historyManager.setOnChange(() => this.scheduleAutosave());
     this.selectionController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.directSelectController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.directSelectController.setReconcileCallback((items) =>
@@ -335,6 +360,38 @@ class App {
       this.onAliasFixToggle((e as CustomEvent<boolean>).detail);
     });
     this.universalPanel.addEventListener("export-view-svg", () => this.onExportViewSvg());
+    this.universalPanel.addEventListener("doc-save", () => this.onDocSave());
+    this.universalPanel.addEventListener("doc-open", () => void this.onDocOpen());
+    this.universalPanel.addEventListener("doc-new", () => this.onDocNew());
+
+    // Timeline events (frames grid merged into the layers panel)
+    this.layersPanel.addEventListener("frame-select", (e: Event) => {
+      const { frame, layerId } = (e as CustomEvent<{ frame: number; layerId?: string }>).detail;
+      this.onTimelineFrameSelect(frame, layerId);
+    });
+    this.layersPanel.addEventListener("keyframe-add", (e: Event) => {
+      const { blank } = (e as CustomEvent<{ blank: boolean }>).detail;
+      this.onKeyframeAdd(blank);
+    });
+    this.layersPanel.addEventListener("keyframe-remove", () => this.onKeyframeRemove());
+    this.layersPanel.addEventListener("duration-set", (e: Event) => {
+      const frames = (e as CustomEvent<number>).detail;
+      if (this.documentManager.setDuration(frames)) {
+        this.historyManager.snapshot();
+        this.requestRedraw();
+      }
+    });
+    this.layersPanel.addEventListener("frame-rate-change", (e: Event) => {
+      this.documentManager.setFrameRate((e as CustomEvent<number>).detail);
+      this.scheduleAutosave();
+    });
+    this.layersPanel.addEventListener("play-toggle", () => this.onPlayToggle());
+    this.layersPanel.addEventListener("onion-toggle", () => {
+      // Commit live edits first so the ghosts compare against what's on screen.
+      this.commitLiveEdits();
+      this.documentManager.setOnionSkin(!this.documentManager.isOnionSkinEnabled());
+      this.requestRedraw();
+    });
 
     // Layers panel events
     this.layersPanel.addEventListener("layer-add", (e: Event) => {
@@ -468,7 +525,18 @@ class App {
       this.requestRedraw();
     });
 
-    // Take initial history snapshot (empty canvas state)
+    // Restore the autosaved document (if any) before the first snapshot.
+    try {
+      const saved = await loadAutosave();
+      if (saved) {
+        this.applyLoadedDocument(saved);
+        console.log("Restored autosaved document");
+      }
+    } catch (error) {
+      console.error("Autosave restore failed (starting fresh):", error);
+    }
+
+    // Take initial history snapshot (baseline for undo)
     this.historyManager.snapshot();
 
     this.startCameraFrameLoop();
@@ -498,6 +566,7 @@ class App {
     const step = (now: number) => {
       const dt = Math.min(0.05, (now - this.cameraLoopLastMs) / 1000);
       this.cameraLoopLastMs = now;
+      this.stepPlayback(dt * 1000);
       const cameraMoved = this.camera.stepLerp(dt);
       if (cameraMoved || this.redrawRequested) {
         this.redrawRequested = false;
@@ -514,6 +583,23 @@ class App {
     };
     this.cameraLoopLastMs = performance.now();
     requestAnimationFrame(step);
+  }
+
+  /** Advance the animation playhead during playback (driven by the frame loop). */
+  private stepPlayback(dtMs: number) {
+    if (!this.documentManager.isPlaying()) {
+      this.playbackAccumulatorMs = 0;
+      return;
+    }
+    this.playbackAccumulatorMs += dtMs;
+    const frameMs = 1000 / this.documentManager.getFrameRate();
+    if (this.playbackAccumulatorMs < frameMs) return;
+    // Advance one frame per repaint at most; drop backlog to avoid spiraling.
+    this.playbackAccumulatorMs = this.playbackAccumulatorMs % frameMs;
+    const next =
+      (this.documentManager.getCurrentFrame() + 1) % this.documentManager.getDuration();
+    this.documentManager.gotoFrame(next);
+    this.requestRedraw();
   }
 
   private setupStoreSubscriptions() {
@@ -705,6 +791,9 @@ class App {
 
   private onToolStart(point: Point, tool: ToolId) {
     if (tool === "pan") return;
+
+    // Editing while the animation plays would race the frame loader.
+    if (this.documentManager.isPlaying()) this.documentManager.setPlaying(false);
 
     if (tool !== "select" && tool !== "direct-select") {
       stageSelectedStore.set(false);
@@ -1589,6 +1678,143 @@ class App {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+  }
+
+  // ============================================================
+  // Timeline / Animation Handlers
+  // ============================================================
+
+  /**
+   * Move the playhead (optionally also activating a layer, when the click
+   * landed on another row). Selections are placed first so pending edits
+   * commit to the frame they were made on.
+   */
+  private onTimelineFrameSelect(frame: number, layerId?: string) {
+    this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
+    this.functionsPanel.close("hidden");
+
+    if (layerId && layerId !== layerStore.get().activeLayerId) {
+      // Quiet activation: no tool switch / select-all like the layers panel.
+      if (this.paperRenderer.setActiveLayer(layerId)) {
+        stageSelectedStore.set(false);
+        layerStore.update((s) => ({ ...s, activeLayerId: layerId }));
+      }
+    }
+
+    this.documentManager.gotoFrame(frame);
+    this.requestRedraw();
+  }
+
+  private timelineTargetLayerId(): string | null {
+    const active = layerStore.get().activeLayerId;
+    if (active !== STAGE_LAYER_ID) return active;
+    return this.paperRenderer.getActiveLayerId();
+  }
+
+  /** Pull live Paper edits into the document model without a history entry. */
+  private commitLiveEdits() {
+    this.documentManager.syncFromLayerStore(layerStore.get());
+    this.documentManager.commitActiveLayerContent();
+  }
+
+  private onKeyframeAdd(blank: boolean) {
+    const layerId = this.timelineTargetLayerId();
+    if (!layerId) return;
+    // Commit live edits first so a copied keyframe captures what's on screen.
+    this.commitLiveEdits();
+    if (this.documentManager.addKeyframe(layerId, this.documentManager.getCurrentFrame(), blank)) {
+      this.historyManager.snapshot();
+      this.requestRedraw();
+    }
+  }
+
+  private onKeyframeRemove() {
+    const layerId = this.timelineTargetLayerId();
+    if (!layerId) return;
+    this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
+    if (this.documentManager.removeKeyframe(layerId, this.documentManager.getCurrentFrame())) {
+      this.historyManager.snapshot();
+      this.requestRedraw();
+    }
+  }
+
+  private onPlayToggle() {
+    const playing = !this.documentManager.isPlaying();
+    if (playing) {
+      // Commit pending edits, then drop selection UI for clean playback.
+      this.commitLiveEdits();
+      this.selectionController.clearSelection();
+      this.directSelectController.clearSelection();
+      this.functionsPanel.close("hidden");
+      this.playbackAccumulatorMs = 0;
+    }
+    this.documentManager.setPlaying(playing);
+    this.requestRedraw();
+  }
+
+  // ============================================================
+  // Document Save / Open / New
+  // ============================================================
+
+  private serializeDocument(): SerializedDocument {
+    return this.documentManager.serialize(stageStore.get());
+  }
+
+  private onDocSave() {
+    // Commit any live Paper edits into the document model first.
+    this.commitLiveEdits();
+    downloadDocument(this.serializeDocument());
+  }
+
+  private async onDocOpen() {
+    try {
+      const doc = await pickDocumentFile();
+      if (!doc) return;
+      this.applyLoadedDocument(doc);
+      this.historyManager.clear();
+      this.historyManager.snapshot();
+      this.requestRedraw();
+    } catch (error) {
+      console.error("Failed to open document:", error);
+      alert(`Could not open file: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private onDocNew() {
+    if (!confirm("Start a new document? Unsaved changes will be lost.")) return;
+    const layerId = generateLayerId();
+    this.applyLoadedDocument({
+      version: 1,
+      stage: { width: 1920, height: 1080, color: "#ffffff" },
+      frameRate: DEFAULT_FRAME_RATE,
+      duration: DEFAULT_DURATION,
+      tracks: [
+        {
+          id: layerId,
+          name: "Layer 1",
+          visible: true,
+          keyframes: [{ frameIndex: 0, contentId: EMPTY_CONTENT_ID }],
+        },
+      ],
+      content: { [EMPTY_CONTENT_ID]: "" },
+    });
+    this.historyManager.clear();
+    this.historyManager.snapshot();
+    this.requestRedraw();
+  }
+
+  /** Swap in a document (from file or autosave) and reset editor state. */
+  private applyLoadedDocument(doc: SerializedDocument) {
+    this.selectionController.discardSelection();
+    this.directSelectController.clearSelection();
+    this.functionsPanel.close("hidden");
+
+    stageStore.set({ ...doc.stage });
+    this.documentManager.loadSerialized(doc);
+    this.fitStageInView(true);
+    this.requestRedraw();
   }
 
   private onLayerReorder(orderedTopToBottom: string[]) {

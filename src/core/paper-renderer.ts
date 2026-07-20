@@ -44,6 +44,11 @@ export class PaperRenderer {
   private nextSelectionMarkerId = 1;
   private markerByItemId = new Map<number, string>();
 
+  // Onion-skin ghost layers: locked, dimmed renders of nearby animation
+  // frames. Deliberately NOT in layerMap, so layer restore/reorder/flatten
+  // logic never treats them as document content.
+  private onionLayers: paper.Layer[] = [];
+
   // Layer management: maps logical layer IDs to Paper.js layers.
   // The active layer is the single source of truth for hit-testable shapes;
   // we deliberately do not maintain a separate spatial index. All neighbor
@@ -347,11 +352,18 @@ export class PaperRenderer {
    * Uses Paper's view bounds and view matrix so output matches on-screen art.
    */
   exportViewAsSvgString(): string {
-    return paper.project.exportSVG({
-      bounds: "view",
-      asString: true,
-      precision: 4,
-    }) as string;
+    // Hide onion-skin ghosts for the export; they are not document content.
+    const prevVisibility = this.onionLayers.map((l) => l.visible);
+    for (const layer of this.onionLayers) layer.visible = false;
+    try {
+      return paper.project.exportSVG({
+        bounds: "view",
+        asString: true,
+        precision: 4,
+      }) as string;
+    } finally {
+      this.onionLayers.forEach((l, i) => (l.visible = prevVisibility[i]));
+    }
   }
 
   // ============================================================
@@ -477,6 +489,12 @@ export class PaperRenderer {
     return layer.exportJSON() as string;
   }
 
+  /** True when the layer has no children (lets empty layers share one content id). */
+  isLayerEmpty(id: string): boolean {
+    const layer = this.layerMap.get(id);
+    return !layer || layer.children.length === 0;
+  }
+
   /**
    * Restore the full layer structure from a history entry: create missing
    * Paper layers, drop extras, sync name/visibility/z-order, and reimport
@@ -537,6 +555,69 @@ export class PaperRenderer {
       }
     }
 
+    paper.view.update();
+  }
+
+  // ============================================================
+  // Onion Skin
+  // ============================================================
+
+  /** Remove all onion-skin ghost layers. */
+  clearOnionSkin(): void {
+    if (this.onionLayers.length === 0) return;
+    for (const layer of this.onionLayers) layer.remove();
+    this.onionLayers = [];
+    paper.view.update();
+  }
+
+  /**
+   * Replace the onion-skin ghosts. Each ghost is one neighbor frame: its
+   * visible layers' content JSONs (bottom→top), rendered flat-tinted at the
+   * given opacity. Ghost layers are locked and sit below all artwork.
+   */
+  setOnionSkin(
+    ghosts: Array<{ jsons: string[]; opacity: number; color: string }>,
+  ): void {
+    // Creating paper.Layer activates it; remember the real active layer.
+    const prevActive = this.activeLayerId
+      ? this.layerMap.get(this.activeLayerId)
+      : null;
+
+    for (const layer of this.onionLayers) layer.remove();
+    this.onionLayers = [];
+
+    for (const ghost of ghosts) {
+      const ghostLayer = new paper.Layer();
+      ghostLayer.locked = true;
+
+      for (const json of ghost.jsons) {
+        if (!json) continue;
+        // importJSON of a Layer payload fills the receiving layer; use a
+        // scratch layer so multiple document layers combine into one ghost.
+        const scratch = new paper.Layer();
+        scratch.importJSON(json);
+        ghostLayer.addChildren([...scratch.children]);
+        scratch.remove();
+      }
+
+      const tint = new paper.Color(ghost.color);
+      for (const child of ghostLayer.children) {
+        if (child instanceof paper.Path || child instanceof paper.CompoundPath) {
+          if (child.fillColor) child.fillColor = tint.clone();
+          if (child.strokeColor) child.strokeColor = tint.clone();
+        }
+      }
+      ghostLayer.opacity = ghost.opacity;
+      this.onionLayers.push(ghostLayer);
+    }
+
+    // sendToBack puts the last-sent layer lowest, so walk ghosts in reverse:
+    // callers pass farthest-first, and farther ghosts belong underneath.
+    for (const layer of [...this.onionLayers].reverse()) {
+      layer.sendToBack();
+    }
+
+    prevActive?.activate();
     paper.view.update();
   }
 
@@ -1494,6 +1575,8 @@ export class PaperRenderer {
     targetLayer.activate();
 
     for (const layer of [...paper.project.layers]) {
+      // Onion-skin ghosts are view furniture, not document content.
+      if (this.onionLayers.includes(layer)) continue;
       for (const child of [...layer.children]) {
         targetLayer.addChild(child);
       }
