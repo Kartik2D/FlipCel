@@ -166,14 +166,47 @@ export class Camera {
 
   /**
    * Exponential smoothing toward target (call once per frame).
+   *
+   * @returns true while the present pose is still moving. Once the remaining
+   * delta is below visual thresholds (sub-1/100th of a screen pixel), the
+   * present pose snaps exactly onto the target and subsequent calls return
+   * false — callers use this to skip all redraw work while the camera idles.
    */
-  stepLerp(dtSeconds: number): void {
-    if (dtSeconds <= 0 || !Number.isFinite(dtSeconds)) return;
+  stepLerp(dtSeconds: number): boolean {
+    if (dtSeconds <= 0 || !Number.isFinite(dtSeconds)) return false;
+
+    const dx = this.targetX - this.x;
+    const dy = this.targetY - this.y;
+    const dz = this.targetZoom - this._zoom;
+    let dr = this.targetRotation - this._rotation;
+    while (dr > Math.PI) dr -= 2 * Math.PI;
+    while (dr < -Math.PI) dr += 2 * Math.PI;
+
+    // Thresholds chosen so the residual error is invisible on screen.
+    const posEps = 0.01 / Math.max(this._zoom, 1e-6);
+    const zoomEps = Math.max(1e-7, this.targetZoom * 1e-5);
+    const rotEps = 1e-5;
+
+    if (
+      Math.abs(dx) < posEps &&
+      Math.abs(dy) < posEps &&
+      Math.abs(dz) < zoomEps &&
+      Math.abs(dr) < rotEps
+    ) {
+      const changed = dx !== 0 || dy !== 0 || dz !== 0 || dr !== 0;
+      this.x = this.targetX;
+      this.y = this.targetY;
+      this._zoom = this.targetZoom;
+      this._rotation = this.targetRotation;
+      return changed;
+    }
+
     const k = 1 - Math.exp(-this.lerpLambda * Math.min(dtSeconds, 0.25));
-    this.x += (this.targetX - this.x) * k;
-    this.y += (this.targetY - this.y) * k;
-    this._zoom += (this.targetZoom - this._zoom) * k;
+    this.x += dx * k;
+    this.y += dy * k;
+    this._zoom += dz * k;
     this._rotation = lerpAngle(this._rotation, this.targetRotation, k);
+    return true;
   }
 
   screenToWorld(screenX: number, screenY: number): Point2D {

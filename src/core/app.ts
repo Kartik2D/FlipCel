@@ -117,6 +117,10 @@ class App {
   private rotationSnapRaf: number | null = null;
 
   private cameraLoopLastMs = performance.now();
+  /** One-shot flag: forces the next camera-loop frame to repaint even when the camera is settled. */
+  private redrawRequested = true;
+  private lastDisplayZoom = Number.NaN;
+  private lastDisplayRotation = Number.NaN;
   private functionsPanelDismissed = false;
   private lastFunctionsPanelKey = "";
   private selectionGestureActive = false;
@@ -202,7 +206,7 @@ class App {
       this.chromeOverlay,
     );
     this.magnetController = new MagnetController(this.paperRenderer, this.camera);
-    this.historyManager = new HistoryManager();
+    this.historyManager = new HistoryManager(this.paperRenderer);
     this.selectionController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.directSelectController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.directSelectController.setReconcileCallback((items) =>
@@ -230,6 +234,19 @@ class App {
     viewOverlayStore.subscribeImmediate((prefs) => {
       this.uiOverlay.setViewOverlayPrefs(prefs);
       this.redrawActiveSelectionUI();
+    });
+
+    // Keep the layer panel's active row honest: the Stage row can only be
+    // "active" while it is actually selected. Without this, deselecting the
+    // stage (e.g. by switching tools) left activeLayerId stuck on "stage"
+    // while drawing landed on whatever Paper layer was active before.
+    stageSelectedStore.subscribe((selected) => {
+      if (selected) return;
+      if (layerStore.get().activeLayerId !== STAGE_LAYER_ID) return;
+      const paperActiveId = this.paperRenderer.getActiveLayerId();
+      if (paperActiveId) {
+        layerStore.update((s) => ({ ...s, activeLayerId: paperActiveId }));
+      }
     });
 
     selectionStore.subscribeImmediate((selection) => {
@@ -448,6 +465,7 @@ class App {
       this.resizeCanvases();
       configStore.set(this.config); // Propagates to all subscribers
       this.redrawActiveSelectionUI();
+      this.requestRedraw();
     });
 
     // Take initial history snapshot (empty canvas state)
@@ -459,21 +477,39 @@ class App {
   }
 
   /**
+   * Request a full repaint (Paper view matrix, overlays, selection chrome)
+   * on the next camera-loop frame. Cheap to call repeatedly.
+   */
+  requestRedraw(): void {
+    this.redrawRequested = true;
+  }
+
+  /**
    * Camera: targets update on input; present pose eases toward target each frame for Paper + UI.
+   *
+   * The loop itself runs forever, but all redraw work is gated: when the
+   * camera pose is settled and nothing requested a repaint, a frame is a
+   * no-op. Event-driven paths (tool handlers, store subscriptions, Paper
+   * mutations) repaint their own surfaces directly, so idle frames cost
+   * nothing — previously this loop repainted the entire document at 60fps
+   * even when nothing changed.
    */
   private startCameraFrameLoop() {
     const step = (now: number) => {
       const dt = Math.min(0.05, (now - this.cameraLoopLastMs) / 1000);
       this.cameraLoopLastMs = now;
-      this.camera.stepLerp(dt);
-      this.paperRenderer.applyCamera();
-      // Grid + brush ring live on #ui-canvas; stage fill on #stage-canvas.
-      this.uiOverlay.redraw();
-      this.stageOverlay.redraw();
-      // Selection chrome lives on a separate canvas; repaint independently.
-      this.redrawActiveSelectionUI();
-      this.syncFunctionsPanelPosition();
-      this.updateDisplays();
+      const cameraMoved = this.camera.stepLerp(dt);
+      if (cameraMoved || this.redrawRequested) {
+        this.redrawRequested = false;
+        this.paperRenderer.applyCamera();
+        // Grid + brush ring live on #ui-canvas; stage fill on #stage-canvas.
+        this.uiOverlay.redraw();
+        this.stageOverlay.redraw();
+        // Selection chrome lives on a separate canvas; repaint independently.
+        this.redrawActiveSelectionUI();
+        this.syncFunctionsPanelPosition();
+        this.updateDisplays();
+      }
       requestAnimationFrame(step);
     };
     this.cameraLoopLastMs = performance.now();
@@ -524,6 +560,7 @@ class App {
     document.documentElement.style.colorScheme = mode;
     this.uiOverlay.redraw();
     this.redrawActiveSelectionUI();
+    this.requestRedraw();
   }
 
   /**
@@ -557,6 +594,9 @@ class App {
   private updateDisplays() {
     const zoom = this.camera.getZoomPercent();
     const rotation = this.camera.getRotationDegrees();
+    if (zoom === this.lastDisplayZoom && rotation === this.lastDisplayRotation) return;
+    this.lastDisplayZoom = zoom;
+    this.lastDisplayRotation = rotation;
     this.topBarPanels.forEach((panel) => {
       panel.zoomLevel = zoom;
       panel.rotation = rotation;
@@ -618,12 +658,16 @@ class App {
 
       this.camera.rotateAt(step, cx, cy);
       this.camera.syncPresentPanRotationFromTarget();
+      // Present pose was mutated directly (bypassing stepLerp), so the gated
+      // camera loop won't detect motion on its own.
+      this.requestRedraw();
 
       if (t < 1) {
         this.rotationSnapRaf = requestAnimationFrame(tick);
       } else {
         this.rotationSnapRaf = null;
         this.camera.syncPresentPanRotationFromTarget();
+        this.requestRedraw();
       }
     };
 
@@ -1204,6 +1248,7 @@ class App {
     this.pixelCanvasManager.clear();
     configStore.set(this.config); // Propagates to all subscribers
     this.redrawActiveSelectionUI();
+    this.requestRedraw();
     // Resizing #ui-canvas (via resizeCanvases -> uiOverlay.updateConfig) can
     // invalidate in-flight pointer captures on some mobile browsers. Clear
     // any stale input state so the next pointerdown starts a clean stroke.
@@ -1278,17 +1323,19 @@ class App {
 
   private onUndo() {
     if (this.historyManager.undo()) {
-      this.selectionController.clearSelection();
+      this.selectionController.discardSelection();
       this.directSelectController.clearSelection();
       this.functionsPanel.close("hidden");
+      this.requestRedraw();
     }
   }
 
   private onRedo() {
     if (this.historyManager.redo()) {
-      this.selectionController.clearSelection();
+      this.selectionController.discardSelection();
       this.directSelectController.clearSelection();
       this.functionsPanel.close("hidden");
+      this.requestRedraw();
     }
   }
 
@@ -1454,6 +1501,10 @@ class App {
         l.id === layerId ? { ...l, visible: newVisibility } : l
       ),
     }));
+
+    // Visibility is part of the layer-structure snapshot, so it participates
+    // in undo/redo like every other layer operation.
+    this.historyManager.snapshot();
   }
 
   private onFunctionInvoke(functionId: string) {

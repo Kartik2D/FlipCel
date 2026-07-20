@@ -3291,6 +3291,14 @@ export class InkwellLayersPanel extends FloatingPanel {
   @state() private editingLayerId: string | null = null;
   @state() private editingName = "";
   private sortable: Sortable | null = null;
+  /**
+   * DOM position of the dragged row at drag start (may be a Lit comment
+   * marker). Used to undo SortableJS's DOM move in onEnd so Lit's keyed
+   * repeat stays the sole owner of the list DOM — without this, Sortable's
+   * mutation desyncs Lit's internal part markers and rows duplicate/vanish
+   * on the next render.
+   */
+  private dragOriginNextSibling: Node | null = null;
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -3578,8 +3586,9 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   private deleteLayer(layerId: string, e: Event) {
     e.stopPropagation();
-    // Don't allow deleting the last layer
-    if (this.layers.value.layers.length <= 1) return;
+    // Don't allow deleting the last regular layer (Stage doesn't count).
+    const nonStage = this.layers.value.layers.filter((l) => l.kind !== "stage");
+    if (nonStage.length <= 1) return;
     this.emit("layer-delete", layerId);
   }
 
@@ -3620,28 +3629,47 @@ export class InkwellLayersPanel extends FloatingPanel {
       chosenClass: "sortable-chosen",
       dragClass: "sortable-drag",
       forceFallback: false,
-      onStart: () => {
+      onStart: (evt) => {
         this.cancelLayerRename();
+        this.dragOriginNextSibling = evt.item.nextSibling;
+      },
+      onMove: (evt) => {
+        // Stage must stay at the bottom: block drops below the stage row
+        // during the drag instead of "correcting" the order afterwards.
+        const related = evt.related as HTMLElement | null;
+        if (
+          related?.classList?.contains("layer-item--stage") &&
+          evt.willInsertAfter
+        ) {
+          return false;
+        }
+        return true;
       },
       onEnd: (evt) => {
         const { oldIndex, newIndex } = evt;
-        if (
-          oldIndex == null ||
-          newIndex == null ||
-          oldIndex === newIndex
-        ) {
-          return;
-        }
+        const originNext = this.dragOriginNextSibling;
+        this.dragOriginNextSibling = null;
 
-        // SortableJS has already mutated the DOM into the new visual order.
-        // Read the new top-to-bottom order straight from the DOM so we don't
-        // have to second-guess SortableJS's own index math.
+        // Read the new top-to-bottom order from the DOM while Sortable's
+        // mutation is still in place.
         const list = evt.to as HTMLElement;
         let orderedTopToBottom = Array.from(
           list.querySelectorAll<HTMLElement>(".layer-item"),
         )
           .map((el) => el.dataset.layerId)
           .filter((id): id is string => Boolean(id));
+
+        // Undo Sortable's DOM move unconditionally: Lit's keyed repeat owns
+        // this DOM, and the store update below re-renders the new order
+        // through Lit. Leaving Sortable's mutation in place corrupts Lit's
+        // part markers (duplicated / vanishing rows).
+        if (originNext?.parentNode === list || originNext === null) {
+          list.insertBefore(evt.item, originNext);
+        }
+
+        if (oldIndex == null || newIndex == null || oldIndex === newIndex) {
+          return;
+        }
 
         if (orderedTopToBottom.length !== this.layers.value.layers.length) {
           return;

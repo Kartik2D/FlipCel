@@ -469,6 +469,78 @@ export class PaperRenderer {
   }
 
   /**
+   * Serialize a logical layer's content for history snapshots.
+   */
+  exportLayerJSON(id: string): string | null {
+    const layer = this.layerMap.get(id);
+    if (!layer) return null;
+    return layer.exportJSON() as string;
+  }
+
+  /**
+   * Restore the full layer structure from a history entry: create missing
+   * Paper layers, drop extras, sync name/visibility/z-order, and reimport
+   * content for layers whose `json` is provided (undefined = unchanged,
+   * skip the expensive reimport).
+   */
+  restoreLayersSnapshot(
+    layers: Array<{
+      id: string;
+      name: string;
+      visible: boolean;
+      /** Layer content JSON; undefined means "content unchanged, keep as is". */
+      json?: string;
+    }>,
+    activeLayerId: string,
+  ): void {
+    const wantedIds = new Set(layers.map((l) => l.id));
+
+    // Remove Paper layers that no longer exist in the target state.
+    for (const [id, layer] of [...this.layerMap.entries()]) {
+      if (!wantedIds.has(id)) {
+        layer.remove();
+        this.layerMap.delete(id);
+      }
+    }
+
+    let contentChanged = false;
+    for (const wanted of layers) {
+      let layer = this.layerMap.get(wanted.id);
+      if (!layer) {
+        layer = new paper.Layer();
+        this.layerMap.set(wanted.id, layer);
+      }
+      layer.name = wanted.name;
+      layer.visible = wanted.visible;
+      if (wanted.json !== undefined) {
+        layer.removeChildren();
+        if (wanted.json) layer.importJSON(wanted.json);
+        contentChanged = true;
+      }
+    }
+
+    // Restored content has fresh item ids; stale markers would never match
+    // (and would otherwise accumulate forever across undo/redo cycles).
+    if (contentChanged) this.markerByItemId.clear();
+
+    this.reorderLayers(layers.map((l) => l.id));
+
+    const activeId =
+      activeLayerId !== STAGE_LAYER_ID && this.layerMap.has(activeLayerId)
+        ? activeLayerId
+        : layers[layers.length - 1]?.id ?? null;
+    if (activeId) {
+      const activeLayer = this.layerMap.get(activeId);
+      if (activeLayer) {
+        this.activeLayerId = activeId;
+        activeLayer.activate();
+      }
+    }
+
+    paper.view.update();
+  }
+
+  /**
    * Initialize default layer - called once on app startup
    * Maps the initial Paper.js activeLayer to the given ID
    */
@@ -515,6 +587,16 @@ export class PaperRenderer {
     for (const layer of orderedLayers) {
       layer.bringToFront();
     }
+
+    // bringToFront() re-inserts layers via remove+insert; when the active
+    // layer is removed, Paper silently moves project._activeLayer to a
+    // sibling and it stays there after reinsertion. Re-activate the layer we
+    // actually track — otherwise drawing lands on the wrong (old) layer
+    // right after adding or reordering layers.
+    const active = this.activeLayerId
+      ? this.layerMap.get(this.activeLayerId)
+      : null;
+    active?.activate();
 
     paper.view.update();
     return true;

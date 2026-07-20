@@ -1,17 +1,36 @@
 /**
  * History Manager - Undo/Redo System
  *
- * Manages undo/redo functionality using Paper.js layer snapshots.
- * Each action that modifies the canvas (addPath, subtractPath, placeSelection, etc.)
- * creates a snapshot that can be restored.
+ * Each snapshot captures the complete layer structure (order, names,
+ * visibility, active layer) plus per-layer content JSON, so undo/redo
+ * restores layer operations (add/delete/reorder/rename/visibility) as well
+ * as drawing edits.
  *
- * Uses JSON serialization of Paper.js layer state for efficient storage.
+ * Memory: only the active layer is re-exported on each snapshot; all other
+ * layers reuse the cached JSON string from their last export by reference.
+ * Fifty entries therefore cost roughly "one copy of the document plus one
+ * string per edit", not fifty copies of everything.
  */
 import paper from "paper";
-import { Store, stageStore } from "./stores";
+import {
+  Store,
+  stageStore,
+  layerStore,
+  stageSelectedStore,
+  STAGE_LAYER_ID,
+  type Layer,
+} from "./stores";
+import type { PaperRenderer } from "./paper-renderer";
+
+interface HistoryLayer extends Layer {
+  /** Content JSON for regular layers; undefined for the stage row. */
+  json?: string;
+}
 
 interface HistoryEntry {
-  layerJSON: string;
+  /** Bottom-to-top, includes the stage row (mirrors layerStore). */
+  layers: HistoryLayer[];
+  activeLayerId: string;
   timestamp: number;
   /** Stage fill color at this snapshot (undo/redo restores it). */
   stageColor: string;
@@ -38,40 +57,58 @@ export class HistoryManager {
   private index = -1;
   private maxSize = 50;
   private isRestoring = false;
+  /** Last-known content JSON per layer id (kept in sync at every snapshot/restore). */
+  private jsonCache = new Map<string, string>();
+  private renderer: PaperRenderer;
 
-  constructor() {
-    // Take initial snapshot on first call to snapshot()
+  constructor(renderer: PaperRenderer) {
+    this.renderer = renderer;
   }
 
   /**
-   * Take a snapshot of the current layer state
-   * Call this after any action that modifies the canvas
+   * Take a snapshot of the current document state.
+   * Call this after any action that modifies the canvas or the layer list.
    */
   snapshot(): void {
     // Don't snapshot while restoring (prevents double-entries)
     if (this.isRestoring) return;
 
-    const json = paper.project.activeLayer.exportJSON();
-    const stageColor = stageStore.get().color;
+    const state = layerStore.get();
+    const activePaperLayerId = this.renderer.getActiveLayerId();
+
+    const layers: HistoryLayer[] = state.layers.map((layer) => {
+      if (layer.kind === "stage") return { ...layer };
+
+      // Only the active layer can have changed since the last snapshot; every
+      // other layer reuses its cached export by reference.
+      let json = this.jsonCache.get(layer.id);
+      if (layer.id === activePaperLayerId || json === undefined) {
+        json = this.renderer.exportLayerJSON(layer.id) ?? "";
+        this.jsonCache.set(layer.id, json);
+      }
+      return { ...layer, json };
+    });
+
+    // Drop cache entries for layers that no longer exist.
+    const liveIds = new Set(state.layers.map((l) => l.id));
+    for (const id of [...this.jsonCache.keys()]) {
+      if (!liveIds.has(id)) this.jsonCache.delete(id);
+    }
 
     // Truncate any redo entries (we're starting a new branch)
     this.stack = this.stack.slice(0, this.index + 1);
 
-    // Add new entry
     this.stack.push({
-      layerJSON: json,
+      layers,
+      activeLayerId: state.activeLayerId,
       timestamp: Date.now(),
-      stageColor,
+      stageColor: stageStore.get().color,
     });
 
     // Enforce max size (remove oldest entries)
     if (this.stack.length > this.maxSize) {
       this.stack.shift();
-    } else {
-      this.index++;
     }
-
-    // Ensure index is valid
     this.index = this.stack.length - 1;
 
     this.updateState();
@@ -103,30 +140,18 @@ export class HistoryManager {
     return true;
   }
 
-  /**
-   * Check if undo is available
-   */
   canUndo(): boolean {
     return this.index > 0;
   }
 
-  /**
-   * Check if redo is available
-   */
   canRedo(): boolean {
     return this.index < this.stack.length - 1;
   }
 
-  /**
-   * Get the number of entries in the history
-   */
   getStackSize(): number {
     return this.stack.length;
   }
 
-  /**
-   * Get the current position in the history
-   */
   getCurrentIndex(): number {
     return this.index;
   }
@@ -137,11 +162,12 @@ export class HistoryManager {
   clear(): void {
     this.stack = [];
     this.index = -1;
+    this.jsonCache.clear();
     this.updateState();
   }
 
   /**
-   * Restore the layer state at the current index
+   * Restore the document state at the current index.
    */
   private restore(): void {
     if (this.index < 0 || this.index >= this.stack.length) return;
@@ -149,24 +175,41 @@ export class HistoryManager {
     this.isRestoring = true;
 
     try {
-      // Clear current layer
-      paper.project.activeLayer.removeChildren();
-
-      // Import the saved state
       const entry = this.stack[this.index];
-      paper.project.activeLayer.importJSON(entry.layerJSON);
+      const regularLayers = entry.layers.filter((l) => l.kind !== "stage");
+
+      // Only reimport layers whose content actually differs from what is on
+      // canvas right now (the cache always mirrors live content at history
+      // boundaries, and restores only happen at history boundaries).
+      this.renderer.restoreLayersSnapshot(
+        regularLayers.map((layer) => ({
+          id: layer.id,
+          name: layer.name,
+          visible: layer.visible,
+          json:
+            this.jsonCache.get(layer.id) === layer.json ? undefined : layer.json,
+        })),
+        entry.activeLayerId,
+      );
+
+      // Sync the cache to the restored state.
+      this.jsonCache = new Map(
+        regularLayers.map((layer) => [layer.id, layer.json ?? ""]),
+      );
+
+      layerStore.set({
+        layers: entry.layers.map(({ json: _json, ...rest }) => rest),
+        activeLayerId: entry.activeLayerId,
+      });
+      stageSelectedStore.set(entry.activeLayerId === STAGE_LAYER_ID);
       stageStore.update((s) => ({ ...s, color: entry.stageColor ?? "#ffffff" }));
 
-      // Update view
       paper.view.update();
     } finally {
       this.isRestoring = false;
     }
   }
 
-  /**
-   * Update the observable history state
-   */
   private updateState(): void {
     historyStateStore.set({
       canUndo: this.canUndo(),
@@ -174,4 +217,3 @@ export class HistoryManager {
     });
   }
 }
-
