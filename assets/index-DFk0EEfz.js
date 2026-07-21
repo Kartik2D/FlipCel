@@ -2430,10 +2430,11 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       /* Special case: fixed-size host where the FACE is a true circle. The
          block is taller than it is wide by the 3D depth, so the panel shell
          reads as a slightly elongated puck while the face stays circular. */
-      --panel-size: 192px;
+      --wheel-size: 180px;
+      --wheel-grab-outset: 16px;
+      --panel-size: 224px;
       --panel-width: var(--panel-size);
       --panel-min-width: 0;
-      --wheel-size: 148px;
       --chamber-size: 19px;
       --chamber-inset: 9px;
       height: calc(var(--panel-size) + var(--block-depth));
@@ -2453,6 +2454,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 0;
     }
 
     .panel-form {
@@ -2473,18 +2475,27 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       height: var(--wheel-size);
       border-radius: 50%;
       background: var(--block-depth-color, var(--inkwell-panel-depth));
-      cursor: grab;
-      touch-action: none;
       -webkit-tap-highlight-color: transparent;
     }
 
-    .wheel.spinning {
+    /* Hit target extends past the visual rim into the face margin (panel drag zone). */
+    .wheel-grab {
+      position: absolute;
+      inset: calc(-1 * var(--wheel-grab-outset));
+      border-radius: 50%;
+      z-index: 1;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .wheel.spinning .wheel-grab {
       cursor: grabbing;
     }
 
     .barrel {
       position: absolute;
       inset: 0;
+      pointer-events: none;
       /* Chamber-to-chamber motion for playback / snapping: fast approach,
          ~20% swing past the notch peaking mid-transition, then a soft settle.
          Live drag and coasting are untransitioned so the barrel sticks to
@@ -2528,6 +2539,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       align-items: stretch;
       background: var(--inkwell-accent, #4a6fb5);
       z-index: 2;
+      pointer-events: none;
     }
 
     .hub-play {
@@ -2545,6 +2557,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       display: grid;
       place-items: center;
       cursor: pointer;
+      pointer-events: auto;
       -webkit-tap-highlight-color: transparent;
     }
 
@@ -2578,12 +2591,6 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
             <div class="wheel-wrap">
               <div
                 class="wheel ${this.spinning?`spinning`:``} ${this.coasting?`coasting`:``}"
-                data-interactive
-                title="Drag or flick to spin the playhead"
-                @pointerdown=${this.onWheelDown}
-                @pointermove=${this.onWheelMove}
-                @pointerup=${this.onWheelUp}
-                @pointercancel=${this.onWheelUp}
               >
                 <div class="barrel" style="transform: rotate(${this.rotationDeg}deg)">
                   ${t.map(e=>Z`
@@ -2594,6 +2601,15 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
                       ></div>
                     `)}
                 </div>
+                <div
+                  class="wheel-grab"
+                  data-interactive
+                  title="Drag or flick to spin the playhead"
+                  @pointerdown=${this.onWheelDown}
+                  @pointermove=${this.onWheelMove}
+                  @pointerup=${this.onWheelUp}
+                  @pointercancel=${this.onWheelUp}
+                ></div>
                 <div class="hub-pill">
                   <button
                     type="button"
