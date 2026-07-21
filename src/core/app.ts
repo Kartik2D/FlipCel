@@ -359,6 +359,7 @@ class App {
       panel.addEventListener("rotate-reset", () => this.onDockRotationReset());
       panel.addEventListener("tool-cycle", () => this.onToolCycle());
       panel.addEventListener("mode-cycle", () => this.onModeCycle());
+      panel.addEventListener("onion-toggle", () => this.onOnionToggle());
     });
     this.universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {
       this.onAliasFixToggle((e as CustomEvent<boolean>).detail);
@@ -398,12 +399,6 @@ class App {
       this.scheduleAutosave();
     });
     this.layersPanel.addEventListener("play-toggle", () => this.onPlayToggle());
-    this.layersPanel.addEventListener("onion-toggle", () => {
-      // Commit live edits first so the ghosts compare against what's on screen.
-      this.commitLiveEdits();
-      this.documentManager.setOnionSkin(!this.documentManager.isOnionSkinEnabled());
-      this.requestRedraw();
-    });
 
     // Layers panel events
     this.layersPanel.addEventListener("layer-add", (e: Event) => {
@@ -804,8 +799,17 @@ class App {
   private onToolStart(point: Point, tool: ToolId) {
     if (tool === "pan") return;
 
-    // Editing while the animation plays would race the frame loader.
-    if (this.documentManager.isPlaying()) this.documentManager.setPlaying(false);
+    // Select/magnet manipulate live Paper items, which the frame loader
+    // replaces on every playhead move — those still stop playback. Pixel
+    // tools (brush/lasso/shapes) draw on their own canvas and commit
+    // atomically on release, so they can run while the animation plays
+    // (the stroke lands on whichever frame is current at release).
+    if (
+      this.documentManager.isPlaying() &&
+      (tool === "select" || tool === "direct-select" || tool === "magnet")
+    ) {
+      this.documentManager.setPlaying(false);
+    }
 
     if (tool !== "select" && tool !== "direct-select") {
       stageSelectedStore.set(false);
@@ -1750,6 +1754,13 @@ class App {
       this.historyManager.snapshot();
       this.requestRedraw();
     }
+  }
+
+  private onOnionToggle() {
+    // Commit live edits first so the ghosts compare against what's on screen.
+    this.commitLiveEdits();
+    this.documentManager.setOnionSkin(!this.documentManager.isOnionSkinEnabled());
+    this.requestRedraw();
   }
 
   private onPlayToggle() {

@@ -34,7 +34,7 @@ interface MergePassResult {
 export class PaperRenderer {
   private config: CanvasConfig;
   private camera: Camera | null = null;
-  private aliasFixEnabled = true;
+  private aliasFixEnabled = false;
   /** Legacy fixed width in world space when there is no camera. */
   private readonly aliasFixStrokeWidth = 0.5;
   /** Target on-screen width (CSS px) of the same-color “alias fix” stroke; world width = this / camera.zoom. */

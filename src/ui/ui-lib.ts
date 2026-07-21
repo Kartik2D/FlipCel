@@ -78,6 +78,10 @@ const PHOSPHOR_ICONS: Record<string, string> = {
     '<rect x="28" y="56" width="200" height="144" rx="12" stroke="currentColor" stroke-width="16" fill="none"/><path d="M28 92h200M28 164h200" stroke="currentColor" stroke-width="12" fill="none"/><path d="M76 56v36M128 56v36M180 56v36M76 164v36M128 164v36M180 164v36" stroke="currentColor" stroke-width="12" fill="none"/>',
   "jog-wheel":
     '<circle cx="128" cy="43" r="20"/><circle cx="188" cy="68" r="20"/><circle cx="213" cy="128" r="20"/><circle cx="188" cy="188" r="20"/><circle cx="128" cy="213" r="20"/><circle cx="68" cy="188" r="20"/><circle cx="43" cy="128" r="20"/><circle cx="68" cy="68" r="20"/><circle cx="128" cy="128" r="12"/>',
+  "grid-four":
+    '<rect x="36" y="36" width="80" height="80" rx="10"/><rect x="140" y="36" width="80" height="80" rx="10"/><rect x="36" y="140" width="80" height="80" rx="10"/><rect x="140" y="140" width="80" height="80" rx="10"/>',
+  "onion-skin":
+    '<circle cx="92" cy="128" r="56" opacity="0.35"/><circle cx="160" cy="128" r="56" stroke="currentColor" stroke-width="16" fill="none"/>',
 };
 
 const PANEL_ICON_MAP: Record<string, string> = {
@@ -2530,7 +2534,7 @@ const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
 type TopBarSide = "left" | "right";
 
 /** Which dock variant a `<inkwell-top-bar-panel>` instance renders. */
-type TopBarVariant = "panels" | "info";
+type TopBarVariant = "panels" | "info" | "view";
 
 /** Quick-info chip kinds shown in the info-variant dock. */
 type DockInfoChip = "zoom" | "angle" | "mode";
@@ -2566,6 +2570,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
    *   panels — the floating-panel toggle buttons (default).
    *   info   — a compact quick-info dock (zoom/angle on the left, mode on the right).
    *            Anchors itself just inside the matching panels dock.
+   *   view   — view-option toggles (grid, onion skin); centered at the top.
    */
   @property({ type: String, reflect: true }) variant: TopBarVariant = "panels";
   @property({ type: Number }) zoomLevel = 100;
@@ -2578,6 +2583,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
   private tool = new StoreController(this, toolStore);
   private settings = new StoreController(this, toolSettingsStore);
   private modifiers = new StoreController(this, modifiersStore);
+  /** View-variant state: grid overlay prefs + onion skin (from the timeline). */
+  private viewOverlay = new StoreController(this, viewOverlayStore);
+  private dockTimeline = new StoreController(this, timelineStore);
   private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
   private readonly panelVisibilityChangeHandler = (e: Event) =>
     this.onPanelVisibilityChange(e as CustomEvent<{ id: string; visible: boolean }>);
@@ -2621,6 +2629,14 @@ export class InkwellTopBarPanel extends FloatingPanel {
     :host([variant="info"]) {
       width: auto;
       max-width: min(calc(50vw - 16px), calc(100vw - 32px));
+    }
+
+    /* View-options dock: centered along the top edge, hugs its two buttons. */
+    :host([variant="view"]) {
+      --panel-left: 50%;
+      --panel-right: auto;
+      transform: translateX(-50%);
+      width: auto;
     }
 
     .face {
@@ -2820,9 +2836,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
     super.connectedCallback();
     this.pinned = true;
     this.showPinnedClose = false;
-    if (this.variant === "info") {
-      // The info dock has no panel-toggle buttons; it just shows status chips
-      // and anchors itself to the matching panels dock. Skip panel state setup.
+    if (this.variant !== "panels") {
+      // Info/view docks have no panel-toggle buttons; skip panel state setup.
       return;
     }
     this.initializeAllPanelsHidden();
@@ -2832,7 +2847,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    if (this.variant === "info") {
+    if (this.variant !== "panels") {
       this.teardownSiblingResizeObserver();
       return;
     }
@@ -2849,6 +2864,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
       this.attachToSiblingPanelsDock();
       return;
     }
+    if (this.variant === "view") return;
     this.positionAllVisiblePanels();
   }
 
@@ -3006,6 +3022,41 @@ export class InkwellTopBarPanel extends FloatingPanel {
     `;
   }
 
+  /** View-options dock: grid + onion-skin toggle buttons. */
+  private renderViewDock() {
+    const gridOn = this.viewOverlay.value.gridEnabled;
+    const onionOn = this.dockTimeline.value.onionSkin;
+    return html`
+      <div class="block">
+        <div class="face">
+          <div class="unified-dock">
+            <div class="bar">
+              <blocky-button
+                class="dock-btn-icon"
+                title="Show grid"
+                data-interactive
+                stretch
+                ?active=${gridOn}
+                @click=${() =>
+                  this.viewOverlay.update((v) => ({ ...v, gridEnabled: !v.gridEnabled }))}
+                ><span class="btn-content">${phosphorIcon("grid-four", 14)}</span></blocky-button
+              >
+              <blocky-button
+                class="dock-btn-icon"
+                title="Onion skin (ghost neighboring frames)"
+                data-interactive
+                stretch
+                ?active=${onionOn}
+                @click=${() => this.emitDock("onion-toggle")}
+                ><span class="btn-content">${phosphorIcon("onion-skin", 14)}</span></blocky-button
+              >
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   private initializeAllPanelsHidden() {
     this.panelVisibility = this.panelVisibility.map((panel) => {
       const el = document.getElementById(panel.id) as ToggleablePanel | null;
@@ -3133,6 +3184,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   render() {
     if (this.variant === "info") return this.renderInfoDock();
+    if (this.variant === "view") return this.renderViewDock();
     const currentToolName = getTool(this.tool.value).name;
     const sidePanels = this.visiblePanelsForSide();
     return html`
@@ -3168,10 +3220,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
 @customElement("inkwell-universal-panel")
 export class InkwellUniversalPanel extends FloatingPanel {
   @property({ type: Boolean }) brushSizeIndicatorEnabled = true;
-  @property({ type: Boolean }) aliasFixEnabled = true;
+  @property({ type: Boolean }) aliasFixEnabled = false;
 
   private history = new StoreController(this, historyStateStore);
-  private viewOverlay = new StoreController(this, viewOverlayStore);
   private themeMode = new StoreController(this, themeModeStore);
 
   static styles = css`
@@ -3228,18 +3279,6 @@ export class InkwellUniversalPanel extends FloatingPanel {
                 @change=${(e: Event) => {
                   const checked = (e.target as HTMLInputElement).checked;
                   this.themeMode.set(checked ? "dark" : "light");
-                }}
-              />
-            </div>
-
-            <div class="toggle">
-              <span>Show grid</span>
-              <input
-                type="checkbox"
-                .checked=${this.viewOverlay.value.gridEnabled}
-                @change=${(e: Event) => {
-                  const checked = (e.target as HTMLInputElement).checked;
-                  this.viewOverlay.update((v) => ({ ...v, gridEnabled: checked }));
                 }}
               />
             </div>
@@ -4047,9 +4086,6 @@ export class InkwellLayersPanel extends FloatingPanel {
         @click=${() => this.emit("keyframe-add", { blank: true })}>+B</button>
       <button type="button" class="tl-btn" title="Remove keyframe at playhead"
         @click=${() => this.emit("keyframe-remove")}>&#215;K</button>
-      <button type="button" class="tl-btn ${t.onionSkin ? "on" : ""}"
-        title="Onion skin (ghost neighboring frames)"
-        @click=${() => this.emit("onion-toggle")}>&#9789;</button>
       <button type="button" class="tl-btn ${t.playing ? "on" : ""}"
         title=${t.playing ? "Stop" : "Play"}
         @click=${() => this.emit("play-toggle")}
@@ -4242,14 +4278,14 @@ export class InkwellLayersPanel extends FloatingPanel {
 // ============================================================
 
 /** Chambers on the barrel; spinning past one chamber steps one frame. */
-const WHEEL_CHAMBERS = 8;
+const WHEEL_CHAMBERS = 12;
 const WHEEL_DEG_PER_FRAME = 360 / WHEEL_CHAMBERS;
 /** Flick velocity (deg/ms) needed for the wheel to keep coasting on release. */
-const WHEEL_FLICK_MIN_VELOCITY = 0.05;
+const WHEEL_FLICK_MIN_VELOCITY = 0.12;
 /** Coasting stops (and snaps to a chamber) below this velocity (deg/ms). */
-const WHEEL_COAST_STOP_VELOCITY = 0.015;
+const WHEEL_COAST_STOP_VELOCITY = 0.04;
 /** Exponential friction time constant while coasting (ms). */
-const WHEEL_FRICTION_TAU_MS = 650;
+const WHEEL_FRICTION_TAU_MS = 320;
 /** Velocity cap so a hard flick can't scrub the timeline absurdly fast. */
 const WHEEL_MAX_VELOCITY = 1.5;
 
@@ -4268,7 +4304,8 @@ export class InkwellWheelPanel extends FloatingPanel {
   /**
    * The notch (whole chamber count) the barrel last rested on. The frame
    * is always the chamber nearest the right-side marker, so a step is emitted
-   * the moment `round(rotationDeg / 45)` changes — no drag distance to build up.
+   * the moment `round(rotationDeg / degPerFrame)` changes — no drag distance
+   * to build up.
    */
   private lastNotch = 0;
   /** Last frame seen from the store, for wrap-aware playback sync. */
@@ -4297,8 +4334,8 @@ export class InkwellWheelPanel extends FloatingPanel {
       --panel-width: var(--panel-size);
       --panel-min-width: 0;
       --wheel-size: 148px;
-      --chamber-size: 26px;
-      --chamber-inset: 10px;
+      --chamber-size: 19px;
+      --chamber-inset: 9px;
       height: calc(var(--panel-size) + var(--block-depth));
       min-height: calc(var(--panel-size) + var(--block-depth));
       max-height: calc(var(--panel-size) + var(--block-depth));
@@ -4348,9 +4385,11 @@ export class InkwellWheelPanel extends FloatingPanel {
     .barrel {
       position: absolute;
       inset: 0;
-      /* Smooth chamber-to-chamber motion for playback / snapping; live drag
-         and coasting are untransitioned so the barrel sticks to the motion. */
-      transition: transform 90ms linear;
+      /* Chamber-to-chamber motion for playback / snapping: fast approach,
+         ~20% swing past the notch peaking mid-transition, then a soft settle.
+         Live drag and coasting are untransitioned so the barrel sticks to
+         the motion. */
+      transition: transform 350ms cubic-bezier(0.175, 0.885, 0.32, 1.6);
       will-change: transform;
     }
 
@@ -4436,9 +4475,15 @@ export class InkwellWheelPanel extends FloatingPanel {
 
   connectedCallback() {
     super.connectedCallback();
-    this.unsubscribeTimeline = timelineStore.subscribe((t) =>
-      this.syncRotationToFrame(t.currentFrame, t.duration),
-    );
+    this.unsubscribeTimeline = timelineStore.subscribe((t) => {
+      // Playback takes the wheel over instantly: cut a coasting flick dead
+      // so the barrel snaps to following the playhead without winding down.
+      if (t.playing && this.coasting) {
+        this.stopCoasting();
+        this.settleToChamber();
+      }
+      this.syncRotationToFrame(t.currentFrame, t.duration);
+    });
   }
 
   disconnectedCallback() {
