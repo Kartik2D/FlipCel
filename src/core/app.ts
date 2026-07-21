@@ -386,8 +386,11 @@ class App {
       const { blank } = (e as CustomEvent<{ blank: boolean }>).detail;
       this.onKeyframeAdd(blank);
     });
-    this.layersPanel.addEventListener("keyframe-clear", () => this.onKeyframeClear());
     this.layersPanel.addEventListener("keyframe-remove", () => this.onKeyframeRemove());
+    this.layersPanel.addEventListener("keyframe-hold-toggle", (e: Event) => {
+      const { frame, layerId } = (e as CustomEvent<{ frame: number; layerId: string }>).detail;
+      this.onKeyframeHoldToggle(layerId, frame);
+    });
     this.layersPanel.addEventListener("auto-hold-toggle", () => {
       this.documentManager.setAutoHold(!this.documentManager.isAutoHoldEnabled());
     });
@@ -1749,12 +1752,11 @@ class App {
     }
   }
 
-  private onKeyframeClear() {
-    const layerId = this.timelineTargetLayerId();
-    if (!layerId) return;
-    this.selectionController.clearSelection();
-    this.directSelectController.clearSelection();
-    if (this.documentManager.clearKeyframe(layerId, this.documentManager.getCurrentFrame())) {
+  private onKeyframeHoldToggle(layerId: string, frame: number) {
+    // Commit live edits first so extending a hold doesn't clobber an
+    // in-progress drawing on the tapped span.
+    this.commitLiveEdits();
+    if (this.documentManager.toggleKeyframeHold(layerId, frame)) {
       this.historyManager.snapshot();
       this.requestRedraw();
     }

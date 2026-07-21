@@ -3409,11 +3409,39 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .layers-header {
-      display: flex;
+      display: grid;
+      grid-template-columns:
+        var(--layers-side-width, 168px)
+        minmax(0, 1fr)
+        max-content;
       align-items: center;
-      justify-content: space-between;
       gap: 8px;
       min-width: 0;
+    }
+
+    .header-group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .header-left {
+      justify-content: flex-start;
+    }
+
+    .header-left .panel-title {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .header-center {
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .header-right {
+      justify-content: flex-end;
     }
 
     .layer-list {
@@ -3430,7 +3458,6 @@ export class InkwellLayersPanel extends FloatingPanel {
       display: grid;
       grid-template-columns:
         minmax(0, 1fr)
-        var(--layers-control-size)
         var(--layers-control-size);
       align-items: center;
       gap: 4px;
@@ -3472,7 +3499,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       cursor: default;
     }
 
-    .layer-add-button,
+    .layer-action-button,
     .layer-control,
     .layer-name-cell {
       display: flex;
@@ -3485,14 +3512,14 @@ export class InkwellLayersPanel extends FloatingPanel {
       color: var(--block-border, var(--inkwell-panel-border));
     }
 
-    .layer-add-button,
+    .layer-action-button,
     .layer-control {
       padding: 0;
       border: none;
       cursor: pointer;
     }
 
-    .layer-add-button {
+    .layer-action-button {
       width: var(--layers-control-size);
       height: var(--layers-control-size);
       flex: 0 0 auto;
@@ -3501,6 +3528,17 @@ export class InkwellLayersPanel extends FloatingPanel {
       font-weight: 700;
       line-height: 1;
       color: var(--inkwell-text-muted, #666);
+    }
+
+    .layer-action-button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .layer-delete-current:hover:not(:disabled) {
+      background: var(--inkwell-danger, #9a4545);
+      color: var(--inkwell-danger-contrast, #ffffff);
+      filter: none;
     }
 
     .layer-name-cell {
@@ -3516,7 +3554,7 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     .layer-item:hover:not(.active) .layer-control,
     .layer-item:hover:not(.active) .layer-name-cell,
-    .layer-add-button:hover {
+    .layer-action-button:hover:not(:disabled) {
       filter: brightness(0.97);
     }
 
@@ -3561,26 +3599,19 @@ export class InkwellLayersPanel extends FloatingPanel {
       border-color: color-mix(in srgb, var(--inkwell-danger-contrast, #fff) 42%, transparent);
     }
 
-    .visibility-btn,
-    .delete-btn {
+    .visibility-btn {
       width: 100%;
       height: 100%;
       color: inherit;
     }
 
     .visibility-btn svg,
-    .delete-btn svg {
+    .layer-action-button svg {
       display: block;
     }
 
     .layer-item:not(.active) .visibility-btn:hover:not(:disabled) {
       filter: brightness(0.88);
-    }
-
-    .layer-item:not(.active) .delete-btn:hover:not(:disabled) {
-      background: var(--inkwell-danger, #9a4545);
-      color: var(--inkwell-danger-contrast, #ffffff);
-      filter: none;
     }
 
     .visibility-btn.dim {
@@ -3592,29 +3623,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       filter: none;
     }
 
-    .layer-item.active .delete-btn:hover:not(:disabled) {
-      background: var(--inkwell-danger, #9a4545);
-      color: var(--inkwell-danger-contrast, #ffffff);
-      filter: none;
-    }
-
-    .delete-btn:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
-
     /* ---- Timeline (Flash-style frames grid merged into the layer rows) ---- */
-
-    .header-actions {
-      display: flex;
-      flex-direction: row;
-      align-items: center;
-      gap: 4px;
-      flex: 1 1 auto;
-      min-width: 0;
-      flex-wrap: wrap;
-      justify-content: flex-end;
-    }
 
     .tl-btn {
       min-width: 30px;
@@ -4023,6 +4032,8 @@ export class InkwellLayersPanel extends FloatingPanel {
   private scrubbing = false;
   /** Thumb-drag state for the custom frames scrollbar. */
   private scrollbarDrag: { startX: number; startScrollLeft: number } | null = null;
+  /** Last frame-cell tap, for double-tap (toggle keyframe hold) detection. */
+  private lastCellTap: { layerId: string; frame: number; time: number } | null = null;
   private framesResizeObserver: ResizeObserver | null = null;
   /** Last frame seen in updated(), to auto-scroll the playhead into view. */
   private lastSeenFrame = -1;
@@ -4269,11 +4280,11 @@ export class InkwellLayersPanel extends FloatingPanel {
     this.emit("layer-visibility-toggle", layerId);
   }
 
-  private deleteLayer(layerId: string, e: Event) {
-    e.stopPropagation();
+  private deleteCurrentLayer() {
+    const layerId = this.layers.value.activeLayerId;
     // Don't allow deleting the last regular layer (Stage doesn't count).
     const nonStage = this.layers.value.layers.filter((l) => l.kind !== "stage");
-    if (nonStage.length <= 1) return;
+    if (layerId === STAGE_LAYER_ID || nonStage.length <= 1) return;
     this.emit("layer-delete", layerId);
   }
 
@@ -4309,7 +4320,7 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     this.sortable = Sortable.create(list, {
       // Don't initiate drag from controls that should remain clickable.
-      filter: ".visibility-btn, .delete-btn, .layer-name-input, .frame-cell",
+      filter: ".visibility-btn, .layer-name-input, .frame-cell",
       preventOnFilter: false,
       /* iPad / touch: without this, a tap is treated as a drag and @click (select) never wins. */
       delay: 220,
@@ -4383,6 +4394,21 @@ export class InkwellLayersPanel extends FloatingPanel {
           // Don't bubble into the row's layer-select (which switches tools).
           e.stopPropagation();
           this.emit("frame-select", { frame: f, layerId });
+          // Double-tap on a keyframe's span toggles its hold (extend to the
+          // next keyframe / end of animation, or back to a single frame).
+          const now = performance.now();
+          const last = this.lastCellTap;
+          if (
+            last &&
+            last.layerId === layerId &&
+            last.frame === f &&
+            now - last.time < 350
+          ) {
+            this.lastCellTap = null;
+            this.emit("keyframe-hold-toggle", { frame: f, layerId });
+          } else {
+            this.lastCellTap = { layerId, frame: f, time: now };
+          }
         }}
       ></button>
     `);
@@ -4407,21 +4433,24 @@ export class InkwellLayersPanel extends FloatingPanel {
     `;
   }
 
-  /** All timeline controls; live in the single header row next to + layer. */
-  private renderFrameActions() {
+  private renderKeyframeActions() {
     const t = this.timeline.value;
     return html`
       <button type="button" class="tl-btn" title="Insert keyframe (copies current artwork)"
         @click=${() => this.emit("keyframe-add", { blank: false })}>+K</button>
       <button type="button" class="tl-btn" title="Insert blank keyframe"
         @click=${() => this.emit("keyframe-add", { blank: true })}>+B</button>
-      <button type="button" class="tl-btn" title="Clear keyframe at playhead (convert to blank)"
-        @click=${() => this.emit("keyframe-clear")}>&#9675;K</button>
       <button type="button" class="tl-btn" title="Delete keyframe at playhead (frames become empty)"
         @click=${() => this.emit("keyframe-remove")}>&#215;K</button>
       <button type="button" class="tl-btn ${t.autoHold ? "on" : ""}"
         title="Auto hold: new keyframes extend the previous keyframe's hold"
         @click=${() => this.emit("auto-hold-toggle")}>AH</button>
+    `;
+  }
+
+  private renderPlaybackActions() {
+    const t = this.timeline.value;
+    return html`
       <button type="button" class="tl-btn ${t.playing ? "on" : ""}"
         title=${t.playing ? "Stop" : "Play"}
         @click=${() => this.emit("play-toggle")}
@@ -4475,16 +4504,29 @@ export class InkwellLayersPanel extends FloatingPanel {
           <div class="panel-form">
             ${this.renderDragHandlePill()}
             <div class="layers-header">
-              ${this.renderPanelTitle("Layers")}
-              <div class="header-actions">
+              <div class="header-group header-left">
+                ${this.renderPanelTitle("Layers")}
                 <button
                   type="button"
-                  class="layer-add-button"
+                  class="layer-action-button"
                   title="Add layer above selected"
                   aria-label="Add layer"
                   @click=${() => this.addLayer()}
                 >+</button>
-                ${this.renderFrameActions()}
+                <button
+                  type="button"
+                  class="layer-action-button layer-delete-current"
+                  title="Delete current layer"
+                  aria-label="Delete current layer"
+                  ?disabled=${activeLayerId === STAGE_LAYER_ID || nonStageCount <= 1}
+                  @click=${() => this.deleteCurrentLayer()}
+                >${phosphorIcon("trash", 14)}</button>
+              </div>
+              <div class="header-group header-center">
+                ${this.renderKeyframeActions()}
+              </div>
+              <div class="header-group header-right">
+                ${this.renderPlaybackActions()}
               </div>
             </div>
             <div class="layer-scroll">
@@ -4538,15 +4580,6 @@ export class InkwellLayersPanel extends FloatingPanel {
                             title="${layer.visible ? "Hide layer" : "Show layer"}"
                           >
                             ${phosphorIcon(layer.visible ? "eye" : "eye-slash", 14)}
-                          </button>
-                          <button
-                            type="button"
-                            class="layer-control delete-btn"
-                            @click=${(e: Event) => this.deleteLayer(layer.id, e)}
-                            title="Delete layer"
-                            ?disabled=${nonStageCount <= 1}
-                          >
-                            ${phosphorIcon("trash", 14)}
                           </button>
                         </div>
                       `

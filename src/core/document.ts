@@ -384,17 +384,26 @@ export class DocumentManager {
   }
 
   /**
-   * Convert the keyframe at exactly this frame into a blank keyframe
-   * (single-frame; any hold it had is dropped). Returns true if changed.
+   * Toggle the hold on the keyframe whose span covers this frame (double-tap
+   * gesture). Not held → extend up to the next keyframe or the end of the
+   * animation; held → collapse back to a single frame. Blank keyframes never
+   * hold. Returns true if changed.
    */
-  clearKeyframe(layerId: string, frame: number): boolean {
+  toggleKeyframeHold(layerId: string, frame: number): boolean {
     const track = this.getTrack(layerId);
     if (!track) return false;
-    const kf = track.keyframes.find((k) => k.frameIndex === frame);
-    if (!kf) return false;
-    if (kf.contentId === EMPTY_CONTENT_ID && kf.holdUntil === frame) return false;
-    kf.contentId = EMPTY_CONTENT_ID;
-    kf.holdUntil = frame;
+    const kf = this.coveringKeyframe(track, this.clampFrame(frame));
+    if (!kf || kf.contentId === EMPTY_CONTENT_ID) return false;
+
+    if (kf.holdUntil > kf.frameIndex) {
+      kf.holdUntil = kf.frameIndex;
+    } else {
+      const at = track.keyframes.indexOf(kf);
+      const next = track.keyframes[at + 1];
+      const maxEnd = (next?.frameIndex ?? this.duration) - 1;
+      if (maxEnd <= kf.frameIndex) return false;
+      kf.holdUntil = maxEnd;
+    }
 
     this.reloadCurrentFrame();
     this.publish();
@@ -402,15 +411,24 @@ export class DocumentManager {
   }
 
   /**
-   * Delete the keyframe at exactly this frame entirely: the frames it
-   * covered become empty (no dot, nothing rendered). Returns true if changed.
+   * Delete at this frame:
+   * - On the keyframe itself, remove it entirely (its whole span goes empty).
+   * - On one of its hold frames, snip the hold so it ends just before this
+   *   frame (the keyframe and earlier hold frames survive).
+   * Returns true if changed.
    */
   removeKeyframe(layerId: string, frame: number): boolean {
     const track = this.getTrack(layerId);
     if (!track) return false;
-    const at = track.keyframes.findIndex((k) => k.frameIndex === frame);
-    if (at === -1) return false;
-    track.keyframes.splice(at, 1);
+    frame = this.clampFrame(frame);
+    const kf = this.coveringKeyframe(track, frame);
+    if (!kf) return false;
+
+    if (kf.frameIndex === frame) {
+      track.keyframes.splice(track.keyframes.indexOf(kf), 1);
+    } else {
+      kf.holdUntil = frame - 1;
+    }
 
     this.reloadCurrentFrame();
     this.publish();
