@@ -58,7 +58,8 @@ import type {
   InkwellColorPanel,
   InkwellToolsPanel,
   InkwellUniversalPanel,
-  InkwellTopBarPanel,
+  InkwellViewPanel,
+  InkwellShortcutsPanel,
   InkwellLayersPanel,
   InkwellWheelPanel,
   InkwellFunctionsPanel,
@@ -129,7 +130,8 @@ class App {
   private colorPanel: InkwellColorPanel;
   private toolsPanel: InkwellToolsPanel;
   private universalPanel: InkwellUniversalPanel;
-  private topBarPanels: InkwellTopBarPanel[] = [];
+  private viewPanel: InkwellViewPanel;
+  private shortcutsPanel: InkwellShortcutsPanel;
   private layersPanel: InkwellLayersPanel;
   private wheelPanel: InkwellWheelPanel;
   private functionsPanel: InkwellFunctionsPanel;
@@ -146,7 +148,6 @@ class App {
   /** One-shot flag: forces the next camera-loop frame to repaint even when the camera is settled. */
   private redrawRequested = true;
   private lastDisplayZoom = Number.NaN;
-  private lastDisplayRotation = Number.NaN;
   private functionsPanelDismissed = false;
   private lastFunctionsPanelKey = "";
   private selectionGestureActive = false;
@@ -249,9 +250,8 @@ class App {
     this.colorPanel = document.getElementById("color-panel") as InkwellColorPanel;
     this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
-    this.topBarPanels = Array.from(
-      document.querySelectorAll<InkwellTopBarPanel>("inkwell-top-bar-panel"),
-    );
+    this.viewPanel = document.getElementById("view-panel") as InkwellViewPanel;
+    this.shortcutsPanel = document.getElementById("shortcuts-panel") as InkwellShortcutsPanel;
     this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
     this.wheelPanel = document.getElementById("wheel-panel") as InkwellWheelPanel;
     this.functionsPanel = document.getElementById("functions-panel") as InkwellFunctionsPanel;
@@ -346,21 +346,17 @@ class App {
     });
 
     // Universal panel events
-    this.universalPanel.addEventListener("brush-size-toggle", (e: Event) => {
-      this.uiOverlay.setBrushSizeIndicatorEnabled((e as CustomEvent<boolean>).detail);
-    });
-
     this.universalPanel.addEventListener("flatten", () => this.onFlatten());
     this.universalPanel.addEventListener("clear", () => this.onClear());
     this.universalPanel.addEventListener("undo", () => this.onUndo());
     this.universalPanel.addEventListener("redo", () => this.onRedo());
-    this.topBarPanels.forEach((panel) => {
-      panel.addEventListener("zoom-reset", () => this.onDockZoomReset());
-      panel.addEventListener("rotate-reset", () => this.onDockRotationReset());
-      panel.addEventListener("tool-cycle", () => this.onToolCycle());
-      panel.addEventListener("mode-cycle", () => this.onModeCycle());
-      panel.addEventListener("onion-toggle", () => this.onOnionToggle());
+    this.viewPanel.addEventListener("brush-size-toggle", (e: Event) => {
+      this.uiOverlay.setBrushSizeIndicatorEnabled((e as CustomEvent<boolean>).detail);
     });
+    this.viewPanel.addEventListener("onion-toggle", () => this.onOnionToggle());
+    this.shortcutsPanel.addEventListener("zoom-reset", () => this.onDockZoomReset());
+    this.shortcutsPanel.addEventListener("mode-cycle", () => this.onModeCycle());
+    this.shortcutsPanel.addEventListener("play-toggle", () => this.onPlayToggle());
     this.universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {
       this.onAliasFixToggle((e as CustomEvent<boolean>).detail);
     });
@@ -705,14 +701,9 @@ class App {
 
   private updateDisplays() {
     const zoom = this.camera.getZoomPercent();
-    const rotation = this.camera.getRotationDegrees();
-    if (zoom === this.lastDisplayZoom && rotation === this.lastDisplayRotation) return;
+    if (zoom === this.lastDisplayZoom) return;
     this.lastDisplayZoom = zoom;
-    this.lastDisplayRotation = rotation;
-    this.topBarPanels.forEach((panel) => {
-      panel.zoomLevel = zoom;
-      panel.rotation = rotation;
-    });
+    this.shortcutsPanel.zoomLevel = zoom;
   }
 
   // ============================================================
@@ -804,11 +795,6 @@ class App {
   private onDockZoomReset() {
     this.cancelRotationSnapAnimation();
     this.fitStageInView(false);
-  }
-
-  private onDockRotationReset() {
-    this.cancelRotationSnapAnimation();
-    this.camera.resetRotation();
   }
 
   // ============================================================
@@ -1154,12 +1140,6 @@ class App {
     if (tool !== "magnet" && this.magnetController.hasActiveStroke()) {
       this.magnetController.handleCancel();
     }
-  }
-
-  private onToolCycle() {
-    const current = toolStore.get();
-    const prev = prevToolStore.get();
-    this.switchTool(prev !== current ? prev : "brush");
   }
 
   private onModeCycle() {

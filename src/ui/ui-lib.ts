@@ -36,6 +36,7 @@ import {
 } from "../core/stores";
 import type { FunctionMenuItem } from "../core/functions";
 import { historyStateStore } from "../core/history";
+import { timelineStore } from "../core/document";
 // ============================================================
 // Phosphor Icons — Duotone weight, inline paths (MIT)
 // https://phosphoricons.com/ · assets from @phosphor-icons/core
@@ -89,6 +90,7 @@ const PANEL_ICON_MAP: Record<string, string> = {
   "universal-panel": "gear",
   "layers-panel": "stack",
   "wheel-panel": "jog-wheel",
+  "view-panel": "eye",
 };
 
 function phosphorIcon(name: string, size = 16): TemplateResult {
@@ -1127,9 +1129,18 @@ export class Block extends LitElement {
    * Every Block subclass renders a .block > .face pair with its own
    * template, so the shared overlay scrollbar is appended imperatively
    * (Lit leaves foreign children of .block alone). It auto-hides while
-   * the face content fits.
+   * the face content fits. Fixed-size panels (e.g. the jog wheel) opt out.
    */
+  protected usesFaceScrollbar(): boolean {
+    return true;
+  }
+
   private ensureFaceScrollbar() {
+    if (!this.usesFaceScrollbar()) {
+      this._faceScrollbar?.remove();
+      this._faceScrollbar = null;
+      return;
+    }
     const block = this.renderRoot.querySelector<HTMLElement>(".block");
     const face = this.renderRoot.querySelector<HTMLElement>(".face");
     if (!block || !face) return;
@@ -2887,35 +2898,123 @@ const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
   { id: "universal-panel", label: "Settings", visible: false },
   { id: "layers-panel", label: "Layers", visible: false },
   { id: "wheel-panel", label: "Wheel", visible: false },
+  { id: "view-panel", label: "View", visible: false },
   { id: "tools-panel", label: "Brush", visible: false },
   { id: "color-panel", label: "Color", visible: false },
 ];
 
-type TopBarSide = "left" | "right";
+const TOP_BAR_PANEL_IDS = [
+  "universal-panel",
+  "layers-panel",
+  "wheel-panel",
+  "view-panel",
+  "tools-panel",
+  "color-panel",
+] as const;
 
-/** Which dock variant a `<inkwell-top-bar-panel>` instance renders. */
-type TopBarVariant = "panels" | "info" | "view";
+/** Quick-info chip kinds in the shortcuts panel. */
+type DockInfoChip = "mode" | "frame" | "zoom";
 
-/** Quick-info chip kinds shown in the info-variant dock. */
-type DockInfoChip = "zoom" | "angle" | "mode";
+const TOP_BAR_SHORTCUT_CHIPS: readonly DockInfoChip[] = ["mode", "frame", "zoom"];
 
-/** Which panel buttons render in each top-bar dock instance (panels variant). */
-const TOP_BAR_SIDE_PANELS: Record<TopBarSide, readonly string[]> = {
-  left: ["universal-panel", "layers-panel", "wheel-panel"],
-  right: ["tools-panel", "color-panel"],
-};
+/** Shared chip styles for compact dock readouts (top-bar shortcuts panel). */
+const dockChipStyles = css`
+  .dock-status {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 6px;
+    box-sizing: border-box;
+  }
 
-/** Which info chips render in each side's info-variant dock. */
-const TOP_BAR_SIDE_INFO_CHIPS: Record<TopBarSide, readonly DockInfoChip[]> = {
-  left: ["zoom", "angle"],
-  right: ["mode"],
-};
+  .dock-cell {
+    flex: 0 0 var(--inkwell-dock-control);
+    width: var(--inkwell-dock-control);
+    min-width: var(--inkwell-dock-control);
+    max-width: var(--inkwell-dock-control);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    box-sizing: border-box;
+  }
 
-/** Pixel gap between the panels dock and its sibling info dock. */
-const TOP_BAR_INFO_GAP_PX = 8;
+  .dock-cell .dock-chip-stacked,
+  .dock-cell .dock-chip-reset {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
 
-/** Outer screen-edge offset shared by both panels/info docks (matches `:host([side])` rule). */
-const TOP_BAR_EDGE_OFFSET_PX = 8;
+  .dock-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--inkwell-text-primary, #222);
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .dock-chip-stacked {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: 1px;
+    text-align: center;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .dock-value {
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dock-prefix {
+    flex-shrink: 0;
+    font-weight: 500;
+    color: var(--inkwell-text-muted, #666);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  button.dock-chip-reset {
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    font: inherit;
+    padding: 2px 4px;
+    margin: 0;
+    border-radius: 4px;
+    color: inherit;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  button.dock-chip-reset:hover {
+    background: color-mix(in srgb, var(--inkwell-text-primary, #222) 8%, transparent);
+  }
+
+  button.dock-chip-reset:focus-visible {
+    outline: 2px solid var(--inkwell-panel-border, #555555);
+    outline-offset: 1px;
+  }
+`;
 
 // ============================================================
 // Top Bar Panel (panel visibility toggles)
@@ -2923,36 +3022,14 @@ const TOP_BAR_EDGE_OFFSET_PX = 8;
 
 @customElement("inkwell-top-bar-panel")
 export class InkwellTopBarPanel extends FloatingPanel {
-  /** Which side of the screen this dock anchors to. Reflected for CSS attribute selectors. */
-  @property({ type: String, reflect: true }) side: TopBarSide = "left";
-  /**
-   * Dock contents:
-   *   panels — the floating-panel toggle buttons (default).
-   *   info   — a compact quick-info dock (zoom/angle on the left, mode on the right).
-   *            Anchors itself just inside the matching panels dock.
-   *   view   — view-option toggles (grid, onion skin); centered at the top.
-   */
-  @property({ type: String, reflect: true }) variant: TopBarVariant = "panels";
-  @property({ type: Number }) zoomLevel = 100;
-  @property({ type: Number }) rotation = 0;
-
   @state() private panelVisibility: PanelVisibility[] = PANEL_VISIBILITY_DEFAULTS.map((p) => ({
     ...p,
   }));
   private dockColor = new StoreController(this, colorStore);
   private tool = new StoreController(this, toolStore);
-  private settings = new StoreController(this, toolSettingsStore);
-  private modifiers = new StoreController(this, modifiersStore);
-  /** View-variant state: grid overlay prefs + onion skin (from the timeline). */
-  private viewOverlay = new StoreController(this, viewOverlayStore);
-  private dockTimeline = new StoreController(this, timelineStore);
   private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
   private readonly panelVisibilityChangeHandler = (e: Event) =>
     this.onPanelVisibilityChange(e as CustomEvent<{ id: string; visible: boolean }>);
-  /** Tracks the sibling panels dock so the info dock stays glued to its inner edge. */
-  private siblingResizeObserver: ResizeObserver | null = null;
-  /** Window-resize handler used by the info variant; kept for clean teardown. */
-  private siblingWindowResizeHandler: (() => void) | null = null;
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -2960,181 +3037,31 @@ export class InkwellTopBarPanel extends FloatingPanel {
     :host {
       /* Below Safari iOS / iPadOS chrome; env() needs viewport-fit=cover. */
       --panel-top: max(8px, calc(env(safe-area-inset-top, 0px) + 2px));
+      --panel-left: 50%;
+      --panel-right: auto;
+      transform: translateX(-50%);
       --panel-width: auto;
       --panel-min-width: 0;
       --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-canvas-bg, #ffffff));
       z-index: 1200;
       width: auto;
-      max-width: min(calc(50vw - 16px), calc(100vw - 32px));
+      max-width: min(calc(100vw - 32px), 640px);
       /* Slightly lighter than the full floating-panels default on compact docks. */
       --inkwell-shadow-panel: 0 4px 16px rgba(0, 0, 0, 0.2);
-      /* Panel row + min info row; icon / info column width. */
+      /* Panel row; icon / control column width. */
       --inkwell-dock-row-h: 44px;
       --inkwell-dock-control: 44px;
       --inkwell-dock-face-pt: 6px;
       --inkwell-dock-face-pb: 8px;
     }
 
-    :host([side="left"]) {
-      --panel-left: max(8px, env(safe-area-inset-left, 0px));
-      --panel-right: auto;
-    }
-
-    :host([side="right"]) {
-      --panel-left: auto;
-      --panel-right: max(8px, env(safe-area-inset-right, 0px));
-    }
-
-    /* Info-variant dock hugs its content; sibling positioning is set inline by JS. */
-    :host([variant="info"]) {
-      width: auto;
-      max-width: min(calc(50vw - 16px), calc(100vw - 32px));
-    }
-
-    /* View-options dock: centered along the top edge, hugs its two buttons. */
-    :host([variant="view"]) {
-      --panel-left: 50%;
-      --panel-right: auto;
-      transform: translateX(-50%);
-      width: auto;
-    }
-
     .face {
-      /* FloatingPanel uses overflow-x: hidden for scroll; dock rows must not clip. */
       overflow-x: visible;
       overflow-y: visible;
       padding: var(--inkwell-dock-face-pt) 12px var(--inkwell-dock-face-pb);
-      /* Same minimum shell for panel + info variants (row + vertical padding). */
       min-height: calc(
         var(--inkwell-dock-row-h) + var(--inkwell-dock-face-pt) + var(--inkwell-dock-face-pb)
       );
-    }
-
-    .unified-dock {
-      display: flex;
-      flex-direction: column;
-      align-items: stretch;
-      gap: 6px;
-      width: 100%;
-      box-sizing: border-box;
-    }
-
-    .dock-status {
-      display: flex;
-      flex-direction: row;
-      flex-wrap: nowrap;
-      align-items: stretch;
-      width: 100%;
-      box-sizing: border-box;
-    }
-
-    .dock-cell {
-      flex: 1 1 0;
-      min-width: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0 3px;
-      box-sizing: border-box;
-    }
-
-    .dock-cell:last-child {
-      padding-right: 0;
-    }
-
-    .dock-cell:first-child {
-      padding-left: 0;
-    }
-
-    /* Never shorter than the panel .bar; can grow for long labels. Vertically center when short. */
-    :host([variant="info"]) .dock-status {
-      min-height: var(--inkwell-dock-row-h);
-      align-items: center;
-      gap: 6px;
-    }
-
-    :host([variant="info"]) .dock-cell {
-      flex: 0 0 var(--inkwell-dock-control);
-      width: var(--inkwell-dock-control);
-      min-width: var(--inkwell-dock-control);
-      max-width: var(--inkwell-dock-control);
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    :host([variant="info"]) .dock-cell .dock-chip-stacked,
-    :host([variant="info"]) .dock-cell .dock-chip-reset {
-      width: 100%;
-      min-width: 0;
-      box-sizing: border-box;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .dock-chip {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 3px;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      color: var(--inkwell-text-primary, #222);
-      white-space: nowrap;
-      max-width: 100%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .dock-chip-stacked {
-      flex-direction: column;
-      align-items: stretch;
-      justify-content: center;
-      gap: 1px;
-      text-align: center;
-      width: 100%;
-      min-width: 0;
-      box-sizing: border-box;
-    }
-
-    .dock-value {
-      max-width: 100%;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .dock-prefix {
-      flex-shrink: 0;
-      font-weight: 500;
-      color: var(--inkwell-text-muted, #666);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    button.dock-chip-reset {
-      cursor: pointer;
-      border: none;
-      background: transparent;
-      font: inherit;
-      padding: 2px 4px;
-      margin: 0;
-      border-radius: 4px;
-      color: inherit;
-      max-width: 100%;
-      min-width: 0;
-    }
-
-    button.dock-chip-reset:hover {
-      background: color-mix(in srgb, var(--inkwell-text-primary, #222) 8%, transparent);
-    }
-
-    button.dock-chip-reset:focus-visible {
-      outline: 2px solid var(--inkwell-panel-border, #555555);
-      outline-offset: 1px;
     }
 
     .bar {
@@ -3196,10 +3123,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
     super.connectedCallback();
     this.pinned = true;
     this.showPinnedClose = false;
-    if (this.variant !== "panels") {
-      // Info/view docks have no panel-toggle buttons; skip panel state setup.
-      return;
-    }
     this.initializeAllPanelsHidden();
     document.addEventListener("pointerdown", this.outsidePointerHandler, true);
     document.addEventListener("panel-visibility-change", this.panelVisibilityChangeHandler as EventListener);
@@ -3207,10 +3130,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    if (this.variant !== "panels") {
-      this.teardownSiblingResizeObserver();
-      return;
-    }
     document.removeEventListener("pointerdown", this.outsidePointerHandler, true);
     document.removeEventListener(
       "panel-visibility-change",
@@ -3220,201 +3139,13 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   firstUpdated(_changed: PropertyValues<this>) {
     super.firstUpdated(_changed);
-    if (this.variant === "info") {
-      this.attachToSiblingPanelsDock();
-      return;
-    }
-    if (this.variant === "view") return;
     this.positionAllVisiblePanels();
-  }
-
-  /**
-   * Find the sibling panels-variant dock on the same side and observe its size,
-   * keeping this info dock glued to its inner edge with a small gap. The panels
-   * dock is resized as tool names change, so a one-time measurement isn't enough.
-   */
-  private attachToSiblingPanelsDock() {
-    const sibling = document.querySelector<InkwellTopBarPanel>(
-      `inkwell-top-bar-panel[side="${this.side}"]:not([variant="info"])`,
-    );
-    if (!sibling) return;
-    const apply = () => this.applySiblingOffset(sibling);
-    apply();
-    this.siblingResizeObserver = new ResizeObserver(apply);
-    this.siblingResizeObserver.observe(sibling);
-    this.siblingWindowResizeHandler = apply;
-    window.addEventListener("resize", apply);
-  }
-
-  private applySiblingOffset(sibling: HTMLElement) {
-    const w = sibling.offsetWidth;
-    if (!w) return;
-    const offset = TOP_BAR_EDGE_OFFSET_PX + w + TOP_BAR_INFO_GAP_PX;
-    if (this.side === "left") {
-      this.style.setProperty(
-        "--panel-left",
-        `max(${offset}px, env(safe-area-inset-left, 0px))`,
-      );
-      this.style.removeProperty("--panel-right");
-    } else {
-      this.style.setProperty(
-        "--panel-right",
-        `max(${offset}px, env(safe-area-inset-right, 0px))`,
-      );
-      this.style.removeProperty("--panel-left");
-    }
-  }
-
-  private teardownSiblingResizeObserver() {
-    if (this.siblingResizeObserver) {
-      this.siblingResizeObserver.disconnect();
-      this.siblingResizeObserver = null;
-    }
-    if (this.siblingWindowResizeHandler) {
-      window.removeEventListener("resize", this.siblingWindowResizeHandler);
-      this.siblingWindowResizeHandler = null;
-    }
-  }
-
-  private emitDock(name: string) {
-    this.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true }));
   }
 
   /** 3D chrome for dock color toggle: face = ink, depth strip = slightly offset for contrast. */
   private dockColorBlockChromeStyle(): string {
     const c = this.dockColor.value;
     return `--block-face-bg: ${c}; --block-depth-color: ${dockColorDepthStripColor(c)};`;
-  }
-
-  /** Current mode label derived from the active tool's dockModeSetting. */
-  private effectivePaintModeLabel(): string {
-    const tool = getTool(this.tool.value);
-    const key = tool.dockModeSetting;
-    if (!key) return "—";
-    const def = tool.settings[key];
-    if (!def || def.type !== "toggle") return "—";
-    const options = def.options as readonly string[];
-    const raw = String(
-      (this.settings.value[tool.id] as Record<string, unknown>)?.[key] ?? def.default,
-    );
-    // Shift-modifier preview: show the next option in the cycle
-    const effective =
-      this.modifiers.value.shift
-        ? options[(options.indexOf(raw) + 1) % options.length]
-        : raw;
-    return effective.charAt(0).toUpperCase() + effective.slice(1);
-  }
-
-  // ----------------------------------------------------------------
-  // Dock widget helper – renders a compact status cell.
-  //   clickable:  wraps in a <button> (with hover highlight)
-  //   otherwise:  wraps in a <span> (display-only)
-  // ----------------------------------------------------------------
-  private renderDockWidget(opts: {
-    label: string;
-    value: string;
-    title: string;
-    onClick?: () => void;
-  }) {
-    const inner = html`
-      <span class="dock-prefix">${opts.label}</span>
-      <span class="dock-value">${opts.value}</span>
-    `;
-    return html`
-      <div class="dock-cell">
-        ${opts.onClick
-          ? html`
-              <button
-                type="button"
-                class="dock-chip dock-chip-stacked dock-chip-reset"
-                title=${opts.title}
-                aria-label=${opts.title}
-                data-interactive
-                @click=${opts.onClick}
-              >${inner}</button>
-            `
-          : html`
-              <span class="dock-chip dock-chip-stacked" title=${opts.title}
-                >${inner}</span
-              >
-            `}
-      </div>
-    `;
-  }
-
-  /** Build the descriptor for a single info chip — tied to chip kind so each side can pick its own. */
-  private buildInfoChip(kind: DockInfoChip) {
-    switch (kind) {
-      case "zoom":
-        return {
-          label: "zoom",
-          value: `${this.zoomLevel}%`,
-          title: "Fit stage in view",
-          onClick: () => this.emitDock("zoom-reset"),
-        };
-      case "angle":
-        return {
-          label: "angle",
-          value: `${Math.round(this.rotation)}°`,
-          title: "Reset angle to 0°",
-          onClick: () => this.emitDock("rotate-reset"),
-        };
-      case "mode":
-        return {
-          label: "mode",
-          value: this.effectivePaintModeLabel(),
-          title: "Click to cycle paint mode",
-          onClick: () => this.emitDock("mode-cycle"),
-        };
-    }
-  }
-
-  private renderInfoDock() {
-    const chips = TOP_BAR_SIDE_INFO_CHIPS[this.side];
-    return html`
-      <div class="block">
-        <div class="face">
-          <div class="dock-status">
-            ${chips.map((kind) => this.renderDockWidget(this.buildInfoChip(kind)))}
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  /** View-options dock: grid + onion-skin toggle buttons. */
-  private renderViewDock() {
-    const gridOn = this.viewOverlay.value.gridEnabled;
-    const onionOn = this.dockTimeline.value.onionSkin;
-    return html`
-      <div class="block">
-        <div class="face">
-          <div class="unified-dock">
-            <div class="bar">
-              <blocky-button
-                class="dock-btn-icon"
-                title="Show grid"
-                data-interactive
-                stretch
-                ?active=${gridOn}
-                @click=${() =>
-                  this.viewOverlay.update((v) => ({ ...v, gridEnabled: !v.gridEnabled }))}
-                ><span class="btn-content">${phosphorIcon("grid-four", 14)}</span></blocky-button
-              >
-              <blocky-button
-                class="dock-btn-icon"
-                title="Onion skin (outline nearest keyframes)"
-                data-interactive
-                stretch
-                ?active=${onionOn}
-                @click=${() => this.emitDock("onion-toggle")}
-                ><span class="btn-content">${phosphorIcon("onion-skin", 14)}</span></blocky-button
-              >
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
   }
 
   private initializeAllPanelsHidden() {
@@ -3534,26 +3265,21 @@ export class InkwellTopBarPanel extends FloatingPanel {
     return html`<span class="btn-content">${phosphorIcon(PANEL_ICON_MAP[panelId], 14)}</span>`;
   }
 
-  /** Buttons that belong to this dock's side, in the order configured. */
-  private visiblePanelsForSide(): PanelVisibility[] {
-    const ids = TOP_BAR_SIDE_PANELS[this.side];
-    return ids
-      .map((id) => this.panelVisibility.find((p) => p.id === id))
+  /** Panel toggle buttons in dock order. */
+  private visiblePanelTriggers(): PanelVisibility[] {
+    return TOP_BAR_PANEL_IDS.map((id) => this.panelVisibility.find((p) => p.id === id))
       .filter((p): p is PanelVisibility => Boolean(p));
   }
 
   render() {
-    if (this.variant === "info") return this.renderInfoDock();
-    if (this.variant === "view") return this.renderViewDock();
     const currentToolName = getTool(this.tool.value).name;
-    const sidePanels = this.visiblePanelsForSide();
+    const panelTriggers = this.visiblePanelTriggers();
     return html`
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
-          <div class="unified-dock">
-            <div class="bar">
-              ${sidePanels.map(
+          <div class="bar">
+            ${panelTriggers.map(
                 (panel) => html`
                   <blocky-button
                     data-panel-trigger=${panel.id}
@@ -3569,6 +3295,222 @@ export class InkwellTopBarPanel extends FloatingPanel {
                   >
                 `,
               )}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+}
+
+// ============================================================
+// Shortcuts Panel (mode / frame / zoom quick actions)
+// ============================================================
+
+@customElement("inkwell-shortcuts-panel")
+export class InkwellShortcutsPanel extends FloatingPanel {
+  @property({ type: Number }) zoomLevel = 100;
+
+  private tool = new StoreController(this, toolStore);
+  private settings = new StoreController(this, toolSettingsStore);
+  private modifiers = new StoreController(this, modifiersStore);
+  private timeline = new StoreController(this, timelineStore);
+
+  static styles = css`
+    ${FloatingPanel.styles}
+    ${dockChipStyles}
+
+    :host {
+      --panel-top: max(8px, calc(env(safe-area-inset-top, 0px) + 2px));
+      --panel-left: auto;
+      --panel-right: max(8px, env(safe-area-inset-right, 0px));
+      --panel-width: auto;
+      --panel-min-width: 0;
+      --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-canvas-bg, #ffffff));
+      z-index: 1200;
+      width: auto;
+      --inkwell-shadow-panel: 0 4px 16px rgba(0, 0, 0, 0.2);
+      --inkwell-dock-row-h: 44px;
+      --inkwell-dock-control: 44px;
+      --inkwell-dock-face-pt: 6px;
+      --inkwell-dock-face-pb: 8px;
+    }
+
+    .face {
+      overflow-x: visible;
+      overflow-y: visible;
+      padding: var(--inkwell-dock-face-pt) 12px var(--inkwell-dock-face-pb);
+      min-height: calc(
+        var(--inkwell-dock-row-h) + var(--inkwell-dock-face-pt) + var(--inkwell-dock-face-pb)
+      );
+    }
+
+    .dock-status {
+      min-height: var(--inkwell-dock-row-h);
+      align-items: center;
+    }
+  `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.pinned = true;
+    this.showPinnedClose = false;
+  }
+
+  private emitDock(name: string) {
+    this.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true }));
+  }
+
+  private effectivePaintModeLabel(): string {
+    const tool = getTool(this.tool.value);
+    const key = tool.dockModeSetting;
+    if (!key) return "—";
+    const def = tool.settings[key];
+    if (!def || def.type !== "toggle") return "—";
+    const options = def.options as readonly string[];
+    const raw = String(
+      (this.settings.value[tool.id] as Record<string, unknown>)?.[key] ?? def.default,
+    );
+    const effective =
+      this.modifiers.value.shift
+        ? options[(options.indexOf(raw) + 1) % options.length]
+        : raw;
+    return effective.charAt(0).toUpperCase() + effective.slice(1);
+  }
+
+  private renderDockWidget(opts: {
+    label: string;
+    value: string;
+    title: string;
+    onClick?: () => void;
+  }) {
+    const inner = html`
+      <span class="dock-prefix">${opts.label}</span>
+      <span class="dock-value">${opts.value}</span>
+    `;
+    return html`
+      <div class="dock-cell">
+        ${opts.onClick
+          ? html`
+              <button
+                type="button"
+                class="dock-chip dock-chip-stacked dock-chip-reset"
+                title=${opts.title}
+                aria-label=${opts.title}
+                data-interactive
+                @click=${opts.onClick}
+              >${inner}</button>
+            `
+          : html`
+              <span class="dock-chip dock-chip-stacked" title=${opts.title}
+                >${inner}</span
+              >
+            `}
+      </div>
+    `;
+  }
+
+  private buildInfoChip(kind: DockInfoChip) {
+    switch (kind) {
+      case "mode":
+        return {
+          label: "mode",
+          value: this.effectivePaintModeLabel(),
+          title: "Click to cycle paint mode",
+          onClick: () => this.emitDock("mode-cycle"),
+        };
+      case "frame": {
+        const t = this.timeline.value;
+        return {
+          label: "frame",
+          value: String(t.currentFrame + 1),
+          title: t.playing ? "Pause" : "Play",
+          onClick: () => this.emitDock("play-toggle"),
+        };
+      }
+      case "zoom":
+        return {
+          label: "zoom",
+          value: `${this.zoomLevel}%`,
+          title: "Fit stage in view",
+          onClick: () => this.emitDock("zoom-reset"),
+        };
+    }
+  }
+
+  render() {
+    return html`
+      <div class="block">
+        <div class="face">
+          <div class="dock-status">
+            ${TOP_BAR_SHORTCUT_CHIPS.map((kind) =>
+              this.renderDockWidget(this.buildInfoChip(kind)),
+            )}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+}
+
+@customElement("inkwell-view-panel")
+export class InkwellViewPanel extends FloatingPanel {
+  @property({ type: Boolean }) brushSizeIndicatorEnabled = true;
+
+  private viewOverlay = new StoreController(this, viewOverlayStore);
+  private timeline = new StoreController(this, timelineStore);
+
+  static styles = css`
+    ${FloatingPanel.styles}
+
+    :host {
+      --panel-width: 240px;
+    }
+  `;
+
+  private emit(name: string, detail?: unknown) {
+    this.dispatchEvent(
+      new CustomEvent(name, { detail, bubbles: true, composed: true }),
+    );
+  }
+
+  render() {
+    const gridOn = this.viewOverlay.value.gridEnabled;
+    const onionOn = this.timeline.value.onionSkin;
+    return html`
+      ${this.renderPinnedClose()}
+      <div class="block">
+        <div class="face">
+          <div class="panel-form">
+            ${this.renderDragHandlePill("View")}
+            <div class="toggle">
+              <span>Show grid</span>
+              <input
+                type="checkbox"
+                .checked=${gridOn}
+                @change=${(e: Event) => {
+                  const checked = (e.target as HTMLInputElement).checked;
+                  this.viewOverlay.update((v) => ({ ...v, gridEnabled: checked }));
+                }}
+              />
+            </div>
+            <div class="toggle">
+              <span>Onion skin</span>
+              <input
+                type="checkbox"
+                .checked=${onionOn}
+                @change=${() => this.emit("onion-toggle")}
+              />
+            </div>
+            <div class="toggle">
+              <span>Show brush size</span>
+              <input
+                type="checkbox"
+                .checked=${this.brushSizeIndicatorEnabled}
+                @change=${(e: Event) => {
+                  this.brushSizeIndicatorEnabled = (e.target as HTMLInputElement).checked;
+                  this.emit("brush-size-toggle", this.brushSizeIndicatorEnabled);
+                }}
+              />
             </div>
           </div>
         </div>
@@ -3579,7 +3521,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
 @customElement("inkwell-universal-panel")
 export class InkwellUniversalPanel extends FloatingPanel {
-  @property({ type: Boolean }) brushSizeIndicatorEnabled = true;
   @property({ type: Boolean }) aliasFixEnabled = false;
 
   private history = new StoreController(this, historyStateStore);
@@ -3606,18 +3547,6 @@ export class InkwellUniversalPanel extends FloatingPanel {
         <div class="face">
           <div class="panel-form">
             ${this.renderDragHandlePill("Settings")}
-            <div class="toggle">
-              <span>Show brush size</span>
-              <input
-                type="checkbox"
-                .checked=${this.brushSizeIndicatorEnabled}
-                @change=${(e: Event) => {
-        this.brushSizeIndicatorEnabled = (e.target as HTMLInputElement).checked;
-        this.emit("brush-size-toggle", this.brushSizeIndicatorEnabled);
-      }}
-              />
-            </div>
-
             <div class="toggle">
               <span>Alias fix</span>
               <input
@@ -3700,7 +3629,6 @@ export class InkwellUniversalPanel extends FloatingPanel {
 // ============================================================
 
 import { layerStore, generateLayerId, STAGE_LAYER_ID } from "../core/stores";
-import { timelineStore } from "../core/document";
 
 @customElement("inkwell-layers-panel")
 export class InkwellLayersPanel extends FloatingPanel {
@@ -5254,6 +5182,17 @@ export class InkwellWheelPanel extends FloatingPanel {
    */
   private suppressSync = false;
 
+  protected override usesFaceScrollbar(): boolean {
+    return false;
+  }
+
+  updated(changedProperties: Map<string, unknown>) {
+    // Keep the wheel a fixed circle — never adopt resize dimensions.
+    if (this.blockWidth !== null) this.blockWidth = null;
+    if (this.blockHeight !== null) this.blockHeight = null;
+    super.updated(changedProperties);
+  }
+
   static styles = css`
     ${FloatingPanel.styles}
 
@@ -5280,7 +5219,7 @@ export class InkwellWheelPanel extends FloatingPanel {
     /* Fixed-size content; never show a scrollbar next to the wheel. */
     .face {
       border-radius: 50%;
-      overflow-y: hidden;
+      overflow: hidden;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -5406,6 +5345,9 @@ export class InkwellWheelPanel extends FloatingPanel {
 
   connectedCallback() {
     super.connectedCallback();
+    this.resizable = false;
+    this.blockWidth = null;
+    this.blockHeight = null;
     this.unsubscribeTimeline = timelineStore.subscribe((t) => {
       // Playback takes the wheel over instantly: cut a coasting flick dead
       // so the barrel snaps to following the playhead without winding down.
@@ -6037,9 +5979,11 @@ declare global {
     "generic-color-picker": GenericColorPicker;
     "inkwell-color-panel": InkwellColorPanel;
     "inkwell-top-bar-panel": InkwellTopBarPanel;
+    "inkwell-shortcuts-panel": InkwellShortcutsPanel;
     "inkwell-tools-panel": InkwellToolsPanel;
     "inkwell-tool-settings-panel": InkwellToolSettingsPanel;
     "inkwell-universal-panel": InkwellUniversalPanel;
+    "inkwell-view-panel": InkwellViewPanel;
     "inkwell-layers-panel": InkwellLayersPanel;
     "inkwell-wheel-panel": InkwellWheelPanel;
     "inkwell-modal": InkwellModal;

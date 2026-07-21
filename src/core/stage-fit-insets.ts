@@ -6,7 +6,7 @@
  * so changing the constants below actually changes framing.
  */
 
-/** Matches `--inkwell-dock-row-h` + `--inkwell-dock-face-pt` + `--inkwell-dock-face-pb` + a little slack. */
+/** Matches one dock row + `--inkwell-dock-face-pt` + `--inkwell-dock-face-pb` + slack. */
 const DOCK_ROW_BLOCK_PX = 44 + 6 + 8 + 10;
 
 /** Minimum `--panel-top` (see ui-lib top bar). */
@@ -18,8 +18,8 @@ const DOCK_TOP_EXTRA_PX = 10;
 /** Bottom margin so the stage does not sit flush against the window edge. */
 const FIT_BOTTOM_MARGIN_PX = 16;
 
-/** Horizontal reserve per side (px) for corner docks; set 0 to rely only on the cap below. */
-const DOCK_SIDE_RESERVE_PX = 120;
+/** Horizontal reserve on the right for the shortcuts dock (3 chips + padding). */
+const DOCK_SIDE_RESERVE_PX = 160;
 
 /** Do not use more than this fraction of viewport height for the top inset (safety on short windows). */
 const TOP_INSET_MAX_FRAC = 0.42;
@@ -46,6 +46,6 @@ export function getStageFitViewportInsets(viewportWidth: number, viewportHeight:
     top,
     right: side,
     bottom: FIT_BOTTOM_MARGIN_PX,
-    left: side,
+    left: 0,
   };
 }
