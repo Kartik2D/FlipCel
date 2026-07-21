@@ -6,8 +6,9 @@
  * lives here:
  *
  * - Each regular layer is a `LayerTrack`: a sorted list of keyframes.
- * - A keyframe owns artwork via a `contentId` into the content store.
- *   Frames between keyframes are "holds" (they extend the previous keyframe).
+ * - A keyframe owns artwork via a `contentId` into the content store and an
+ *   explicit hold span (`holdUntil`, inclusive). Frames not covered by any
+ *   keyframe's span render empty.
  * - Content is stored by reference (content-addressed-ish): inserting a
  *   keyframe copies the previous keyframe's contentId, holds share content
  *   implicitly, and history entries share content strings by reference.
@@ -34,13 +35,21 @@ import type { PaperRenderer } from "./paper-renderer";
 export interface Keyframe {
   frameIndex: number;
   contentId: string;
+  /**
+   * Last frame (inclusive) this keyframe stays visible. Always in
+   * [frameIndex, nextKeyframe.frameIndex - 1]. A plain keyframe has
+   * holdUntil === frameIndex (one frame); larger values are explicit holds.
+   * Blank keyframes are always single-frame (holdUntil === frameIndex).
+   * Frames not covered by any keyframe's span render empty.
+   */
+  holdUntil: number;
 }
 
 export interface LayerTrack {
   id: string;
   name: string;
   visible: boolean;
-  /** Sorted by frameIndex ascending; keyframes[0] is always at frame 0. */
+  /** Sorted by frameIndex ascending. May be empty (every frame empty). */
   keyframes: Keyframe[];
 }
 
@@ -65,13 +74,14 @@ export interface TimelineState {
     id: string;
     name: string;
     visible: boolean;
-    keyframes: Array<{ frame: number; blank: boolean }>;
+    keyframes: Array<{ frame: number; blank: boolean; holdUntil: number }>;
   }>;
   currentFrame: number;
   duration: number;
   frameRate: number;
   playing: boolean;
   onionSkin: boolean;
+  autoHold: boolean;
 }
 
 export const timelineStore = new Store<TimelineState>({
@@ -81,6 +91,7 @@ export const timelineStore = new Store<TimelineState>({
   frameRate: DEFAULT_FRAME_RATE,
   playing: false,
   onionSkin: false,
+  autoHold: true,
 });
 
 /** Serialized `.inkwell` document (also the autosave payload). */
@@ -126,6 +137,11 @@ export class DocumentManager {
   private playing = false;
   /** View preference: show dimmed neighbor frames. Not persisted, not in history. */
   private onionSkinEnabled = false;
+  /**
+   * When enabled, inserting a keyframe/blank keyframe extends the previous
+   * keyframe's hold up to the new keyframe. Not persisted, not in history.
+   */
+  private autoHoldEnabled = true;
 
   /** contentId currently loaded into each Paper layer. */
   private loadedContent = new Map<string, string>();
@@ -190,18 +206,29 @@ export class DocumentManager {
     return this.tracks.find((t) => t.id === layerId) ?? null;
   }
 
-  /** Last keyframe with frameIndex <= frame (keyframes[0] is at 0). */
-  private governingKeyframe(track: LayerTrack, frame: number): Keyframe {
-    let governing = track.keyframes[0];
+  /** Last keyframe with frameIndex <= frame, or null when none exists. */
+  private previousKeyframe(track: LayerTrack, frame: number): Keyframe | null {
+    let previous: Keyframe | null = null;
     for (const kf of track.keyframes) {
       if (kf.frameIndex > frame) break;
-      governing = kf;
+      previous = kf;
     }
-    return governing;
+    return previous;
   }
 
-  private governingContentId(track: LayerTrack, frame: number): string {
-    return this.governingKeyframe(track, frame).contentId;
+  /**
+   * The keyframe whose span (frameIndex..holdUntil) covers this frame, or
+   * null when the frame is empty (before the first keyframe or after a
+   * span ended).
+   */
+  private coveringKeyframe(track: LayerTrack, frame: number): Keyframe | null {
+    const kf = this.previousKeyframe(track, frame);
+    return kf && kf.holdUntil >= frame ? kf : null;
+  }
+
+  /** Content visible at a frame (empty when no keyframe span covers it). */
+  private contentIdAt(track: LayerTrack, frame: number): string {
+    return this.coveringKeyframe(track, frame)?.contentId ?? EMPTY_CONTENT_ID;
   }
 
   // ------------------------------------------------------------
@@ -229,7 +256,7 @@ export class DocumentManager {
           id: layer.id,
           name: layer.name,
           visible: layer.visible,
-          keyframes: [{ frameIndex: 0, contentId: EMPTY_CONTENT_ID }],
+          keyframes: [{ frameIndex: 0, contentId: EMPTY_CONTENT_ID, holdUntil: 0 }],
         });
       }
     }
@@ -257,11 +284,12 @@ export class DocumentManager {
       ? ""
       : this.renderer.exportLayerJSON(layerId) ?? "";
 
-    const governing = this.governingKeyframe(track, this.currentFrame);
-    const currentJson = this.content.get(governing.contentId) ?? "";
+    const covering = this.coveringKeyframe(track, this.currentFrame);
+    const visibleContentId = covering?.contentId ?? EMPTY_CONTENT_ID;
+    const currentJson = this.content.get(visibleContentId) ?? "";
 
     if (json === currentJson) {
-      this.loadedContent.set(layerId, governing.contentId);
+      this.loadedContent.set(layerId, visibleContentId);
       return false;
     }
 
@@ -273,15 +301,9 @@ export class DocumentManager {
       this.content.set(contentId, json);
     }
 
-    if (governing.frameIndex === this.currentFrame) {
-      governing.contentId = contentId;
-    } else {
-      // Editing a hold frame: auto-create a keyframe here.
-      this.insertKeyframe(track, {
-        frameIndex: this.currentFrame,
-        contentId,
-      });
-    }
+    // Editing a hold or empty frame auto-creates a keyframe here (with the
+    // same hold/auto-hold rules as an explicit insert).
+    this.placeKeyframe(track, this.currentFrame, contentId);
     this.loadedContent.set(layerId, contentId);
     this.publish();
     return true;
@@ -300,28 +322,61 @@ export class DocumentManager {
     }
   }
 
+  /**
+   * Put a keyframe with this content at a frame, applying the shared hold
+   * rules (used by explicit +K/+B inserts and draw-triggered auto-key):
+   * - A keyframe already at the frame just gets the new content.
+   * - Otherwise a new keyframe is inserted. If it splits an existing hold,
+   *   it takes over the remainder of the span.
+   * - With auto-hold on, the previous keyframe is held up to the new one.
+   * - Blank keyframes are always single-frame: they are never extended and
+   *   never hold.
+   */
+  private placeKeyframe(track: LayerTrack, frame: number, contentId: string): void {
+    const blank = contentId === EMPTY_CONTENT_ID;
+    const previous = this.previousKeyframe(track, frame);
+
+    if (previous?.frameIndex === frame) {
+      previous.contentId = contentId;
+      if (blank) previous.holdUntil = frame;
+      return;
+    }
+
+    let holdUntil = frame;
+    if (previous) {
+      // Tail of a split hold carries over to the new keyframe (unless blank).
+      if (!blank && previous.holdUntil > frame) holdUntil = previous.holdUntil;
+      const prevBlank = previous.contentId === EMPTY_CONTENT_ID;
+      previous.holdUntil =
+        this.autoHoldEnabled && !prevBlank
+          ? frame - 1
+          : Math.min(previous.holdUntil, frame - 1);
+    }
+    this.insertKeyframe(track, { frameIndex: frame, contentId, holdUntil });
+  }
+
   // ------------------------------------------------------------
   // Timeline operations
   // ------------------------------------------------------------
 
   /**
-   * Insert a keyframe on a layer at a frame. Non-blank copies the governing
-   * keyframe's content (Flash F6); blank starts empty (Flash F7).
-   * Returns true if the document changed.
+   * Insert a keyframe on a layer at a frame. Non-blank copies the previous
+   * keyframe's content (Flash F6); blank starts empty (Flash F7). Hold and
+   * auto-hold rules are in `placeKeyframe`. Returns true if changed.
    */
   addKeyframe(layerId: string, frame: number, blank: boolean): boolean {
     const track = this.getTrack(layerId);
     if (!track) return false;
     frame = this.clampFrame(frame);
 
-    const governing = this.governingKeyframe(track, frame);
-    const contentId = blank ? EMPTY_CONTENT_ID : governing.contentId;
-    if (governing.frameIndex === frame) {
-      if (governing.contentId === contentId) return false;
-      governing.contentId = contentId;
-    } else {
-      this.insertKeyframe(track, { frameIndex: frame, contentId });
+    const previous = this.previousKeyframe(track, frame);
+    const contentId = blank
+      ? EMPTY_CONTENT_ID
+      : previous?.contentId ?? EMPTY_CONTENT_ID;
+    if (previous?.frameIndex === frame && previous.contentId === contentId) {
+      return false;
     }
+    this.placeKeyframe(track, frame, contentId);
 
     if (frame === this.currentFrame) this.reloadCurrentFrame();
     this.publish();
@@ -329,14 +384,31 @@ export class DocumentManager {
   }
 
   /**
-   * Remove the keyframe at exactly this frame (frame 0 cannot be removed —
-   * every track needs governing content). Returns true if changed.
+   * Convert the keyframe at exactly this frame into a blank keyframe
+   * (single-frame; any hold it had is dropped). Returns true if changed.
+   */
+  clearKeyframe(layerId: string, frame: number): boolean {
+    const track = this.getTrack(layerId);
+    if (!track) return false;
+    const kf = track.keyframes.find((k) => k.frameIndex === frame);
+    if (!kf) return false;
+    if (kf.contentId === EMPTY_CONTENT_ID && kf.holdUntil === frame) return false;
+    kf.contentId = EMPTY_CONTENT_ID;
+    kf.holdUntil = frame;
+
+    this.reloadCurrentFrame();
+    this.publish();
+    return true;
+  }
+
+  /**
+   * Delete the keyframe at exactly this frame entirely: the frames it
+   * covered become empty (no dot, nothing rendered). Returns true if changed.
    */
   removeKeyframe(layerId: string, frame: number): boolean {
     const track = this.getTrack(layerId);
     if (!track) return false;
     const at = track.keyframes.findIndex((k) => k.frameIndex === frame);
-    if (at <= 0 && frame === 0) return false; // frame 0 keyframe is mandatory
     if (at === -1) return false;
     track.keyframes.splice(at, 1);
 
@@ -352,6 +424,9 @@ export class DocumentManager {
     // keyframe always survives since next >= 1.
     for (const track of this.tracks) {
       track.keyframes = track.keyframes.filter((k) => k.frameIndex < next);
+      for (const k of track.keyframes) {
+        k.holdUntil = Math.min(k.holdUntil, next - 1);
+      }
     }
     this.duration = next;
     if (this.currentFrame >= next) this.gotoFrame(next - 1);
@@ -367,6 +442,16 @@ export class DocumentManager {
   setPlaying(playing: boolean): void {
     if (this.playing === playing) return;
     this.playing = playing;
+    this.publish();
+  }
+
+  isAutoHoldEnabled(): boolean {
+    return this.autoHoldEnabled;
+  }
+
+  setAutoHold(enabled: boolean): void {
+    if (this.autoHoldEnabled === enabled) return;
+    this.autoHoldEnabled = enabled;
     this.publish();
   }
 
@@ -399,8 +484,8 @@ export class DocumentManager {
       const jsons: string[] = [];
       for (const track of this.tracks) {
         if (!track.visible) continue;
-        const contentId = this.governingContentId(track, frame);
-        if (contentId === this.governingContentId(track, this.currentFrame)) continue;
+        const contentId = this.contentIdAt(track, frame);
+        if (contentId === this.contentIdAt(track, this.currentFrame)) continue;
         const json = this.content.get(contentId);
         if (json) jsons.push(json);
       }
@@ -447,7 +532,7 @@ export class DocumentManager {
 
     this.renderer.restoreLayersSnapshot(
       this.tracks.map((track) => {
-        const contentId = this.governingContentId(track, this.currentFrame);
+        const contentId = this.contentIdAt(track, this.currentFrame);
         const changed = this.loadedContent.get(track.id) !== contentId;
         if (changed) this.loadedContent.set(track.id, contentId);
         return {
@@ -553,14 +638,28 @@ export class DocumentManager {
     this.content = new Map(Object.entries(doc.content));
     this.content.set(EMPTY_CONTENT_ID, "");
     this.tracks = cloneTracks(doc.tracks);
+    this.duration = Math.max(1, Math.round(doc.duration));
     // Guarantee model invariants on untrusted input.
     for (const track of this.tracks) {
       track.keyframes.sort((a, b) => a.frameIndex - b.frameIndex);
-      if (track.keyframes.length === 0 || track.keyframes[0].frameIndex !== 0) {
-        track.keyframes.unshift({ frameIndex: 0, contentId: EMPTY_CONTENT_ID });
+      // Normalize hold spans. Old documents (pre-explicit-holds) have no
+      // holdUntil: default to the implicit span (up to the next keyframe)
+      // so they look the way they did when saved. Blank keyframes are
+      // always single-frame.
+      for (let i = 0; i < track.keyframes.length; i++) {
+        const kf = track.keyframes[i];
+        if (kf.contentId === EMPTY_CONTENT_ID) {
+          kf.holdUntil = kf.frameIndex;
+          continue;
+        }
+        const spanEnd =
+          (track.keyframes[i + 1]?.frameIndex ?? this.duration) - 1;
+        const hold = Number((kf as Partial<Keyframe>).holdUntil);
+        kf.holdUntil = Number.isFinite(hold)
+          ? Math.max(kf.frameIndex, Math.min(hold, spanEnd))
+          : spanEnd;
       }
     }
-    this.duration = Math.max(1, Math.round(doc.duration));
     this.frameRate = Math.max(1, Math.min(60, Math.round(doc.frameRate)));
     this.currentFrame = 0;
     this.playing = false;
@@ -589,6 +688,7 @@ export class DocumentManager {
         keyframes: t.keyframes.map((k) => ({
           frame: k.frameIndex,
           blank: k.contentId === EMPTY_CONTENT_ID,
+          holdUntil: k.holdUntil,
         })),
       })),
       currentFrame: this.currentFrame,
@@ -596,6 +696,7 @@ export class DocumentManager {
       frameRate: this.frameRate,
       playing: this.playing,
       onionSkin: this.onionSkinEnabled,
+      autoHold: this.autoHoldEnabled,
     });
   }
 }

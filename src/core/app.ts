@@ -386,7 +386,11 @@ class App {
       const { blank } = (e as CustomEvent<{ blank: boolean }>).detail;
       this.onKeyframeAdd(blank);
     });
+    this.layersPanel.addEventListener("keyframe-clear", () => this.onKeyframeClear());
     this.layersPanel.addEventListener("keyframe-remove", () => this.onKeyframeRemove());
+    this.layersPanel.addEventListener("auto-hold-toggle", () => {
+      this.documentManager.setAutoHold(!this.documentManager.isAutoHoldEnabled());
+    });
     this.layersPanel.addEventListener("duration-set", (e: Event) => {
       const frames = (e as CustomEvent<number>).detail;
       if (this.documentManager.setDuration(frames)) {
@@ -1745,6 +1749,17 @@ class App {
     }
   }
 
+  private onKeyframeClear() {
+    const layerId = this.timelineTargetLayerId();
+    if (!layerId) return;
+    this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
+    if (this.documentManager.clearKeyframe(layerId, this.documentManager.getCurrentFrame())) {
+      this.historyManager.snapshot();
+      this.requestRedraw();
+    }
+  }
+
   private onKeyframeRemove() {
     const layerId = this.timelineTargetLayerId();
     if (!layerId) return;
@@ -1818,7 +1833,7 @@ class App {
           id: layerId,
           name: "Layer 1",
           visible: true,
-          keyframes: [{ frameIndex: 0, contentId: EMPTY_CONTENT_ID }],
+          keyframes: [{ frameIndex: 0, contentId: EMPTY_CONTENT_ID, holdUntil: 0 }],
         },
       ],
       content: { [EMPTY_CONTENT_ID]: "" },

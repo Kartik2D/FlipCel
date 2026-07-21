@@ -8,7 +8,7 @@ import { LitElement, html, css, nothing, type TemplateResult, type PropertyValue
 import { unsafeSVG } from "lit/directives/unsafe-svg.js";
 import { repeat } from "lit/directives/repeat.js";
 import { customElement, property, state } from "lit/decorators.js";
-import { tools, type ToolId, type SettingsSchema, type SettingDef, getTool } from "../core/tools";
+import { type ToolId, type SettingsSchema, type SettingDef, getTool } from "../core/tools";
 import {
   getColorSpaceAdapter,
   valuesToHex,
@@ -727,6 +727,10 @@ export class Block extends LitElement {
     return 80;
   }
 
+  protected getResizeMaxHeight(_width: number): number {
+    return Number.POSITIVE_INFINITY;
+  }
+
   protected _onResizeMove = (e: PointerEvent) => {
     if (!this._isResizing) return;
 
@@ -763,6 +767,7 @@ export class Block extends LitElement {
     if (newHeight < minHeight) {
       newHeight = minHeight;
     }
+    newHeight = Math.min(newHeight, this.getResizeMaxHeight(newWidth));
 
     // Apply position and size
     this.style.left = `${newLeft}px`;
@@ -2058,6 +2063,13 @@ export class InkwellToolsPanel extends FloatingPanel {
   private modifiers = new StoreController(this, modifiersStore);
   private settings = new StoreController(this, toolSettingsStore);
 
+  /** Panel tool order; pan is dock-only and omitted here. */
+  private static readonly TOOL_GROUPS: ToolId[][] = [
+    ["select", "direct-select"],
+    ["brush", "lasso", "rect", "circle"],
+    ["magnet", "eyedropper"],
+  ];
+
   static styles = css`
     ${FloatingPanel.styles}
 
@@ -2192,6 +2204,28 @@ export class InkwellToolsPanel extends FloatingPanel {
       .trim();
   }
 
+  private renderToolButton(toolId: ToolId): TemplateResult {
+    const t = getTool(toolId);
+    return html`
+      <blocky-button
+        flat
+        ?active=${this.tool.value === toolId}
+        @click=${() => this.setTool(toolId)}
+        >${t.name}</blocky-button
+      >
+    `;
+  }
+
+  private renderToolGroups(): TemplateResult[] {
+    return InkwellToolsPanel.TOOL_GROUPS.map(
+      (group) => html`
+        <div class="grid">
+          ${group.map((toolId) => this.renderToolButton(toolId))}
+        </div>
+      `,
+    );
+  }
+
   private renderToolSettings(): TemplateResult {
     const currentToolId = this.tool.value;
     const currentTool = getTool(currentToolId);
@@ -2243,20 +2277,7 @@ export class InkwellToolsPanel extends FloatingPanel {
           <div class="panel-form">
             ${this.renderDragHandlePill()}
             ${this.renderPanelTitle("Tools")}
-            <div class="grid">
-              ${tools
-                .filter((t) => t.id !== "pan")
-                .map(
-                  (t) => html`
-                  <blocky-button
-                    flat
-                    ?active=${this.tool.value === t.id}
-                    @click=${() => this.setTool(t.id as ToolId)}
-                    >${t.name}</blocky-button
-                  >
-                `,
-                )}
-            </div>
+            ${this.renderToolGroups()}
             <section>
               ${this.renderPanelTitle("Tool Settings")}
               ${this.renderToolSettings()}
@@ -3695,6 +3716,20 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-width: 0;
       overflow-x: auto;
       overflow-y: hidden;
+      /* Native scrollbar is replaced by the custom .frames-scrollbar below. */
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+
+    .frames-viewport::-webkit-scrollbar {
+      display: none;
+    }
+
+    /* Positioning context for the playhead so it scrolls with the frames. */
+    .frames-content {
+      position: relative;
+      width: max-content;
+      min-width: 100%;
     }
 
     .strip-list {
@@ -3780,9 +3815,9 @@ export class InkwellLayersPanel extends FloatingPanel {
       filter: brightness(0.92);
     }
 
-    /* Span overlay: one pill per keyframe span, one hollow dot per blank
-       keyframe. Positioned by --f (start frame) / --len (frames). Clicks
-       fall through to the cells underneath. */
+    /* Span overlay: a dot per single-frame keyframe (hollow when blank),
+       a pill per held span. Positioned by --f (start frame) / --len
+       (frames). Clicks fall through to the cells underneath. */
     .span-overlay {
       position: absolute;
       inset: 0;
@@ -3829,11 +3864,14 @@ export class InkwellLayersPanel extends FloatingPanel {
       background: var(--inkwell-accent, #4a6fb5);
     }
 
-    /* Stage row: fixed below the scroll area, stretches the panel width. */
+    /* Stage row: fixed below the scroll area, sized to the name column so
+       the scrollbar next to it lines up with the frames viewport. */
     .stage-row {
       display: flex;
       align-items: center;
       flex: 0 0 auto;
+      width: var(--layers-side-width, 168px);
+      box-sizing: border-box;
       min-height: 24px;
       padding: 0 8px;
       border-radius: 6px;
@@ -3878,7 +3916,117 @@ export class InkwellLayersPanel extends FloatingPanel {
       color: var(--inkwell-playhead, #f2c14e);
       font-weight: 700;
     }
+
+    /* ---- Playhead: vertical line + grab handle over the current frame ---- */
+
+    .playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc((var(--f) + 0.5) * var(--frame-cell-w, 15px));
+      width: 0;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    .playhead::before {
+      content: "";
+      position: absolute;
+      top: 12px;
+      bottom: 0;
+      left: -1px;
+      width: 2px;
+      border-radius: 1px;
+      background: var(--inkwell-playhead, #f2c14e);
+      opacity: 0.85;
+    }
+
+    .playhead-grab {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 11px;
+      height: 14px;
+      border-radius: 3px 3px 5px 5px;
+      background: var(--inkwell-playhead, #f2c14e);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+      pointer-events: auto;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    /* Widen the touch/click target beyond the visible flag. */
+    .playhead-grab::after {
+      content: "";
+      position: absolute;
+      inset: -4px -6px;
+    }
+
+    .playhead-grab:active {
+      cursor: grabbing;
+    }
+
+    .ruler-row {
+      touch-action: none;
+    }
+
+    /* ---- Custom horizontal scrollbar for the frames column ---- */
+
+    /* Bottom row: Stage aligned under the layer names, scrollbar aligned
+       under the frames viewport. */
+    .bottom-row {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      min-width: 0;
+    }
+
+    .frames-scrollbar {
+      flex: 1 1 auto;
+      min-width: 0;
+      position: relative;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      touch-action: none;
+      cursor: pointer;
+    }
+
+    .frames-scrollbar.is-hidden {
+      visibility: hidden;
+    }
+
+    .frames-scrollbar-thumb {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 24px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--block-border, #555555) 55%, transparent);
+      cursor: grab;
+    }
+
+    .frames-scrollbar-thumb:hover {
+      background: color-mix(in srgb, var(--block-border, #555555) 75%, transparent);
+    }
+
+    .frames-scrollbar-thumb:active {
+      cursor: grabbing;
+    }
   `;
+
+  /** True while the playhead (or ruler) is being scrubbed. */
+  private scrubbing = false;
+  /** Thumb-drag state for the custom frames scrollbar. */
+  private scrollbarDrag: { startX: number; startScrollLeft: number } | null = null;
+  private framesResizeObserver: ResizeObserver | null = null;
+  /** Last frame seen in updated(), to auto-scroll the playhead into view. */
+  private lastSeenFrame = -1;
+  private lastSeenLayerCount = -1;
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(
@@ -3892,6 +4040,33 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   updated(changedProperties: Map<string, unknown>) {
     super.updated(changedProperties);
+
+    const layerCount = this.layers.value.layers.filter(
+      (layer) => layer.kind !== "stage",
+    ).length;
+    const layerCountChanged = layerCount !== this.lastSeenLayerCount;
+    this.lastSeenLayerCount = layerCount;
+
+    // A manually sized panel should track its content as layers are added or
+    // removed, and never preserve empty vertical space below the final layer.
+    const contentHeight = this.getResizeMaxHeight(this.getBoundingClientRect().width);
+    if (
+      this.blockHeight !== null &&
+      Number.isFinite(contentHeight) &&
+      (layerCountChanged || this.blockHeight > contentHeight + 0.5)
+    ) {
+      this.blockHeight = contentHeight;
+    }
+
+    // Keep the custom scrollbar geometry in sync with every render (duration
+    // changes resize the content) and follow the playhead during playback.
+    this.updateScrollbar();
+    const frame = this.timeline.value.currentFrame;
+    if (frame !== this.lastSeenFrame) {
+      this.lastSeenFrame = frame;
+      if (!this.scrubbing) this.ensureFrameVisible(frame);
+    }
+
     if (!changedProperties.has("editingLayerId") || !this.editingLayerId) return;
     void this.updateComplete.then(() => {
       const input = this.renderRoot.querySelector<HTMLInputElement>(
@@ -3900,6 +4075,159 @@ export class InkwellLayersPanel extends FloatingPanel {
       input?.focus();
       input?.select();
     });
+  }
+
+  // ---- Playhead scrubbing --------------------------------------------
+
+  private framesViewportEl(): HTMLElement | null {
+    return this.renderRoot.querySelector<HTMLElement>(".frames-viewport");
+  }
+
+  private frameCellWidth(): number {
+    const raw = getComputedStyle(this).getPropertyValue("--frame-cell-w");
+    const parsed = Number.parseFloat(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 15;
+  }
+
+  private frameFromPointer(e: PointerEvent): number {
+    const content = this.renderRoot.querySelector<HTMLElement>(".frames-content");
+    if (!content) return 0;
+    const rect = content.getBoundingClientRect();
+    const frame = Math.floor((e.clientX - rect.left) / this.frameCellWidth());
+    return Math.max(0, Math.min(this.timeline.value.duration - 1, frame));
+  }
+
+  private scrubTo(e: PointerEvent) {
+    const frame = this.frameFromPointer(e);
+    if (frame !== this.timeline.value.currentFrame) {
+      this.emit("frame-select", { frame });
+    }
+    this.ensureFrameVisible(frame);
+  }
+
+  /** Nudge the frames viewport so `frame` is fully visible. */
+  private ensureFrameVisible(frame: number) {
+    const vp = this.framesViewportEl();
+    if (!vp) return;
+    const cellW = this.frameCellWidth();
+    const x = frame * cellW;
+    if (x < vp.scrollLeft) {
+      vp.scrollLeft = x;
+    } else if (x + cellW > vp.scrollLeft + vp.clientWidth) {
+      vp.scrollLeft = x + cellW - vp.clientWidth;
+    }
+  }
+
+  private onScrubDown = (e: PointerEvent) => {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    e.preventDefault();
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    this.scrubbing = true;
+    this.scrubTo(e);
+  };
+
+  private onScrubMove = (e: PointerEvent) => {
+    if (!this.scrubbing) return;
+    e.preventDefault();
+    this.scrubTo(e);
+  };
+
+  private onScrubUp = (e: PointerEvent) => {
+    if (!this.scrubbing) return;
+    this.scrubbing = false;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+
+  // ---- Custom frames scrollbar ----------------------------------------
+
+  /** Repaints the thumb from viewport scroll geometry (no Lit re-render). */
+  private updateScrollbar() {
+    const vp = this.framesViewportEl();
+    const track = this.renderRoot.querySelector<HTMLElement>(".frames-scrollbar");
+    const thumb = this.renderRoot.querySelector<HTMLElement>(".frames-scrollbar-thumb");
+    if (!vp || !track || !thumb) return;
+
+    const viewW = vp.clientWidth;
+    const contentW = vp.scrollWidth;
+    const needed = contentW > viewW + 1 && viewW > 0;
+    track.classList.toggle("is-hidden", !needed);
+    if (!needed) return;
+
+    const trackW = track.clientWidth;
+    const thumbW = Math.max(24, (viewW / contentW) * trackW);
+    const maxScroll = contentW - viewW;
+    const maxThumbTravel = trackW - thumbW;
+    const left = maxScroll > 0 ? (vp.scrollLeft / maxScroll) * maxThumbTravel : 0;
+    thumb.style.width = `${thumbW}px`;
+    thumb.style.transform = `translateX(${left}px)`;
+  }
+
+  private onScrollbarDown = (e: PointerEvent) => {
+    const vp = this.framesViewportEl();
+    if (!vp) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const track = e.currentTarget as HTMLElement;
+    const thumb = track.querySelector<HTMLElement>(".frames-scrollbar-thumb");
+    track.setPointerCapture(e.pointerId);
+
+    // Clicking the track (not the thumb) jumps so the thumb centers under
+    // the pointer, then the same drag continues from there.
+    if (thumb && e.target !== thumb) {
+      const trackRect = track.getBoundingClientRect();
+      const thumbW = thumb.getBoundingClientRect().width;
+      const travel = Math.max(1, trackRect.width - thumbW);
+      const ratio = (e.clientX - trackRect.left - thumbW / 2) / travel;
+      vp.scrollLeft =
+        Math.max(0, Math.min(1, ratio)) * (vp.scrollWidth - vp.clientWidth);
+    }
+    this.scrollbarDrag = { startX: e.clientX, startScrollLeft: vp.scrollLeft };
+  };
+
+  private onScrollbarMove = (e: PointerEvent) => {
+    if (!this.scrollbarDrag) return;
+    const vp = this.framesViewportEl();
+    const track = e.currentTarget as HTMLElement;
+    const thumb = track.querySelector<HTMLElement>(".frames-scrollbar-thumb");
+    if (!vp || !thumb) return;
+    e.preventDefault();
+    const travel = Math.max(1, track.clientWidth - thumb.getBoundingClientRect().width);
+    const scale = (vp.scrollWidth - vp.clientWidth) / travel;
+    vp.scrollLeft =
+      this.scrollbarDrag.startScrollLeft + (e.clientX - this.scrollbarDrag.startX) * scale;
+  };
+
+  private onScrollbarUp = (e: PointerEvent) => {
+    if (!this.scrollbarDrag) return;
+    this.scrollbarDrag = null;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+
+  private initFramesObservers() {
+    const vp = this.framesViewportEl();
+    const content = this.renderRoot.querySelector<HTMLElement>(".frames-content");
+    if (!vp || this.framesResizeObserver) return;
+    this.framesResizeObserver = new ResizeObserver(() => this.updateScrollbar());
+    this.framesResizeObserver.observe(vp);
+    if (content) this.framesResizeObserver.observe(content);
+  }
+
+  /**
+   * The panel's useful height is its fixed chrome plus the timeline ruler and
+   * layer rows. Replace the flexible scroll area's current height with its
+   * actual content height so resizing cannot create blank space underneath.
+   */
+  protected getResizeMaxHeight(_width: number): number {
+    const panelHeight = this.getBoundingClientRect().height;
+    const scroll = this.renderRoot.querySelector<HTMLElement>(".layer-scroll");
+    const body = this.renderRoot.querySelector<HTMLElement>(".layers-body");
+    if (!scroll || !body || panelHeight <= 0) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return Math.ceil(
+      panelHeight - scroll.getBoundingClientRect().height + body.scrollHeight,
+    );
   }
 
   private startLayerRename(layerId: string, currentName: string, e: Event) {
@@ -3964,10 +4292,14 @@ export class InkwellLayersPanel extends FloatingPanel {
   firstUpdated(changedProperties: PropertyValues) {
     super.firstUpdated(changedProperties);
     this.initSortable();
+    this.initFramesObservers();
+    this.updateScrollbar();
   }
 
   disconnectedCallback() {
     this.destroySortable();
+    this.framesResizeObserver?.disconnect();
+    this.framesResizeObserver = null;
     super.disconnectedCallback();
   }
 
@@ -4032,13 +4364,13 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   /**
    * A layer's frames: a flat row of clickable squares, with the span
-   * markers (one pill per filled keyframe span, one hollow dot per blank
-   * keyframe) drawn in a single overlay on top. `keyframes` is sorted
-   * ascending and always contains frame 0.
+   * markers (a dot per single-frame keyframe, a pill per held span; hollow /
+   * outlined when blank) drawn in a single overlay on top. `keyframes` is
+   * sorted ascending and may be empty (all frames empty).
    */
   private renderFrameStrip(
     layerId: string,
-    keyframes: Array<{ frame: number; blank: boolean }>,
+    keyframes: Array<{ frame: number; blank: boolean; holdUntil: number }>,
     duration: number,
     currentFrame: number,
   ) {
@@ -4055,16 +4387,15 @@ export class InkwellLayersPanel extends FloatingPanel {
       ></button>
     `);
 
-    const spans = keyframes.map((kf, i) => {
-      if (kf.blank) {
-        return html`<div class="span-dot" style="--f: ${kf.frame}"></div>`;
-      }
-      const spanEnd = (keyframes[i + 1]?.frame ?? duration) - 1;
-      const len = spanEnd - kf.frame + 1;
-      // A one-frame span is just a keyframe: filled dot, no pill.
+    const spans = keyframes.map((kf) => {
+      const spanEnd = Math.min(kf.holdUntil, duration - 1);
+      const len = Math.max(1, spanEnd - kf.frame + 1);
+      // A one-frame span is just a keyframe: a dot (hollow when blank —
+      // blank keyframes are always single-frame).
       if (len === 1) {
-        return html`<div class="span-dot span-dot--filled" style="--f: ${kf.frame}"></div>`;
+        return html`<div class="span-dot ${kf.blank ? "" : "span-dot--filled"}" style="--f: ${kf.frame}"></div>`;
       }
+      // Held span: pill from the keyframe to its hold end.
       return html`<div class="span-pill" style="--f: ${kf.frame}; --len: ${len}"></div>`;
     });
 
@@ -4084,8 +4415,13 @@ export class InkwellLayersPanel extends FloatingPanel {
         @click=${() => this.emit("keyframe-add", { blank: false })}>+K</button>
       <button type="button" class="tl-btn" title="Insert blank keyframe"
         @click=${() => this.emit("keyframe-add", { blank: true })}>+B</button>
-      <button type="button" class="tl-btn" title="Remove keyframe at playhead"
+      <button type="button" class="tl-btn" title="Clear keyframe at playhead (convert to blank)"
+        @click=${() => this.emit("keyframe-clear")}>&#9675;K</button>
+      <button type="button" class="tl-btn" title="Delete keyframe at playhead (frames become empty)"
         @click=${() => this.emit("keyframe-remove")}>&#215;K</button>
+      <button type="button" class="tl-btn ${t.autoHold ? "on" : ""}"
+        title="Auto hold: new keyframes extend the previous keyframe's hold"
+        @click=${() => this.emit("auto-hold-toggle")}>AH</button>
       <button type="button" class="tl-btn ${t.playing ? "on" : ""}"
         title=${t.playing ? "Stop" : "Play"}
         @click=${() => this.emit("play-toggle")}
@@ -4217,48 +4553,80 @@ export class InkwellLayersPanel extends FloatingPanel {
                     )}
                   </div>
                 </div>
-                <div class="frames-viewport">
-                  <div class="ruler-row">
-                    ${frames.map(
-                      (f) => html`
-                        <div
-                          class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
-                          title=${`Go to frame ${f + 1}`}
-                          @click=${() => this.emit("frame-select", { frame: f })}
-                        >
-                          ${f === 0 || (f + 1) % 5 === 0 || f === t.currentFrame ? f + 1 : ""}
-                        </div>
-                      `,
-                    )}
-                  </div>
-                  <div class="strip-list">
-                    ${repeat(
-                      displayLayers,
-                      (layer) => layer.id,
-                      (layer) => html`
-                        <div
-                          class="strip-row ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
-                        >
-                          ${this.renderFrameStrip(
-                            layer.id,
-                            keyframesByTrack.get(layer.id) ?? [],
-                            t.duration,
-                            t.currentFrame,
-                          )}
-                        </div>
-                      `
-                    )}
+                <div class="frames-viewport" @scroll=${() => this.updateScrollbar()}>
+                  <div class="frames-content">
+                    <div
+                      class="ruler-row"
+                      data-interactive
+                      @pointerdown=${this.onScrubDown}
+                      @pointermove=${this.onScrubMove}
+                      @pointerup=${this.onScrubUp}
+                      @pointercancel=${this.onScrubUp}
+                    >
+                      ${frames.map(
+                        (f) => html`
+                          <div
+                            class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
+                            title=${`Go to frame ${f + 1}`}
+                            @click=${() => this.emit("frame-select", { frame: f })}
+                          >
+                            ${f === 0 || (f + 1) % 5 === 0 || f === t.currentFrame ? f + 1 : ""}
+                          </div>
+                        `,
+                      )}
+                    </div>
+                    <div class="strip-list">
+                      ${repeat(
+                        displayLayers,
+                        (layer) => layer.id,
+                        (layer) => html`
+                          <div
+                            class="strip-row ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
+                          >
+                            ${this.renderFrameStrip(
+                              layer.id,
+                              keyframesByTrack.get(layer.id) ?? [],
+                              t.duration,
+                              t.currentFrame,
+                            )}
+                          </div>
+                        `
+                      )}
+                    </div>
+                    <div class="playhead" style="--f: ${t.currentFrame}">
+                      <div
+                        class="playhead-grab"
+                        data-interactive
+                        title="Drag to scrub"
+                        @pointerdown=${this.onScrubDown}
+                        @pointermove=${this.onScrubMove}
+                        @pointerup=${this.onScrubUp}
+                        @pointercancel=${this.onScrubUp}
+                      ></div>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-            <div
-              class="stage-row ${activeLayerId === STAGE_LAYER_ID ? "active" : ""}"
-              data-interactive
-              title="Stage"
-              @click=${() => this.selectLayer(STAGE_LAYER_ID)}
-            >
-              Stage
+            <div class="bottom-row">
+              <div
+                class="stage-row ${activeLayerId === STAGE_LAYER_ID ? "active" : ""}"
+                data-interactive
+                title="Stage"
+                @click=${() => this.selectLayer(STAGE_LAYER_ID)}
+              >
+                Stage
+              </div>
+              <div
+                class="frames-scrollbar is-hidden"
+                data-interactive
+                @pointerdown=${this.onScrollbarDown}
+                @pointermove=${this.onScrollbarMove}
+                @pointerup=${this.onScrollbarUp}
+                @pointercancel=${this.onScrollbarUp}
+              >
+                <div class="frames-scrollbar-thumb"></div>
+              </div>
             </div>
           </div>
         </div>
