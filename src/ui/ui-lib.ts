@@ -36,8 +36,6 @@ import {
 } from "../core/stores";
 import type { FunctionMenuItem } from "../core/functions";
 import { historyStateStore } from "../core/history";
-import Sortable from "sortablejs";
-
 // ============================================================
 // Phosphor Icons — Duotone weight, inline paths (MIT)
 // https://phosphoricons.com/ · assets from @phosphor-icons/core
@@ -82,6 +80,8 @@ const PHOSPHOR_ICONS: Record<string, string> = {
     '<rect x="36" y="36" width="80" height="80" rx="10"/><rect x="140" y="36" width="80" height="80" rx="10"/><rect x="36" y="140" width="80" height="80" rx="10"/><rect x="140" y="140" width="80" height="80" rx="10"/>',
   "onion-skin":
     '<circle cx="92" cy="128" r="56" opacity="0.35"/><circle cx="160" cy="128" r="56" stroke="currentColor" stroke-width="16" fill="none"/>',
+  "dots-six-vertical":
+    '<circle cx="100" cy="64" r="14"/><circle cx="156" cy="64" r="14"/><circle cx="100" cy="128" r="14"/><circle cx="156" cy="128" r="14"/><circle cx="100" cy="192" r="14"/><circle cx="156" cy="192" r="14"/>',
 };
 
 const PANEL_ICON_MAP: Record<string, string> = {
@@ -3064,7 +3064,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
               >
               <blocky-button
                 class="dock-btn-icon"
-                title="Onion skin (ghost neighboring frames)"
+                title="Onion skin (outline nearest keyframes)"
                 data-interactive
                 stretch
                 ?active=${onionOn}
@@ -3370,15 +3370,24 @@ export class InkwellLayersPanel extends FloatingPanel {
   private timeline = new StoreController(this, timelineStore);
   @state() private editingLayerId: string | null = null;
   @state() private editingName = "";
-  private sortable: Sortable | null = null;
   /**
-   * DOM position of the dragged row at drag start (may be a Lit comment
-   * marker). Used to undo SortableJS's DOM move in onEnd so Lit's keyed
-   * repeat stays the sole owner of the list DOM — without this, Sortable's
-   * mutation desyncs Lit's internal part markers and rows duplicate/vanish
-   * on the next render.
+   * Custom pointer-drag reorder for layer rows. The preview is pure CSS
+   * transforms — the DOM is never reordered mid-drag, so Lit's keyed repeat
+   * stays the sole owner of the list and re-renders the committed order
+   * from the store on release.
    */
-  private dragOriginNextSibling: Node | null = null;
+  private rowDrag: {
+    pointerId: number;
+    fromIndex: number;
+    toIndex: number;
+    startY: number;
+    /** Drag activated (moved past a small threshold from the handle). */
+    active: boolean;
+    /** The row being dragged (preview class + transform target). */
+    el: HTMLElement;
+  } | null = null;
+  /** Swallows the row click that fires right after a completed drag. */
+  private suppressRowClick = false;
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -3386,7 +3395,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     :host {
       --panel-width: 480px;
       --layers-control-size: 24px;
-      --layers-side-width: 168px;
+      --layers-side-width: 196px;
       --frame-cell-w: 15px;
     }
 
@@ -3457,6 +3466,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     .layer-item {
       display: grid;
       grid-template-columns:
+        var(--layers-control-size)
         minmax(0, 1fr)
         var(--layers-control-size);
       align-items: center;
@@ -3464,12 +3474,19 @@ export class InkwellLayersPanel extends FloatingPanel {
       height: var(--layers-control-size);
       min-width: 0;
       flex: 0 0 auto;
-      cursor: grab;
-      touch-action: none;
+      cursor: pointer;
       color: var(--block-border, var(--inkwell-panel-border));
     }
 
-    .layer-item:active {
+    .layer-drag-handle {
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .layer-drag-handle:active,
+    .layer-item.dragging .layer-drag-handle {
       cursor: grabbing;
     }
 
@@ -3477,18 +3494,19 @@ export class InkwellLayersPanel extends FloatingPanel {
       opacity: 0.5;
     }
 
-    /* SortableJS drag state classes */
-    .layer-item.sortable-ghost {
-      opacity: 0.35;
-    }
-
-    .layer-item.sortable-chosen {
-      filter: brightness(0.96);
-    }
-
-    .layer-item.sortable-drag {
+    /* Row being drag-reordered: lifted above its siblings, which animate
+       out of the way (transitions only while a drag is live so committed
+       re-renders snap instantly). */
+    .layer-item.dragging {
+      position: relative;
+      z-index: 5;
       cursor: grabbing;
+      filter: brightness(0.96);
       box-shadow: var(--inkwell-shadow-soft, 0 6px 18px rgba(0, 0, 0, 0.18));
+    }
+
+    .layer-list.reordering .layer-item:not(.dragging) {
+      transition: transform 120ms ease;
     }
 
     .layer-item--stage {
@@ -3544,7 +3562,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     .layer-name-cell {
       justify-content: flex-start;
       padding: 0 8px;
-      grid-column: 1;
+      grid-column: 2;
       min-width: 0;
     }
 
@@ -3794,7 +3812,12 @@ export class InkwellLayersPanel extends FloatingPanel {
       border-radius: 4px;
       background: var(--block-depth-color, var(--inkwell-panel-depth));
       cursor: pointer;
+      touch-action: none;
       -webkit-tap-highlight-color: transparent;
+    }
+
+    .frame-cell.in-selection {
+      cursor: grab;
     }
 
     /* Aseprite-style cross shading: the playhead column is tinted in every
@@ -3871,6 +3894,36 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     .strip-row.active .span-dot--filled {
       background: var(--inkwell-accent, #4a6fb5);
+    }
+
+    /* Drag-selected frame range: accent box over the strip, positioned with
+       the same --f / --len technique as .span-pill. Shifted live while the
+       block is being dragged to a new time. */
+    .frame-selection {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc(var(--f) * var(--frame-cell-w, 15px) + 1px);
+      width: calc(var(--len) * var(--frame-cell-w, 15px) - 2px);
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 24%, transparent);
+      box-shadow: inset 0 0 0 2px var(--inkwell-accent, #4a6fb5);
+      pointer-events: none;
+    }
+
+    .frame-selection.moving {
+      opacity: 0.75;
+    }
+
+    /* Move preview: the departing artwork fades in place while a ghost of
+       the would-be frames travels with the selection box. */
+    .span-pill.moving-out,
+    .span-dot.moving-out {
+      opacity: 0.25;
+    }
+
+    .ghost-overlay {
+      opacity: 0.6;
     }
 
     /* Stage row: fixed below the scroll area, sized to the name column so
@@ -4034,6 +4087,27 @@ export class InkwellLayersPanel extends FloatingPanel {
   private scrollbarDrag: { startX: number; startScrollLeft: number } | null = null;
   /** Last frame-cell tap, for double-tap (toggle keyframe hold) detection. */
   private lastCellTap: { layerId: string; frame: number; time: number } | null = null;
+  /** Selected frame range on one layer's strip (inclusive, start <= end). */
+  @state() private frameSelection: {
+    layerId: string;
+    start: number;
+    end: number;
+  } | null = null;
+  /** Live frame offset while dragging the selection to a new time. */
+  @state() private moveDelta = 0;
+  /**
+   * Frame-cell gesture state. A press starts as a "tap"; horizontal motion
+   * past half a cell turns it into "select" (drag out a range) or, when the
+   * press landed inside the current selection, "move" (drag the block).
+   */
+  private cellDrag: {
+    layerId: string;
+    anchor: number;
+    startX: number;
+    mode: "tap" | "select" | "move";
+    /** Selection bounds at drag start; set only in move mode. */
+    base: { start: number; end: number } | null;
+  } | null = null;
   private framesResizeObserver: ResizeObserver | null = null;
   /** Last frame seen in updated(), to auto-scroll the playhead into view. */
   private lastSeenFrame = -1;
@@ -4147,6 +4221,113 @@ export class InkwellLayersPanel extends FloatingPanel {
   private onScrubUp = (e: PointerEvent) => {
     if (!this.scrubbing) return;
     this.scrubbing = false;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+
+  // ---- Frame range selection + move ------------------------------------
+
+  private onCellDown(layerId: string, frame: number, e: PointerEvent) {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const sel = this.frameSelection;
+    const inSelection =
+      sel !== null &&
+      sel.layerId === layerId &&
+      frame >= sel.start &&
+      frame <= sel.end;
+    this.cellDrag = {
+      layerId,
+      anchor: frame,
+      startX: e.clientX,
+      mode: "tap",
+      base: inSelection ? { start: sel.start, end: sel.end } : null,
+    };
+  }
+
+  private onCellMove = (e: PointerEvent) => {
+    const drag = this.cellDrag;
+    if (!drag) return;
+
+    if (drag.mode === "tap") {
+      if (Math.abs(e.clientX - drag.startX) < this.frameCellWidth() * 0.6) return;
+      drag.mode = drag.base ? "move" : "select";
+    }
+    e.preventDefault();
+
+    const frame = this.frameFromPointer(e);
+    if (drag.mode === "select") {
+      const start = Math.min(drag.anchor, frame);
+      const end = Math.max(drag.anchor, frame);
+      const cur = this.frameSelection;
+      if (!cur || cur.layerId !== drag.layerId || cur.start !== start || cur.end !== end) {
+        this.frameSelection = { layerId: drag.layerId, start, end };
+      }
+    } else if (drag.base) {
+      // Keep at least one frame of the block on the timeline.
+      const duration = this.timeline.value.duration;
+      const raw = frame - drag.anchor;
+      this.moveDelta = Math.max(
+        -drag.base.end,
+        Math.min(duration - 1 - drag.base.start, raw),
+      );
+    }
+    this.ensureFrameVisible(frame);
+  };
+
+  private onCellUp = (e: PointerEvent) => {
+    const drag = this.cellDrag;
+    if (!drag) return;
+    this.cellDrag = null;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+
+    if (drag.mode === "tap") {
+      this.frameSelection = null;
+      this.emit("frame-select", { frame: drag.anchor, layerId: drag.layerId });
+      // Double-tap on a keyframe's span toggles its hold (extend to the
+      // next keyframe / end of animation, or back to a single frame).
+      const now = performance.now();
+      const last = this.lastCellTap;
+      if (
+        last &&
+        last.layerId === drag.layerId &&
+        last.frame === drag.anchor &&
+        now - last.time < 350
+      ) {
+        this.lastCellTap = null;
+        this.emit("keyframe-hold-toggle", { frame: drag.anchor, layerId: drag.layerId });
+      } else {
+        this.lastCellTap = { layerId: drag.layerId, frame: drag.anchor, time: now };
+      }
+      return;
+    }
+
+    if (drag.mode === "move" && drag.base) {
+      const delta = this.moveDelta;
+      this.moveDelta = 0;
+      if (delta !== 0) {
+        this.emit("frames-move", {
+          layerId: drag.layerId,
+          start: drag.base.start,
+          end: drag.base.end,
+          delta,
+        });
+        // Selection follows the moved block (clipped to the timeline).
+        const max = this.timeline.value.duration - 1;
+        this.frameSelection = {
+          layerId: drag.layerId,
+          start: Math.max(0, Math.min(max, drag.base.start + delta)),
+          end: Math.max(0, Math.min(max, drag.base.end + delta)),
+        };
+      }
+    }
+    // "select" mode: the live-updated selection simply stays.
+  };
+
+  private onCellCancel = (e: PointerEvent) => {
+    if (!this.cellDrag) return;
+    this.cellDrag = null;
+    this.moveDelta = 0;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
 
@@ -4295,83 +4476,130 @@ export class InkwellLayersPanel extends FloatingPanel {
     this.emit("layer-add", { id: newId, name: `Layer ${layerNumber}` });
   }
 
-  private destroySortable() {
-    this.sortable?.destroy();
-    this.sortable = null;
-  }
-
   firstUpdated(changedProperties: PropertyValues) {
     super.firstUpdated(changedProperties);
-    this.initSortable();
     this.initFramesObservers();
     this.updateScrollbar();
   }
 
   disconnectedCallback() {
-    this.destroySortable();
+    this.cancelRowDrag();
     this.framesResizeObserver?.disconnect();
     this.framesResizeObserver = null;
     super.disconnectedCallback();
   }
 
-  private initSortable() {
-    const list = this.renderRoot.querySelector<HTMLElement>(".layer-list");
-    if (!list || this.sortable) return;
+  // ---- Layer row drag-reorder ------------------------------------------
 
-    this.sortable = Sortable.create(list, {
-      // Don't initiate drag from controls that should remain clickable.
-      filter: ".visibility-btn, .layer-name-input, .frame-cell",
-      preventOnFilter: false,
-      /* iPad / touch: without this, a tap is treated as a drag and @click (select) never wins. */
-      delay: 220,
-      delayOnTouchOnly: true,
-      ghostClass: "sortable-ghost",
-      chosenClass: "sortable-chosen",
-      dragClass: "sortable-drag",
-      forceFallback: false,
-      onStart: (evt) => {
-        this.cancelLayerRename();
-        this.dragOriginNextSibling = evt.item.nextSibling;
-      },
-      onEnd: (evt) => {
-        const { oldIndex, newIndex } = evt;
-        const originNext = this.dragOriginNextSibling;
-        this.dragOriginNextSibling = null;
-
-        // Read the new top-to-bottom order from the DOM while Sortable's
-        // mutation is still in place.
-        const list = evt.to as HTMLElement;
-        const orderedTopToBottom = Array.from(
-          list.querySelectorAll<HTMLElement>(".layer-item"),
-        )
-          .map((el) => el.dataset.layerId)
-          .filter((id): id is string => Boolean(id));
-
-        // Undo Sortable's DOM move unconditionally: Lit's keyed repeat owns
-        // this DOM, and the store update below re-renders the new order
-        // through Lit. Leaving Sortable's mutation in place corrupts Lit's
-        // part markers (duplicated / vanishing rows).
-        if (originNext?.parentNode === list || originNext === null) {
-          list.insertBefore(evt.item, originNext);
-        }
-
-        if (oldIndex == null || newIndex == null || oldIndex === newIndex) {
-          return;
-        }
-
-        // The list holds regular layers only; Stage renders outside it and
-        // always sits at the bottom of the stack (last in top-to-bottom).
-        const regularCount = this.layers.value.layers.filter(
-          (l) => l.kind !== "stage",
-        ).length;
-        if (orderedTopToBottom.length !== regularCount) {
-          return;
-        }
-
-        this.emit("layer-reorder", [...orderedTopToBottom, STAGE_LAYER_ID]);
-      },
-    });
+  /** Row pitch in the list: row height + the list's 4px gap. */
+  private rowPitch(): number {
+    const raw = getComputedStyle(this).getPropertyValue("--layers-control-size");
+    const size = Number.parseFloat(raw);
+    return (Number.isFinite(size) && size > 0 ? size : 24) + 4;
   }
+
+  private layerRowEls(): HTMLElement[] {
+    return Array.from(
+      this.renderRoot.querySelectorAll<HTMLElement>(".layer-list .layer-item"),
+    );
+  }
+
+  /** Starts from the row's dedicated drag handle. */
+  private onRowDown(index: number, e: PointerEvent) {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    const handle = e.currentTarget as HTMLElement;
+    const row = handle.closest<HTMLElement>(".layer-item");
+    if (!row) return;
+    // Capture on the row: its move/up handlers then receive the whole drag.
+    row.setPointerCapture(e.pointerId);
+    this.rowDrag = {
+      pointerId: e.pointerId,
+      fromIndex: index,
+      toIndex: index,
+      startY: e.clientY,
+      active: false,
+      el: row,
+    };
+  }
+
+  private activateRowDrag() {
+    const drag = this.rowDrag;
+    if (!drag || drag.active) return;
+    drag.active = true;
+    this.cancelLayerRename();
+    drag.el.classList.add("dragging");
+    drag.el.closest(".layer-list")?.classList.add("reordering");
+  }
+
+  private onRowMove = (e: PointerEvent) => {
+    const drag = this.rowDrag;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const dy = e.clientY - drag.startY;
+
+    if (!drag.active) {
+      if (Math.abs(dy) < 4) return;
+      this.activateRowDrag();
+    }
+    e.preventDefault();
+
+    const rows = this.layerRowEls();
+    const pitch = this.rowPitch();
+    drag.toIndex = Math.max(
+      0,
+      Math.min(rows.length - 1, drag.fromIndex + Math.round(dy / pitch)),
+    );
+
+    // Preview: the dragged row follows the pointer, displaced rows shift by
+    // one pitch. DOM order never changes.
+    rows.forEach((row, i) => {
+      if (i === drag.fromIndex) {
+        row.style.transform = `translateY(${dy}px)`;
+      } else if (drag.fromIndex < drag.toIndex && i > drag.fromIndex && i <= drag.toIndex) {
+        row.style.transform = `translateY(${-pitch}px)`;
+      } else if (drag.fromIndex > drag.toIndex && i >= drag.toIndex && i < drag.fromIndex) {
+        row.style.transform = `translateY(${pitch}px)`;
+      } else {
+        row.style.transform = "";
+      }
+    });
+  };
+
+  private onRowUp = (e: PointerEvent) => {
+    const drag = this.rowDrag;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const { active, fromIndex, toIndex } = drag;
+    this.cancelRowDrag();
+    if (!active) return; // plain tap: let the row's @click select the layer
+
+    this.suppressRowClick = true;
+    setTimeout(() => (this.suppressRowClick = false), 0);
+    if (toIndex === fromIndex) return;
+
+    // The list holds regular layers only, top layer first; Stage renders
+    // outside it and always sits at the bottom of the stack.
+    const ids = this.layers.value.layers
+      .filter((l) => l.kind !== "stage")
+      .reverse()
+      .map((l) => l.id);
+    if (fromIndex >= ids.length || toIndex >= ids.length) return;
+    const [moved] = ids.splice(fromIndex, 1);
+    ids.splice(toIndex, 0, moved);
+    this.emit("layer-reorder", {
+      order: [...ids, STAGE_LAYER_ID],
+      movedId: moved,
+    });
+  };
+
+  /** Tear down drag state and the transform/class preview. */
+  private cancelRowDrag = () => {
+    const drag = this.rowDrag;
+    if (!drag) return;
+    this.rowDrag = null;
+    drag.el.releasePointerCapture?.(drag.pointerId);
+    drag.el.classList.remove("dragging");
+    drag.el.closest(".layer-list")?.classList.remove("reordering");
+    for (const row of this.layerRowEls()) row.style.transform = "";
+  };
 
   /**
    * A layer's frames: a flat row of clickable squares, with the span
@@ -4385,50 +4613,82 @@ export class InkwellLayersPanel extends FloatingPanel {
     duration: number,
     currentFrame: number,
   ) {
+    const sel = this.frameSelection;
+    const selected = sel !== null && sel.layerId === layerId ? sel : null;
     const cells = Array.from({ length: duration }, (_, f) => html`
       <button
         type="button"
-        class="frame-cell ${f === currentFrame ? "current" : ""}"
+        class="frame-cell ${f === currentFrame ? "current" : ""} ${
+          selected && f >= selected.start && f <= selected.end ? "in-selection" : ""
+        }"
         title=${`Frame ${f + 1}`}
+        @pointerdown=${(e: PointerEvent) => this.onCellDown(layerId, f, e)}
+        @pointermove=${this.onCellMove}
+        @pointerup=${this.onCellUp}
+        @pointercancel=${this.onCellCancel}
         @click=${(e: Event) => {
-          // Don't bubble into the row's layer-select (which switches tools).
+          // Don't bubble into the row's layer-select (which switches tools);
+          // taps are handled in onCellUp.
           e.stopPropagation();
-          this.emit("frame-select", { frame: f, layerId });
-          // Double-tap on a keyframe's span toggles its hold (extend to the
-          // next keyframe / end of animation, or back to a single frame).
-          const now = performance.now();
-          const last = this.lastCellTap;
-          if (
-            last &&
-            last.layerId === layerId &&
-            last.frame === f &&
-            now - last.time < 350
-          ) {
-            this.lastCellTap = null;
-            this.emit("keyframe-hold-toggle", { frame: f, layerId });
-          } else {
-            this.lastCellTap = { layerId, frame: f, time: now };
-          }
         }}
       ></button>
     `);
 
+    const moving = selected !== null && this.moveDelta !== 0;
     const spans = keyframes.map((kf) => {
       const spanEnd = Math.min(kf.holdUntil, duration - 1);
       const len = Math.max(1, spanEnd - kf.frame + 1);
+      // While the selection is being dragged, the part of the artwork that
+      // is leaving fades out (its would-be position renders as a ghost).
+      const leaving =
+        moving && selected && kf.frame <= selected.end && spanEnd >= selected.start
+          ? "moving-out"
+          : "";
       // A one-frame span is just a keyframe: a dot (hollow when blank —
       // blank keyframes are always single-frame).
       if (len === 1) {
-        return html`<div class="span-dot ${kf.blank ? "" : "span-dot--filled"}" style="--f: ${kf.frame}"></div>`;
+        return html`<div class="span-dot ${kf.blank ? "" : "span-dot--filled"} ${leaving}" style="--f: ${kf.frame}"></div>`;
       }
       // Held span: pill from the keyframe to its hold end.
-      return html`<div class="span-pill" style="--f: ${kf.frame}; --len: ${len}"></div>`;
+      return html`<div class="span-pill ${leaving}" style="--f: ${kf.frame}; --len: ${len}"></div>`;
     });
+
+    // Would-be frames while dragging the selection: the selected slice of
+    // each span, shifted by the current delta and clipped to the timeline.
+    const ghosts = moving && selected
+      ? keyframes.flatMap((kf) => {
+          const spanEnd = Math.min(kf.holdUntil, duration - 1);
+          const from = Math.max(kf.frame, selected.start);
+          const to = Math.min(spanEnd, selected.end);
+          if (to < from) return [];
+          const shiftedFrom = Math.max(0, from + this.moveDelta);
+          const shiftedTo = Math.min(duration - 1, to + this.moveDelta);
+          if (shiftedTo < shiftedFrom) return [];
+          const len = shiftedTo - shiftedFrom + 1;
+          if (len === 1) {
+            return [
+              html`<div class="span-dot ${kf.blank ? "" : "span-dot--filled"}" style="--f: ${shiftedFrom}"></div>`,
+            ];
+          }
+          return [
+            html`<div class="span-pill" style="--f: ${shiftedFrom}; --len: ${len}"></div>`,
+          ];
+        })
+      : null;
 
     return html`
       <div class="frame-strip">
         <div class="frame-cells">${cells}</div>
         <div class="span-overlay">${spans}</div>
+        ${ghosts ? html`<div class="span-overlay ghost-overlay">${ghosts}</div>` : nothing}
+        ${selected
+          ? html`<div
+              class="frame-selection ${this.moveDelta !== 0 ? "moving" : ""}"
+              style="--f: ${selected.start + this.moveDelta}; --len: ${
+                selected.end - selected.start + 1
+              }"
+            ></div>`
+          : nothing}
       </div>
     `;
   }
@@ -4440,8 +4700,13 @@ export class InkwellLayersPanel extends FloatingPanel {
         @click=${() => this.emit("keyframe-add", { blank: false })}>+K</button>
       <button type="button" class="tl-btn" title="Insert blank keyframe"
         @click=${() => this.emit("keyframe-add", { blank: true })}>+B</button>
-      <button type="button" class="tl-btn" title="Delete keyframe at playhead (frames become empty)"
-        @click=${() => this.emit("keyframe-remove")}>&#215;K</button>
+      <button type="button" class="tl-btn"
+        title="Delete selected frames (or the frame at the playhead)"
+        @click=${() => {
+          const sel = this.frameSelection;
+          this.frameSelection = null;
+          this.emit("keyframe-remove", sel ? { ...sel } : null);
+        }}>&#215;K</button>
       <button type="button" class="tl-btn ${t.autoHold ? "on" : ""}"
         title="Auto hold: new keyframes extend the previous keyframe's hold"
         @click=${() => this.emit("auto-hold-toggle")}>AH</button>
@@ -4537,13 +4802,26 @@ export class InkwellLayersPanel extends FloatingPanel {
                     ${repeat(
                       displayLayers,
                       (layer) => layer.id,
-                      (layer) => html`
+                      (layer, i) => html`
                         <div
                           class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
                           data-layer-id=${layer.id}
                           data-interactive
-                          @click=${() => this.selectLayer(layer.id)}
+                          @pointermove=${this.onRowMove}
+                          @pointerup=${this.onRowUp}
+                          @pointercancel=${this.cancelRowDrag}
+                          @click=${() => {
+                            if (this.suppressRowClick) return;
+                            this.selectLayer(layer.id);
+                          }}
                         >
+                          <div
+                            class="layer-control layer-drag-handle"
+                            title="Drag to reorder"
+                            @pointerdown=${(e: PointerEvent) => this.onRowDown(i, e)}
+                          >
+                            ${phosphorIcon("dots-six-vertical", 14)}
+                          </div>
                           <div class="layer-name-cell">
                             ${this.editingLayerId === layer.id
                               ? html`

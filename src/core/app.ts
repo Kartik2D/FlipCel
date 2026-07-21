@@ -386,7 +386,17 @@ class App {
       const { blank } = (e as CustomEvent<{ blank: boolean }>).detail;
       this.onKeyframeAdd(blank);
     });
-    this.layersPanel.addEventListener("keyframe-remove", () => this.onKeyframeRemove());
+    this.layersPanel.addEventListener("keyframe-remove", (e: Event) => {
+      const range = (e as CustomEvent<{ layerId: string; start: number; end: number } | null>)
+        .detail;
+      this.onKeyframeRemove(range ?? undefined);
+    });
+    this.layersPanel.addEventListener("frames-move", (e: Event) => {
+      const { layerId, start, end, delta } = (
+        e as CustomEvent<{ layerId: string; start: number; end: number; delta: number }>
+      ).detail;
+      this.onFramesMove(layerId, start, end, delta);
+    });
     this.layersPanel.addEventListener("keyframe-hold-toggle", (e: Event) => {
       const { frame, layerId } = (e as CustomEvent<{ frame: number; layerId: string }>).detail;
       this.onKeyframeHoldToggle(layerId, frame);
@@ -425,8 +435,10 @@ class App {
       this.onLayerVisibilityToggle(layerId);
     });
     this.layersPanel.addEventListener("layer-reorder", (e: Event) => {
-      const orderedTopToBottom = (e as CustomEvent<string[]>).detail;
-      this.onLayerReorder(orderedTopToBottom);
+      const { order, movedId } = (
+        e as CustomEvent<{ order: string[]; movedId: string }>
+      ).detail;
+      this.onLayerReorder(order, movedId);
     });
     this.layersPanel.addEventListener("layer-rename", (e: Event) => {
       const { id, name } = (e as CustomEvent<{ id: string; name: string }>).detail;
@@ -1762,12 +1774,27 @@ class App {
     }
   }
 
-  private onKeyframeRemove() {
-    const layerId = this.timelineTargetLayerId();
+  /** Delete a frame range; without one, the playhead frame on the active layer. */
+  private onKeyframeRemove(range?: { layerId: string; start: number; end: number }) {
+    const layerId = range?.layerId ?? this.timelineTargetLayerId();
     if (!layerId) return;
     this.selectionController.clearSelection();
     this.directSelectController.clearSelection();
-    if (this.documentManager.removeKeyframe(layerId, this.documentManager.getCurrentFrame())) {
+    const frame = this.documentManager.getCurrentFrame();
+    const start = range?.start ?? frame;
+    const end = range?.end ?? frame;
+    if (this.documentManager.removeFrameRange(layerId, start, end)) {
+      this.historyManager.snapshot();
+      this.requestRedraw();
+    }
+  }
+
+  private onFramesMove(layerId: string, start: number, end: number, delta: number) {
+    // Commit live edits first so an in-progress drawing travels with its frame.
+    this.commitLiveEdits();
+    this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
+    if (this.documentManager.moveFrameRange(layerId, start, end, delta)) {
       this.historyManager.snapshot();
       this.requestRedraw();
     }
@@ -1857,7 +1884,7 @@ class App {
     this.requestRedraw();
   }
 
-  private onLayerReorder(orderedTopToBottom: string[]) {
+  private onLayerReorder(orderedTopToBottom: string[], movedId?: string) {
     const state = layerStore.get();
     const layersById = new Map(state.layers.map((layer) => [layer.id, layer]));
 
@@ -1878,9 +1905,22 @@ class App {
     if (reorderedLayers.length !== state.layers.length) return;
 
     this.paperRenderer.reorderLayers(orderedBottomToTop);
+
+    // The layer just dragged becomes the active layer.
+    let activeLayerId = state.activeLayerId;
+    if (
+      movedId &&
+      movedId !== STAGE_LAYER_ID &&
+      movedId !== activeLayerId &&
+      this.paperRenderer.setActiveLayer(movedId)
+    ) {
+      activeLayerId = movedId;
+      stageSelectedStore.set(false);
+    }
+
     layerStore.set({
       layers: reorderedLayers,
-      activeLayerId: state.activeLayerId,
+      activeLayerId,
     });
 
     this.historyManager.snapshot();

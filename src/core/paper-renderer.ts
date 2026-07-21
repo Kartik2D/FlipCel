@@ -572,8 +572,9 @@ export class PaperRenderer {
 
   /**
    * Replace the onion-skin ghosts. Each ghost is one neighbor frame: its
-   * visible layers' content JSONs (bottom→top), rendered flat-tinted at the
-   * given opacity. Ghost layers are locked and sit below all artwork.
+   * visible layers' content JSONs (bottom→top), rendered as tinted outlines
+   * (no fill) at the given opacity. Ghost layers are locked and sit below
+   * all artwork.
    */
   setOnionSkin(
     ghosts: Array<{ jsons: string[]; opacity: number; color: string }>,
@@ -600,13 +601,19 @@ export class PaperRenderer {
         scratch.remove();
       }
 
+      // Outline-only ghosts: every shape becomes an unfilled tinted contour,
+      // so ghosts never obscure the current frame's artwork.
       const tint = new paper.Color(ghost.color);
-      for (const child of ghostLayer.children) {
-        if (child instanceof paper.Path || child instanceof paper.CompoundPath) {
-          if (child.fillColor) child.fillColor = tint.clone();
-          if (child.strokeColor) child.strokeColor = tint.clone();
+      const outline = (item: paper.Item) => {
+        if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
+          const hadStroke = !!item.strokeColor;
+          item.fillColor = null;
+          item.strokeColor = tint.clone();
+          if (!hadStroke) item.strokeWidth = 1.5;
         }
-      }
+        for (const child of item.children ?? []) outline(child);
+      };
+      for (const child of [...ghostLayer.children]) outline(child);
       ghostLayer.opacity = ghost.opacity;
       this.onionLayers.push(ghostLayer);
     }

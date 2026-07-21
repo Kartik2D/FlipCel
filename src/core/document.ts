@@ -59,13 +59,12 @@ export const EMPTY_CONTENT_ID = "empty";
 export const DEFAULT_FRAME_RATE = 12;
 export const DEFAULT_DURATION = 24;
 
-/** Onion-skin range and ghost tints (Flash convention: warm past, cool future). */
-const ONION_FRAMES_BEFORE = 2;
-const ONION_FRAMES_AFTER = 1;
+/** Onion-skin ghost tints (Flash convention: warm past, cool future). */
 const ONION_PREV_COLOR = "#d84a4a";
 const ONION_NEXT_COLOR = "#3f8f5f";
-/** Ghost opacity for the nearest neighbor; falls off with distance. */
-const ONION_BASE_OPACITY = 0.28;
+/** Ghost opacity. Outline-only ghosts read lighter, so this sits higher
+ * than the old filled-ghost value. */
+const ONION_OPACITY = 0.45;
 
 /** Lightweight, immutable view of the timeline for UI panels. */
 export interface TimelineState {
@@ -149,6 +148,14 @@ export class DocumentManager {
 
   constructor(renderer: PaperRenderer) {
     this.renderer = renderer;
+    // Ghosts follow the active layer, and selection changes don't go
+    // through publish() — refresh them here when the selection moves.
+    let lastActive = layerStore.get().activeLayerId;
+    layerStore.subscribe((s) => {
+      if (s.activeLayerId === lastActive) return;
+      lastActive = s.activeLayerId;
+      if (this.onionSkinEnabled) this.updateOnionSkin();
+    });
   }
 
   // ------------------------------------------------------------
@@ -411,28 +418,121 @@ export class DocumentManager {
   }
 
   /**
-   * Delete at this frame:
-   * - On the keyframe itself, remove it entirely (its whole span goes empty).
-   * - On one of its hold frames, snip the hold so it ends just before this
-   *   frame (the keyframe and earlier hold frames survive).
-   * Returns true if changed.
+   * Make frames start..end empty on this track, preserving everything
+   * outside the range — deleting the middle of a hold punches a hole: the
+   * head keeps its keyframe (hold snipped to start - 1) and the tail
+   * re-materializes as a new keyframe at end + 1 with the leftover hold.
+   * Mutates the track only; returns true when anything changed.
    */
-  removeKeyframe(layerId: string, frame: number): boolean {
+  private cutFrameRange(track: LayerTrack, start: number, end: number): boolean {
+    const kept: Keyframe[] = [];
+    const tails: Keyframe[] = [];
+    let changed = false;
+
+    for (const kf of track.keyframes) {
+      // Entirely outside the range (span ends before it or starts after it).
+      if (kf.holdUntil < start || kf.frameIndex > end) {
+        kept.push(kf);
+        continue;
+      }
+      changed = true;
+      const tailEnd = kf.holdUntil;
+      if (kf.frameIndex < start) {
+        // Head survives with a snipped hold.
+        kf.holdUntil = start - 1;
+        kept.push(kf);
+      }
+      if (tailEnd > end) {
+        // Hold reached past the range: re-create the tail after it.
+        tails.push({ frameIndex: end + 1, contentId: kf.contentId, holdUntil: tailEnd });
+      }
+    }
+
+    if (!changed) return false;
+    track.keyframes = [...kept, ...tails].sort(
+      (a, b) => a.frameIndex - b.frameIndex,
+    );
+    return true;
+  }
+
+  /**
+   * Delete a frame range (single frame or drag selection): exactly the
+   * selected frames go empty, everything before and after survives (see
+   * `cutFrameRange`). Returns true if changed.
+   */
+  removeFrameRange(layerId: string, start: number, end: number): boolean {
     const track = this.getTrack(layerId);
     if (!track) return false;
-    frame = this.clampFrame(frame);
-    const kf = this.coveringKeyframe(track, frame);
-    if (!kf) return false;
+    [start, end] = this.normalizeRange(start, end);
+    if (!this.cutFrameRange(track, start, end)) return false;
 
-    if (kf.frameIndex === frame) {
-      track.keyframes.splice(track.keyframes.indexOf(kf), 1);
-    } else {
-      kf.holdUntil = frame - 1;
+    this.reloadCurrentFrame();
+    this.publish();
+    return true;
+  }
+
+  /**
+   * The visible content of frames start..end as standalone keyframes: spans
+   * are clipped to the range, and a hold covering `start` is materialized
+   * as a keyframe at `start`.
+   */
+  private extractFrameRange(track: LayerTrack, start: number, end: number): Keyframe[] {
+    const segment: Keyframe[] = [];
+    for (const kf of track.keyframes) {
+      if (kf.holdUntil < start || kf.frameIndex > end) continue;
+      segment.push({
+        frameIndex: Math.max(kf.frameIndex, start),
+        contentId: kf.contentId,
+        holdUntil: Math.min(kf.holdUntil, end),
+      });
+    }
+    return segment;
+  }
+
+  /**
+   * Move the frames in start..end by `delta` frames. The source range goes
+   * empty, the destination range is overwritten, and anything shifted past
+   * either end of the timeline is dropped (spans crossing the edge keep
+   * their in-bounds part). Returns true if changed.
+   */
+  moveFrameRange(layerId: string, start: number, end: number, delta: number): boolean {
+    const track = this.getTrack(layerId);
+    if (!track) return false;
+    [start, end] = this.normalizeRange(start, end);
+    delta = Math.round(delta);
+    if (delta === 0) return false;
+
+    const segment = this.extractFrameRange(track, start, end);
+    if (segment.length === 0) return false;
+
+    this.cutFrameRange(track, start, end);
+
+    // Vacate the destination (overwrite semantics), clipped to the timeline.
+    const destStart = Math.max(0, start + delta);
+    const destEnd = Math.min(this.duration - 1, end + delta);
+    if (destStart <= destEnd) this.cutFrameRange(track, destStart, destEnd);
+
+    for (const kf of segment) {
+      const from = kf.frameIndex + delta;
+      const to = kf.holdUntil + delta;
+      if (to < 0 || from > this.duration - 1) continue; // fully off the timeline
+      this.insertKeyframe(track, {
+        frameIndex: Math.max(0, from),
+        contentId: kf.contentId,
+        holdUntil: Math.min(this.duration - 1, to),
+      });
     }
 
     this.reloadCurrentFrame();
     this.publish();
     return true;
+  }
+
+  /** Clamp both ends to the timeline and put them in ascending order. */
+  private normalizeRange(start: number, end: number): [number, number] {
+    const a = this.clampFrame(start);
+    const b = this.clampFrame(end);
+    return a <= b ? [a, b] : [b, a];
   }
 
   setDuration(frames: number): boolean {
@@ -485,9 +585,11 @@ export class DocumentManager {
 
   /**
    * Rebuild the onion-skin ghost layers for the current playhead position.
-   * A neighbor frame contributes a ghost only for layers whose governing
-   * content actually differs from the current frame — a layer holding the
-   * same artwork would just paint an invisible tinted copy under itself.
+   * Shows exactly two ghosts for the *active* layer only: its nearest
+   * previous and nearest next keyframe with real artwork, however far away
+   * (blank keyframes and empty gaps are skipped). A keyframe whose content
+   * matches what's on screen is skipped — it would just paint an invisible
+   * copy under itself.
    */
   private updateOnionSkin(): void {
     if (!this.onionSkinEnabled || this.playing) {
@@ -495,30 +597,50 @@ export class DocumentManager {
       return;
     }
 
-    const ghosts: Array<{ jsons: string[]; opacity: number; color: string }> = [];
-
-    const addGhost = (frame: number, distance: number, color: string) => {
-      if (frame < 0 || frame >= this.duration || frame === this.currentFrame) return;
-      const jsons: string[] = [];
-      for (const track of this.tracks) {
-        if (!track.visible) continue;
-        const contentId = this.contentIdAt(track, frame);
-        if (contentId === this.contentIdAt(track, this.currentFrame)) continue;
-        const json = this.content.get(contentId);
-        if (json) jsons.push(json);
+    // Nearest keyframe with drawable content in the given direction, ignoring
+    // blanks and any keyframe whose span governs the current frame.
+    const nearestKeyframe = (track: LayerTrack, direction: -1 | 1): Keyframe | null => {
+      const kfs = track.keyframes;
+      if (direction === -1) {
+        for (let i = kfs.length - 1; i >= 0; i--) {
+          const kf = kfs[i];
+          if (kf.frameIndex >= this.currentFrame) continue;
+          if (kf.holdUntil >= this.currentFrame) continue;
+          if (kf.contentId === EMPTY_CONTENT_ID) continue;
+          return kf;
+        }
+      } else {
+        for (const kf of kfs) {
+          if (kf.frameIndex <= this.currentFrame) continue;
+          if (kf.contentId === EMPTY_CONTENT_ID) continue;
+          return kf;
+        }
       }
-      if (jsons.length > 0) {
-        ghosts.push({ jsons, opacity: ONION_BASE_OPACITY / distance, color });
+      return null;
+    };
+
+    // Only the active layer gets ghosts; other layers' motion is noise
+    // while drawing on this one.
+    const activeId = layerStore.get().activeLayerId;
+    const track = this.tracks.find((t) => t.id === activeId);
+    if (!track || !track.visible) {
+      this.renderer.clearOnionSkin();
+      return;
+    }
+
+    const collectGhost = (direction: -1 | 1, color: string) => {
+      const kf = nearestKeyframe(track, direction);
+      if (!kf) return;
+      if (kf.contentId === this.contentIdAt(track, this.currentFrame)) return;
+      const json = this.content.get(kf.contentId);
+      if (json) {
+        ghosts.push({ jsons: [json], opacity: ONION_OPACITY, color });
       }
     };
 
-    // Farthest first so nearer ghosts render on top of them.
-    for (let d = ONION_FRAMES_BEFORE; d >= 1; d--) {
-      addGhost(this.currentFrame - d, d, ONION_PREV_COLOR);
-    }
-    for (let d = ONION_FRAMES_AFTER; d >= 1; d--) {
-      addGhost(this.currentFrame + d, d, ONION_NEXT_COLOR);
-    }
+    const ghosts: Array<{ jsons: string[]; opacity: number; color: string }> = [];
+    collectGhost(-1, ONION_PREV_COLOR);
+    collectGhost(1, ONION_NEXT_COLOR);
 
     this.renderer.setOnionSkin(ghosts);
   }
