@@ -76,12 +76,15 @@ const PHOSPHOR_ICONS: Record<string, string> = {
     '<path d="M48 192c22-52 46-84 80-84s58 28 80 84" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M128 108c10-22 28-36 48-44" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="128" cy="108" r="10"/><circle cx="176" cy="64" r="10"/><circle cx="208" cy="192" r="10"/>',
   "film-strip":
     '<rect x="28" y="56" width="200" height="144" rx="12" stroke="currentColor" stroke-width="16" fill="none"/><path d="M28 92h200M28 164h200" stroke="currentColor" stroke-width="12" fill="none"/><path d="M76 56v36M128 56v36M180 56v36M76 164v36M128 164v36M180 164v36" stroke="currentColor" stroke-width="12" fill="none"/>',
+  "jog-wheel":
+    '<circle cx="128" cy="43" r="20"/><circle cx="188" cy="68" r="20"/><circle cx="213" cy="128" r="20"/><circle cx="188" cy="188" r="20"/><circle cx="128" cy="213" r="20"/><circle cx="68" cy="188" r="20"/><circle cx="43" cy="128" r="20"/><circle cx="68" cy="68" r="20"/><circle cx="128" cy="128" r="12"/>',
 };
 
 const PANEL_ICON_MAP: Record<string, string> = {
   "tools-panel": "paint-brush",
   "universal-panel": "gear",
   "layers-panel": "stack",
+  "wheel-panel": "jog-wheel",
 };
 
 function phosphorIcon(name: string, size = 16): TemplateResult {
@@ -2519,6 +2522,7 @@ function dockColorDepthStripColor(faceCss: string): string {
 const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
   { id: "universal-panel", label: "Settings", visible: false },
   { id: "layers-panel", label: "Layers", visible: false },
+  { id: "wheel-panel", label: "Wheel", visible: false },
   { id: "tools-panel", label: "Brush", visible: false },
   { id: "color-panel", label: "Color", visible: false },
 ];
@@ -2533,7 +2537,7 @@ type DockInfoChip = "zoom" | "angle" | "mode";
 
 /** Which panel buttons render in each top-bar dock instance (panels variant). */
 const TOP_BAR_SIDE_PANELS: Record<TopBarSide, readonly string[]> = {
-  left: ["universal-panel", "layers-panel"],
+  left: ["universal-panel", "layers-panel", "wheel-panel"],
   right: ["tools-panel", "color-panel"],
 };
 
@@ -4234,6 +4238,401 @@ export class InkwellLayersPanel extends FloatingPanel {
 }
 
 // ============================================================
+// Wheel Panel (revolver-barrel jog wheel that spins the playhead)
+// ============================================================
+
+/** Chambers on the barrel; spinning past one chamber steps one frame. */
+const WHEEL_CHAMBERS = 8;
+const WHEEL_DEG_PER_FRAME = 360 / WHEEL_CHAMBERS;
+/** Flick velocity (deg/ms) needed for the wheel to keep coasting on release. */
+const WHEEL_FLICK_MIN_VELOCITY = 0.05;
+/** Coasting stops (and snaps to a chamber) below this velocity (deg/ms). */
+const WHEEL_COAST_STOP_VELOCITY = 0.015;
+/** Exponential friction time constant while coasting (ms). */
+const WHEEL_FRICTION_TAU_MS = 650;
+/** Velocity cap so a hard flick can't scrub the timeline absurdly fast. */
+const WHEEL_MAX_VELOCITY = 1.5;
+
+@customElement("inkwell-wheel-panel")
+export class InkwellWheelPanel extends FloatingPanel {
+  private timeline = new StoreController(this, timelineStore);
+  /** Cumulative barrel rotation in degrees; grows clockwise without bound. */
+  @state() private rotationDeg = 0;
+  /** Pointer is down and dragging the barrel. */
+  @state() private spinning = false;
+  /** Barrel is free-spinning from a flick (inertia). */
+  @state() private coasting = false;
+
+  /** Pointer angle (deg) at the last drag event, for signed deltas. */
+  private lastPointerAngle = 0;
+  /**
+   * The notch (whole chamber count) the barrel last rested on. The frame
+   * is always the chamber nearest the right-side marker, so a step is emitted
+   * the moment `round(rotationDeg / 45)` changes — no drag distance to build up.
+   */
+  private lastNotch = 0;
+  /** Last frame seen from the store, for wrap-aware playback sync. */
+  private lastFrame = timelineStore.get().currentFrame;
+  private unsubscribeTimeline: (() => void) | null = null;
+  /** Smoothed angular velocity (deg/ms) from recent drag samples. */
+  private angularVelocity = 0;
+  private lastMoveTs = 0;
+  private coastRaf: number | null = null;
+  private lastCoastTs = 0;
+  /**
+   * True while our own frame-step event is being dispatched. The store
+   * update it causes re-enters syncRotationToFrame synchronously; without
+   * this flag the barrel would rotate twice per step.
+   */
+  private suppressSync = false;
+
+  static styles = css`
+    ${FloatingPanel.styles}
+
+    :host {
+      /* Special case: fixed-size host where the FACE is a true circle. The
+         block is taller than it is wide by the 3D depth, so the panel shell
+         reads as a slightly elongated puck while the face stays circular. */
+      --panel-size: 192px;
+      --panel-width: var(--panel-size);
+      --panel-min-width: 0;
+      --wheel-size: 148px;
+      --chamber-size: 26px;
+      --chamber-inset: 10px;
+      height: calc(var(--panel-size) + var(--block-depth));
+      min-height: calc(var(--panel-size) + var(--block-depth));
+      max-height: calc(var(--panel-size) + var(--block-depth));
+    }
+
+    /* Stadium-shaped block: circle stretched vertically by the depth. */
+    .block {
+      border-radius: calc(var(--panel-size) / 2);
+    }
+
+    /* Fixed-size content; never show a scrollbar next to the wheel. */
+    .face {
+      border-radius: 50%;
+      overflow-y: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .panel-form {
+      align-items: center;
+      justify-content: center;
+    }
+
+    .wheel-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .wheel {
+      position: relative;
+      width: var(--wheel-size);
+      height: var(--wheel-size);
+      border-radius: 50%;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      cursor: grab;
+      touch-action: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .wheel.spinning {
+      cursor: grabbing;
+    }
+
+    .barrel {
+      position: absolute;
+      inset: 0;
+      /* Smooth chamber-to-chamber motion for playback / snapping; live drag
+         and coasting are untransitioned so the barrel sticks to the motion. */
+      transition: transform 90ms linear;
+      will-change: transform;
+    }
+
+    .wheel.spinning .barrel,
+    .wheel.coasting .barrel {
+      transition: none;
+    }
+
+    .chamber {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: var(--chamber-size);
+      height: var(--chamber-size);
+      margin: calc(var(--chamber-size) / -2) 0 0 calc(var(--chamber-size) / -2);
+      border-radius: 50%;
+      background: var(--block-face-bg, var(--inkwell-panel-surface));
+      pointer-events: none;
+    }
+
+    /* Solid accent hub pill: the play button sits centered on the wheel's
+       hub and the pill runs right to the wheel's edge, ending in the
+       current frame number. */
+    .hub-pill {
+      --hub-pill-height: 44px;
+      position: absolute;
+      top: 50%;
+      /* Left edge placed so the play half is centered on the wheel hub. */
+      left: calc(50% - var(--hub-pill-height) / 2);
+      transform: translateY(-50%);
+      width: calc(var(--wheel-size) / 2 + var(--hub-pill-height) / 2 + 6px);
+      height: var(--hub-pill-height);
+      border-radius: 999px;
+      overflow: hidden;
+      display: flex;
+      align-items: stretch;
+      background: var(--inkwell-accent, #4a6fb5);
+      z-index: 2;
+    }
+
+    .hub-play {
+      flex: 0 0 auto;
+      width: var(--hub-pill-height);
+      min-width: 0;
+      border: none;
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      color: var(--inkwell-danger-contrast, #ffffff);
+      font: inherit;
+      font-size: 17px;
+      line-height: 1;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .hub-play:hover {
+      filter: brightness(0.92);
+    }
+
+    /* Shaded circle enclosing the frame number, inset at the pill's right end. */
+    .hub-frame {
+      --hub-frame-inset: 5px;
+      flex: 0 0 auto;
+      width: calc(var(--hub-pill-height) - var(--hub-frame-inset) * 2);
+      height: calc(var(--hub-pill-height) - var(--hub-frame-inset) * 2);
+      margin: var(--hub-frame-inset) var(--hub-frame-inset) var(--hub-frame-inset) auto;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.22);
+      color: var(--inkwell-danger-contrast, #ffffff);
+      display: grid;
+      place-items: center;
+      font-size: 14px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+  `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.unsubscribeTimeline = timelineStore.subscribe((t) =>
+      this.syncRotationToFrame(t.currentFrame, t.duration),
+    );
+  }
+
+  disconnectedCallback() {
+    this.unsubscribeTimeline?.();
+    this.unsubscribeTimeline = null;
+    this.stopCoasting();
+    super.disconnectedCallback();
+  }
+
+  private emitStep(delta: number) {
+    this.suppressSync = true;
+    try {
+      this.dispatchEvent(
+        new CustomEvent("frame-step", { detail: delta, bubbles: true, composed: true }),
+      );
+    } finally {
+      this.suppressSync = false;
+    }
+  }
+
+  /**
+   * The selected frame is always the chamber nearest the right-side marker,
+   * so a step fires the instant the barrel rolls past a notch midpoint.
+   */
+  private emitNotchSteps() {
+    const notch = Math.round(this.rotationDeg / WHEEL_DEG_PER_FRAME);
+    if (notch !== this.lastNotch) {
+      const steps = notch - this.lastNotch;
+      this.lastNotch = notch;
+      this.emitStep(steps);
+    }
+  }
+
+  /** Snap the barrel onto the notch it already selected. */
+  private settleToChamber() {
+    this.rotationDeg = this.lastNotch * WHEEL_DEG_PER_FRAME;
+  }
+
+  /**
+   * Keep the barrel turning when the playhead moves from elsewhere
+   * (playback, frame strip clicks). Wrap-aware so looping playback keeps
+   * spinning forward instead of rewinding a full turn.
+   */
+  private syncRotationToFrame(frame: number, duration: number) {
+    if (frame === this.lastFrame) return;
+    let df = frame - this.lastFrame;
+    if (duration > 1 && Math.abs(df) > duration / 2) {
+      df -= Math.sign(df) * duration;
+    }
+    this.lastFrame = frame;
+    // Our own steps already rotated the barrel (and drags shouldn't fight
+    // the finger), so only external playhead moves turn the wheel here.
+    if (this.suppressSync || this.spinning || this.coasting) return;
+    this.lastNotch += df;
+    this.rotationDeg = this.lastNotch * WHEEL_DEG_PER_FRAME;
+  }
+
+  private startCoasting(velocity: number) {
+    this.angularVelocity = Math.max(
+      -WHEEL_MAX_VELOCITY,
+      Math.min(WHEEL_MAX_VELOCITY, velocity),
+    );
+    this.coasting = true;
+    this.lastCoastTs = performance.now();
+    this.coastRaf = requestAnimationFrame(this.coastTick);
+  }
+
+  private stopCoasting() {
+    if (this.coastRaf !== null) {
+      cancelAnimationFrame(this.coastRaf);
+      this.coastRaf = null;
+    }
+    this.coasting = false;
+  }
+
+  private coastTick = (now: number) => {
+    const dt = now - this.lastCoastTs;
+    this.lastCoastTs = now;
+    this.rotationDeg += this.angularVelocity * dt;
+    this.emitNotchSteps();
+    this.angularVelocity *= Math.exp(-dt / WHEEL_FRICTION_TAU_MS);
+    if (Math.abs(this.angularVelocity) < WHEEL_COAST_STOP_VELOCITY) {
+      this.stopCoasting();
+      this.settleToChamber();
+      return;
+    }
+    this.coastRaf = requestAnimationFrame(this.coastTick);
+  };
+
+  /** Pointer angle around the wheel center, in degrees. */
+  private pointerAngle(e: PointerEvent): number {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    return (Math.atan2(e.clientY - cy, e.clientX - cx) * 180) / Math.PI;
+  }
+
+  private onWheelDown = (e: PointerEvent) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    // Catching a coasting wheel just grabs it at its current angle.
+    this.stopCoasting();
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      // Pointer already released (fast tap) — spin still works uncaptured.
+    }
+    this.spinning = true;
+    this.lastPointerAngle = this.pointerAngle(e);
+    this.angularVelocity = 0;
+    this.lastMoveTs = e.timeStamp;
+    e.preventDefault();
+  };
+
+  private onWheelMove = (e: PointerEvent) => {
+    if (!this.spinning) return;
+    const angle = this.pointerAngle(e);
+    // Shortest signed arc, so crossing the ±180° seam doesn't jump.
+    let delta = angle - this.lastPointerAngle;
+    delta = ((delta + 540) % 360) - 180;
+    this.lastPointerAngle = angle;
+    this.rotationDeg += delta;
+    const dt = e.timeStamp - this.lastMoveTs;
+    if (dt > 0 && dt < 120) {
+      this.angularVelocity = this.angularVelocity * 0.7 + (delta / dt) * 0.3;
+    }
+    this.lastMoveTs = e.timeStamp;
+    this.emitNotchSteps();
+  };
+
+  private onWheelUp = (e: PointerEvent) => {
+    if (!this.spinning) return;
+    this.spinning = false;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    // A pause before release means the flick died — don't coast on old speed.
+    const stale = e.timeStamp - this.lastMoveTs > 100;
+    if (!stale && Math.abs(this.angularVelocity) >= WHEEL_FLICK_MIN_VELOCITY) {
+      this.startCoasting(this.angularVelocity);
+      return;
+    }
+    this.settleToChamber();
+  };
+
+  render() {
+    const t = this.timeline.value;
+    const chambers = Array.from({ length: WHEEL_CHAMBERS }, (_, i) => i);
+    return html`
+      <div class="block">
+        <div class="face">
+          <div class="panel-form">
+            <div class="wheel-wrap">
+              <div
+                class="wheel ${this.spinning ? "spinning" : ""} ${this.coasting ? "coasting" : ""}"
+                data-interactive
+                title="Drag or flick to spin the playhead"
+                @pointerdown=${this.onWheelDown}
+                @pointermove=${this.onWheelMove}
+                @pointerup=${this.onWheelUp}
+                @pointercancel=${this.onWheelUp}
+              >
+                <div class="barrel" style="transform: rotate(${this.rotationDeg}deg)">
+                  ${chambers.map(
+                    (i) => html`
+                      <div
+                        class="chamber"
+                        style="transform: rotate(${i * WHEEL_DEG_PER_FRAME}deg)
+                          translateY(calc(var(--wheel-size) / -2 + var(--chamber-size) / 2 + var(--chamber-inset)))"
+                      ></div>
+                    `,
+                  )}
+                </div>
+                <div class="hub-pill">
+                  <button
+                    type="button"
+                    class="hub-play ${t.playing ? "on" : ""}"
+                    title=${t.playing ? "Stop" : "Play"}
+                    data-interactive
+                    @pointerdown=${(e: Event) => e.stopPropagation()}
+                    @click=${() =>
+                      this.dispatchEvent(
+                        new CustomEvent("play-toggle", { bubbles: true, composed: true }),
+                      )}
+                  >${t.playing ? html`&#9632;` : html`&#9654;`}</button>
+                  <div class="hub-frame">${t.currentFrame + 1}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+}
+
+// ============================================================
 // Modal Window
 // ============================================================
 
@@ -4666,6 +5065,7 @@ declare global {
     "inkwell-tool-settings-panel": InkwellToolSettingsPanel;
     "inkwell-universal-panel": InkwellUniversalPanel;
     "inkwell-layers-panel": InkwellLayersPanel;
+    "inkwell-wheel-panel": InkwellWheelPanel;
     "inkwell-modal": InkwellModal;
     "inkwell-functions-panel": InkwellFunctionsPanel;
   }

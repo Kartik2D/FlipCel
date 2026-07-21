@@ -32,6 +32,7 @@ import { MagnetController } from "./magnet-controller";
 import { HistoryManager } from "./history";
 import {
   DocumentManager,
+  timelineStore,
   EMPTY_CONTENT_ID,
   DEFAULT_FRAME_RATE,
   DEFAULT_DURATION,
@@ -59,6 +60,7 @@ import type {
   InkwellUniversalPanel,
   InkwellTopBarPanel,
   InkwellLayersPanel,
+  InkwellWheelPanel,
   InkwellFunctionsPanel,
 } from "../ui/ui-lib";
 import "../ui/ui-lib"; // Register Lit components
@@ -129,6 +131,7 @@ class App {
   private universalPanel: InkwellUniversalPanel;
   private topBarPanels: InkwellTopBarPanel[] = [];
   private layersPanel: InkwellLayersPanel;
+  private wheelPanel: InkwellWheelPanel;
   private functionsPanel: InkwellFunctionsPanel;
   private camera: Camera;
   private isInitialized = false;
@@ -250,6 +253,7 @@ class App {
       document.querySelectorAll<InkwellTopBarPanel>("inkwell-top-bar-panel"),
     );
     this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
+    this.wheelPanel = document.getElementById("wheel-panel") as InkwellWheelPanel;
     this.functionsPanel = document.getElementById("functions-panel") as InkwellFunctionsPanel;
     this.setupPanelEvents();
     window.addEventListener("pointerup", this.globalDuplicateDragEndHandler);
@@ -369,6 +373,14 @@ class App {
       const { frame, layerId } = (e as CustomEvent<{ frame: number; layerId?: string }>).detail;
       this.onTimelineFrameSelect(frame, layerId);
     });
+    // Jog wheel: signed frame steps, wrapping around the timeline ends.
+    this.wheelPanel.addEventListener("frame-step", (e: Event) => {
+      const delta = (e as CustomEvent<number>).detail;
+      const t = timelineStore.get();
+      const next = (((t.currentFrame + delta) % t.duration) + t.duration) % t.duration;
+      this.onTimelineFrameSelect(next);
+    });
+    this.wheelPanel.addEventListener("play-toggle", () => this.onPlayToggle());
     this.layersPanel.addEventListener("keyframe-add", (e: Event) => {
       const { blank } = (e as CustomEvent<{ blank: boolean }>).detail;
       this.onKeyframeAdd(blank);
