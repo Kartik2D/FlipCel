@@ -241,6 +241,307 @@ abstract class BaseColorPicker extends LitElement {
 }
 
 // ============================================================
+// Inkwell Scrollbar — generic custom scrollbar
+// ============================================================
+
+/**
+ * A generic custom scrollbar that mirrors an external scroll container.
+ *
+ * Point it at a scroller either by assigning the `target` property or by
+ * setting the `for` attribute to a selector resolved within the element's
+ * root (document or shadow root). The component tracks the target's scroll
+ * and size (including content growth), supports thumb dragging plus
+ * track-jump, and hides itself while the content fits.
+ *
+ * Layout is left to the consumer: the host is a plain block that can be
+ * placed in flow (like the timeline's frames scrollbar) or absolutely
+ * positioned as an overlay (like panel faces).
+ */
+@customElement("inkwell-scrollbar")
+export class InkwellScrollbar extends LitElement {
+  /** Scroll axis this bar mirrors. */
+  @property({ reflect: true }) orientation: "horizontal" | "vertical" =
+    "horizontal";
+  /** Selector for the scroll container, resolved in this element's root. */
+  @property({ attribute: "for" }) forSelector = "";
+  /**
+   * Keep the bar visible when the content fits: the thumb stretches to
+   * fill the whole track instead of the bar hiding itself.
+   */
+  @property({ type: Boolean, reflect: true }) persistent = false;
+
+  static styles = css`
+    :host {
+      --scrollbar-size: 8px;
+      --scrollbar-track-bg: var(--block-depth-color, var(--inkwell-panel-depth, rgba(120, 120, 120, 0.16)));
+      --scrollbar-thumb-bg: color-mix(
+        in srgb,
+        var(--block-border, #555555) 55%,
+        transparent
+      );
+      --scrollbar-thumb-bg-hover: color-mix(
+        in srgb,
+        var(--block-border, #555555) 75%,
+        transparent
+      );
+      display: block;
+      position: relative;
+      touch-action: none;
+      cursor: pointer;
+    }
+
+    :host([orientation="horizontal"]) {
+      height: var(--scrollbar-size);
+    }
+
+    :host([orientation="vertical"]) {
+      width: var(--scrollbar-size);
+    }
+
+    :host([data-hidden]) {
+      visibility: hidden;
+    }
+
+    .track {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: var(--scrollbar-track-bg);
+    }
+
+    .thumb {
+      position: absolute;
+      border-radius: 999px;
+      background: var(--scrollbar-thumb-bg);
+      cursor: grab;
+    }
+
+    :host([orientation="horizontal"]) .thumb {
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: 24px;
+    }
+
+    :host([orientation="vertical"]) .thumb {
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 24px;
+    }
+
+    .thumb:hover {
+      background: var(--scrollbar-thumb-bg-hover);
+    }
+
+    .thumb:active {
+      cursor: grabbing;
+    }
+  `;
+
+  private _target: HTMLElement | null = null;
+  /** Thumb-drag state: pointer position and scroll offset at drag start. */
+  private drag: { start: number; startScroll: number } | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  /** Re-registers child resize observation when the target's children change. */
+  private childListObserver: MutationObserver | null = null;
+
+  /** The scroll container this bar mirrors. */
+  get target(): HTMLElement | null {
+    return this._target;
+  }
+
+  set target(el: HTMLElement | null) {
+    if (el === this._target) return;
+    this.detachFromTarget();
+    this._target = el;
+    this.attachToTarget();
+  }
+
+  private get horizontal(): boolean {
+    return this.orientation !== "vertical";
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.resolveForSelector();
+    this.attachToTarget();
+  }
+
+  disconnectedCallback() {
+    this.detachFromTarget();
+    super.disconnectedCallback();
+  }
+
+  firstUpdated() {
+    // `for` targets rendered after this element in the same template pass
+    // may not have existed at connect time.
+    if (!this._target) this.resolveForSelector();
+    this.sync();
+  }
+
+  updated(changed: PropertyValues) {
+    super.updated(changed);
+    if (changed.has("forSelector")) this.resolveForSelector();
+    if (changed.has("orientation") || changed.has("persistent")) this.sync();
+  }
+
+  private resolveForSelector() {
+    if (!this.forSelector) return;
+    const root = this.getRootNode() as Document | ShadowRoot;
+    const el = root.querySelector?.(this.forSelector);
+    if (el instanceof HTMLElement) this.target = el;
+  }
+
+  private attachToTarget() {
+    const t = this._target;
+    if (!t || !this.isConnected) return;
+    t.addEventListener("scroll", this.onTargetScroll, { passive: true });
+    this.resizeObserver = new ResizeObserver(() => this.sync());
+    this.observeSizes();
+    this.childListObserver = new MutationObserver(() => {
+      this.observeSizes();
+      this.sync();
+    });
+    this.childListObserver.observe(t, { childList: true });
+    this.sync();
+  }
+
+  private detachFromTarget() {
+    this._target?.removeEventListener("scroll", this.onTargetScroll);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.childListObserver?.disconnect();
+    this.childListObserver = null;
+    this.drag = null;
+  }
+
+  /** Watches the bar, the viewport, and its children (content growth). */
+  private observeSizes() {
+    const ro = this.resizeObserver;
+    const t = this._target;
+    if (!ro || !t) return;
+    ro.disconnect();
+    ro.observe(this);
+    ro.observe(t);
+    for (const child of Array.from(t.children)) ro.observe(child);
+  }
+
+  private onTargetScroll = () => this.sync();
+
+  private thumbEl(): HTMLElement | null {
+    return this.renderRoot?.querySelector<HTMLElement>(".thumb") ?? null;
+  }
+
+  /** Repaints the thumb from scroll geometry (no re-render). */
+  private sync() {
+    const t = this._target;
+    const thumb = this.thumbEl();
+    if (!t || !thumb) return;
+    const h = this.horizontal;
+    const view = h ? t.clientWidth : t.clientHeight;
+    const content = h ? t.scrollWidth : t.scrollHeight;
+    const needed = content > view + 1 && view > 0;
+    this.toggleAttribute("data-hidden", !needed && !this.persistent);
+    if (!needed && !this.persistent) return;
+
+    const trackLen = h ? this.clientWidth : this.clientHeight;
+    const thumbLen = needed
+      ? Math.min(trackLen, Math.max(24, (view / content) * trackLen))
+      : trackLen;
+    const maxScroll = Math.max(0, content - view);
+    const travel = trackLen - thumbLen;
+    const scrollPos = h ? t.scrollLeft : t.scrollTop;
+    const offset = maxScroll > 0 ? (scrollPos / maxScroll) * travel : 0;
+    if (h) {
+      thumb.style.width = `${thumbLen}px`;
+      thumb.style.transform = `translateX(${offset}px)`;
+    } else {
+      thumb.style.height = `${thumbLen}px`;
+      thumb.style.transform = `translateY(${offset}px)`;
+    }
+  }
+
+  private setScroll(value: number) {
+    const t = this._target;
+    if (!t) return;
+    if (this.horizontal) t.scrollLeft = value;
+    else t.scrollTop = value;
+  }
+
+  private onPointerDown = (e: PointerEvent) => {
+    const t = this._target;
+    if (!t) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const track = e.currentTarget as HTMLElement;
+    const thumb = this.thumbEl();
+    track.setPointerCapture(e.pointerId);
+    const h = this.horizontal;
+    const pointer = h ? e.clientX : e.clientY;
+
+    // Clicking the track (not the thumb) jumps so the thumb centers under
+    // the pointer, then the same drag continues from there.
+    if (thumb && e.composedPath()[0] !== thumb) {
+      const trackRect = track.getBoundingClientRect();
+      const thumbRect = thumb.getBoundingClientRect();
+      const trackLen = h ? trackRect.width : trackRect.height;
+      const thumbLen = h ? thumbRect.width : thumbRect.height;
+      const trackStart = h ? trackRect.left : trackRect.top;
+      const travel = Math.max(1, trackLen - thumbLen);
+      const ratio = (pointer - trackStart - thumbLen / 2) / travel;
+      const maxScroll = h
+        ? t.scrollWidth - t.clientWidth
+        : t.scrollHeight - t.clientHeight;
+      this.setScroll(Math.max(0, Math.min(1, ratio)) * maxScroll);
+    }
+    this.drag = {
+      start: pointer,
+      startScroll: h ? t.scrollLeft : t.scrollTop,
+    };
+  };
+
+  private onPointerMove = (e: PointerEvent) => {
+    const drag = this.drag;
+    const t = this._target;
+    const thumb = this.thumbEl();
+    if (!drag || !t || !thumb) return;
+    e.preventDefault();
+    const h = this.horizontal;
+    const trackLen = h ? this.clientWidth : this.clientHeight;
+    const thumbRect = thumb.getBoundingClientRect();
+    const thumbLen = h ? thumbRect.width : thumbRect.height;
+    const travel = Math.max(1, trackLen - thumbLen);
+    const maxScroll = h
+      ? t.scrollWidth - t.clientWidth
+      : t.scrollHeight - t.clientHeight;
+    const pointer = h ? e.clientX : e.clientY;
+    this.setScroll(drag.startScroll + ((pointer - drag.start) * maxScroll) / travel);
+  };
+
+  private onPointerUp = (e: PointerEvent) => {
+    if (!this.drag) return;
+    this.drag = null;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+
+  render() {
+    return html`
+      <div
+        class="track"
+        part="track"
+        @pointerdown=${this.onPointerDown}
+        @pointermove=${this.onPointerMove}
+        @pointerup=${this.onPointerUp}
+        @pointercancel=${this.onPointerUp}
+      >
+        <div class="thumb" part="thumb"></div>
+      </div>
+    `;
+  }
+}
+
+// ============================================================
 // Base Block Component
 // ============================================================
 
@@ -306,26 +607,25 @@ export class Block extends LitElement {
       color: var(--block-font-color);
     }
 
+    /* Native scrollbars are hidden everywhere; scrolling surfaces get an
+       overlaid <inkwell-scrollbar> instead (see ensureFaceScrollbar). */
     :host,
     * {
-      scrollbar-width: thin;
-      scrollbar-color: var(--inkwell-scrollbar-thumb, rgba(120, 120, 120, 0.34)) transparent;
+      scrollbar-width: none;
     }
 
     *::-webkit-scrollbar {
-      width: 6px;
-      height: 6px;
+      display: none;
     }
 
-    *::-webkit-scrollbar-track {
-      background: transparent;
-    }
-
-    *::-webkit-scrollbar-thumb {
-      background-color: var(--inkwell-scrollbar-thumb, rgba(120, 120, 120, 0.34));
-      background-clip: content-box;
-      border: 1px solid transparent;
-      border-radius: 999px;
+    /* Vertical overlay scrollbar for the .face scroller, injected by the
+       base class so every panel gets it for free. */
+    .face-scrollbar {
+      position: absolute;
+      top: 8px;
+      bottom: calc(var(--block-depth) + 8px);
+      right: 4px;
+      z-index: 30;
     }
 
     :host([dragging]) {
@@ -818,6 +1118,30 @@ export class Block extends LitElement {
         this.style.removeProperty("height");
       }
     }
+    this.ensureFaceScrollbar();
+  }
+
+  private _faceScrollbar: InkwellScrollbar | null = null;
+
+  /**
+   * Every Block subclass renders a .block > .face pair with its own
+   * template, so the shared overlay scrollbar is appended imperatively
+   * (Lit leaves foreign children of .block alone). It auto-hides while
+   * the face content fits.
+   */
+  private ensureFaceScrollbar() {
+    const block = this.renderRoot.querySelector<HTMLElement>(".block");
+    const face = this.renderRoot.querySelector<HTMLElement>(".face");
+    if (!block || !face) return;
+    if (!this._faceScrollbar || this._faceScrollbar.parentElement !== block) {
+      const bar = document.createElement("inkwell-scrollbar") as InkwellScrollbar;
+      bar.orientation = "vertical";
+      bar.classList.add("face-scrollbar");
+      bar.setAttribute("data-interactive", "");
+      block.appendChild(bar);
+      this._faceScrollbar = bar;
+    }
+    this._faceScrollbar.target = face;
   }
 
   render() {
@@ -1571,6 +1895,18 @@ export class FloatingPanel extends Block {
       cursor: grabbing;
     }
 
+    /* Inline title variant: title sits on the left of the pill row while
+       the pill itself stays centered on the panel. */
+    .panel-drag-pill-wrap.has-title {
+      justify-content: flex-start;
+    }
+
+    .panel-drag-pill-wrap.has-title .panel-drag-pill {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
     @keyframes floating-close-bounce-in {
       0% {
         transform: scale(0.55);
@@ -1865,10 +2201,15 @@ export class FloatingPanel extends Block {
     );
   }
 
-  protected renderDragHandlePill() {
-    if (!this.draggable) return html``;
+  /**
+   * Sticky drag-pill row. Pass a title to render it inline on the same
+   * row (title left, pill centered).
+   */
+  protected renderDragHandlePill(title?: string) {
+    if (!this.draggable) return title ? this.renderPanelTitle(title) : html``;
     return html`
-      <div class="panel-drag-pill-wrap">
+      <div class="panel-drag-pill-wrap ${title ? "has-title" : ""}">
+        ${title ? this.renderPanelTitle(title) : nothing}
         <div class="panel-drag-pill" title="Drag to move panel" aria-hidden="true"></div>
       </div>
     `;
@@ -2275,8 +2616,7 @@ export class InkwellToolsPanel extends FloatingPanel {
       <div class="block">
         <div class="face">
           <div class="panel-form">
-            ${this.renderDragHandlePill()}
-            ${this.renderPanelTitle("Tools")}
+            ${this.renderDragHandlePill("Tools")}
             ${this.renderToolGroups()}
             <section>
               ${this.renderPanelTitle("Tool Settings")}
@@ -2487,8 +2827,7 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
       <div class="block">
         <div class="face">
           <div class="panel-form">
-            ${this.renderDragHandlePill()}
-            ${this.renderPanelTitle("Tool Settings")}
+            ${this.renderDragHandlePill("Tool Settings")}
             ${this.renderToolSettings()}
           </div>
         </div>
@@ -3266,8 +3605,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
       <div class="block">
         <div class="face">
           <div class="panel-form">
-            ${this.renderDragHandlePill()}
-            ${this.renderPanelTitle("Settings")}
+            ${this.renderDragHandlePill("Settings")}
             <div class="toggle">
               <span>Show brush size</span>
               <input
@@ -3419,13 +3757,22 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     .layers-header {
       display: grid;
-      grid-template-columns:
-        var(--layers-side-width, 168px)
-        minmax(0, 1fr)
-        max-content;
+      grid-template-columns: 1fr auto 1fr;
       align-items: center;
-      gap: 8px;
+      width: 100%;
       min-width: 0;
+    }
+
+    .playback-fps {
+      justify-self: start;
+    }
+
+    .playback-play {
+      justify-self: center;
+    }
+
+    .playback-frames {
+      justify-self: end;
     }
 
     .header-group {
@@ -3435,22 +3782,16 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-width: 0;
     }
 
-    .header-left {
-      justify-content: flex-start;
+    .timeline-actions {
+      width: var(--layers-side-width, 168px);
+      flex: 0 0 auto;
+      gap: 3px;
     }
 
-    .header-left .panel-title {
-      flex: 1 1 auto;
-      min-width: 0;
-    }
-
-    .header-center {
-      justify-content: center;
-      flex-wrap: wrap;
-    }
-
-    .header-right {
-      justify-content: flex-end;
+    .timeline-actions .tl-btn {
+      min-width: 24px;
+      padding: 0 4px;
+      font-size: 11px;
     }
 
     .layer-list {
@@ -3507,14 +3848,6 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     .layer-list.reordering .layer-item:not(.dragging) {
       transition: transform 120ms ease;
-    }
-
-    .layer-item--stage {
-      cursor: default;
-    }
-
-    .layer-item--stage:active {
-      cursor: default;
     }
 
     .layer-action-button,
@@ -3707,12 +4040,29 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     /* Two real columns: a fixed name/controls column and a frames column
        that is the only horizontal scroller. Vertical scrolling happens in
-       .layer-scroll and moves both columns together. */
+       .layer-scroll and moves both columns together. The wrap is the
+       positioning context for the overlaid vertical scrollbar. */
+    .layer-scroll-wrap {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+
     .layer-scroll {
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
+    }
+
+    .layers-vscroll {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: 0;
+      z-index: 3;
     }
 
     .layers-body {
@@ -3727,14 +4077,6 @@ export class InkwellLayersPanel extends FloatingPanel {
       display: flex;
       flex-direction: column;
       width: var(--layers-side-width, 168px);
-      flex: 0 0 auto;
-    }
-
-    /* Keeps the first name row aligned with the first frame row by
-       mirroring the ruler's height (14px) + bottom margin (2px). */
-    .ruler-spacer {
-      height: 14px;
-      margin-bottom: 2px;
       flex: 0 0 auto;
     }
 
@@ -3926,60 +4268,8 @@ export class InkwellLayersPanel extends FloatingPanel {
       opacity: 0.6;
     }
 
-    /* Stage row: fixed below the scroll area, sized to the name column so
-       the scrollbar next to it lines up with the frames viewport. */
-    .stage-row {
-      display: flex;
-      align-items: center;
-      flex: 0 0 auto;
-      width: var(--layers-side-width, 168px);
-      box-sizing: border-box;
-      min-height: 24px;
-      padding: 0 8px;
-      border-radius: 6px;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
-      color: var(--block-border, var(--inkwell-panel-border));
-      font-weight: 600;
-      cursor: pointer;
-      -webkit-tap-highlight-color: transparent;
-    }
-
-    .stage-row:hover:not(.active) {
-      filter: brightness(0.97);
-    }
-
-    .stage-row.active {
-      background: var(--inkwell-accent, var(--panel-accent, #b5a04a));
-      color: var(--inkwell-danger-contrast, #ffffff);
-    }
-
-    .ruler-row {
-      display: flex;
-      flex-direction: row;
-      align-items: flex-end;
-      width: max-content;
-      min-width: 100%;
-      height: 14px;
-      margin-bottom: 2px;
-    }
-
-    .ruler-cell {
-      font-size: 9px;
-      line-height: 12px;
-      text-align: center;
-      color: var(--inkwell-text-muted, #666);
-      white-space: nowrap;
-      overflow: visible;
-      user-select: none;
-      cursor: pointer;
-    }
-
-    .ruler-cell.current {
-      color: var(--inkwell-playhead, #f2c14e);
-      font-weight: 700;
-    }
-
-    /* ---- Playhead: vertical line + grab handle over the current frame ---- */
+    /* ---- Playhead: vertical line over the current frame (scrolls with the
+       frames; its grab flag lives in the fixed timeline strip above) ---- */
 
     .playhead {
       position: absolute;
@@ -3994,7 +4284,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     .playhead::before {
       content: "";
       position: absolute;
-      top: 12px;
+      top: 0;
       bottom: 0;
       left: -1px;
       width: 2px;
@@ -4003,41 +4293,15 @@ export class InkwellLayersPanel extends FloatingPanel {
       opacity: 0.85;
     }
 
-    .playhead-grab {
-      position: absolute;
-      top: 0;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 11px;
-      height: 14px;
-      border-radius: 3px 3px 5px 5px;
-      background: var(--inkwell-playhead, #f2c14e);
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-      pointer-events: auto;
-      cursor: grab;
-      touch-action: none;
-    }
-
-    /* Widen the touch/click target beyond the visible flag. */
-    .playhead-grab::after {
-      content: "";
-      position: absolute;
-      inset: -4px -6px;
-    }
-
-    .playhead-grab:active {
-      cursor: grabbing;
-    }
-
-    .ruler-row {
-      touch-action: none;
-    }
-
-    /* ---- Custom horizontal scrollbar for the frames column ---- */
-
-    /* Bottom row: Stage aligned under the layer names, scrollbar aligned
-       under the frames viewport. */
-    .bottom-row {
+    /* ---- Timeline strip: scrollbar + frame numbers + playhead flag ----
+       One fixed strip above the scroll area, aligned with the frames
+       column. Three stacked layers: the horizontal scrollbar as the
+       background, the frame-number ruler above it (scroll-synced with the
+       frames viewport), and the playhead flag on top. The scrollbar thumb
+       is raised between the ruler and the flag so it stays grabbable. */
+    /* Row holding the add/delete layer buttons (in the name-column slot)
+       and the timeline strip next to them, over the frames column. */
+    .timeline-row {
       display: flex;
       flex-direction: row;
       align-items: center;
@@ -4046,45 +4310,100 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-width: 0;
     }
 
-    .frames-scrollbar {
+    .timeline-strip {
+      position: relative;
+      height: 20px;
       flex: 1 1 auto;
       min-width: 0;
-      position: relative;
-      height: 8px;
-      border-radius: 999px;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      /* Never wider than the frames themselves (duration set inline). */
+      max-width: calc(var(--timeline-frames, 1) * var(--frame-cell-w, 15px));
+      overflow: hidden;
+      border-radius: 6px;
+    }
+
+    .timeline-strip .frames-scrollbar {
+      position: absolute;
+      inset: 0;
+      width: auto;
+      height: auto;
+    }
+
+    .timeline-strip .frames-scrollbar::part(track),
+    .timeline-strip .frames-scrollbar::part(thumb) {
+      border-radius: 6px;
+    }
+
+    .timeline-strip .frames-scrollbar::part(thumb) {
+      z-index: 2;
+    }
+
+    .strip-ruler {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      overflow: hidden;
       touch-action: none;
       cursor: pointer;
     }
 
-    .frames-scrollbar.is-hidden {
-      visibility: hidden;
+    .strip-ruler-content {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      height: 100%;
+      width: max-content;
+      min-width: 100%;
+      will-change: transform;
     }
 
-    .frames-scrollbar-thumb {
+    .ruler-cell {
+      font-size: 9px;
+      line-height: 1;
+      text-align: center;
+      color: var(--inkwell-text-muted, #666);
+      text-shadow: 0 0 3px var(--block-face-bg, rgba(255, 255, 255, 0.7));
+      white-space: nowrap;
+      overflow: visible;
+      user-select: none;
+      cursor: pointer;
+    }
+
+    .ruler-cell.current {
+      color: var(--inkwell-playhead, #f2c14e);
+      font-weight: 700;
+    }
+
+    /* Playhead flag: topmost layer of the strip; slides out of view when
+       the current frame is scrolled away (intended). */
+    .strip-playhead {
       position: absolute;
-      top: 0;
-      bottom: 0;
+      top: 2px;
+      bottom: 2px;
       left: 0;
-      width: 24px;
-      border-radius: 999px;
-      background: color-mix(in srgb, var(--block-border, #555555) 55%, transparent);
+      transform: translateX(-50%);
+      width: 11px;
+      border-radius: 4px;
+      background: var(--inkwell-playhead, #f2c14e);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+      z-index: 3;
       cursor: grab;
+      touch-action: none;
     }
 
-    .frames-scrollbar-thumb:hover {
-      background: color-mix(in srgb, var(--block-border, #555555) 75%, transparent);
+    /* Widen the touch/click target beyond the visible flag. */
+    .strip-playhead::after {
+      content: "";
+      position: absolute;
+      inset: -4px -6px;
     }
 
-    .frames-scrollbar-thumb:active {
+    .strip-playhead:active {
       cursor: grabbing;
     }
   `;
 
   /** True while the playhead (or ruler) is being scrubbed. */
   private scrubbing = false;
-  /** Thumb-drag state for the custom frames scrollbar. */
-  private scrollbarDrag: { startX: number; startScrollLeft: number } | null = null;
   /** Last frame-cell tap, for double-tap (toggle keyframe hold) detection. */
   private lastCellTap: { layerId: string; frame: number; time: number } | null = null;
   /** Selected frame range on one layer's strip (inclusive, start <= end). */
@@ -4108,7 +4427,6 @@ export class InkwellLayersPanel extends FloatingPanel {
     /** Selection bounds at drag start; set only in move mode. */
     base: { start: number; end: number } | null;
   } | null = null;
-  private framesResizeObserver: ResizeObserver | null = null;
   /** Last frame seen in updated(), to auto-scroll the playhead into view. */
   private lastSeenFrame = -1;
   private lastSeenLayerCount = -1;
@@ -4143,14 +4461,16 @@ export class InkwellLayersPanel extends FloatingPanel {
       this.blockHeight = contentHeight;
     }
 
-    // Keep the custom scrollbar geometry in sync with every render (duration
-    // changes resize the content) and follow the playhead during playback.
-    this.updateScrollbar();
+    // Follow the playhead during playback.
     const frame = this.timeline.value.currentFrame;
     if (frame !== this.lastSeenFrame) {
       this.lastSeenFrame = frame;
       if (!this.scrubbing) this.ensureFrameVisible(frame);
     }
+
+    // Duration and frame changes move the strip's ruler/flag; scrolling is
+    // handled by the viewport's @scroll listener.
+    this.syncTimelineStrip();
 
     if (!changedProperties.has("editingLayerId") || !this.editingLayerId) return;
     void this.updateComplete.then(() => {
@@ -4167,6 +4487,27 @@ export class InkwellLayersPanel extends FloatingPanel {
   private framesViewportEl(): HTMLElement | null {
     return this.renderRoot.querySelector<HTMLElement>(".frames-viewport");
   }
+
+  /**
+   * Keeps the fixed timeline strip mirroring the frames viewport: the
+   * ruler numbers are translated by the scroll offset and the playhead
+   * flag is placed over the current frame (it slides out of the strip
+   * when the frame is scrolled out of view — intended). Imperative so
+   * horizontal scrolling never forces a Lit re-render.
+   */
+  private syncTimelineStrip = () => {
+    const vp = this.framesViewportEl();
+    if (!vp) return;
+    const scrollLeft = vp.scrollLeft;
+    const ruler = this.renderRoot.querySelector<HTMLElement>(".strip-ruler-content");
+    if (ruler) ruler.style.transform = `translateX(${-scrollLeft}px)`;
+    const flag = this.renderRoot.querySelector<HTMLElement>(".strip-playhead");
+    if (flag) {
+      const x =
+        (this.timeline.value.currentFrame + 0.5) * this.frameCellWidth() - scrollLeft;
+      flag.style.left = `${x}px`;
+    }
+  };
 
   private frameCellWidth(): number {
     const raw = getComputedStyle(this).getPropertyValue("--frame-cell-w");
@@ -4331,80 +4672,6 @@ export class InkwellLayersPanel extends FloatingPanel {
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
 
-  // ---- Custom frames scrollbar ----------------------------------------
-
-  /** Repaints the thumb from viewport scroll geometry (no Lit re-render). */
-  private updateScrollbar() {
-    const vp = this.framesViewportEl();
-    const track = this.renderRoot.querySelector<HTMLElement>(".frames-scrollbar");
-    const thumb = this.renderRoot.querySelector<HTMLElement>(".frames-scrollbar-thumb");
-    if (!vp || !track || !thumb) return;
-
-    const viewW = vp.clientWidth;
-    const contentW = vp.scrollWidth;
-    const needed = contentW > viewW + 1 && viewW > 0;
-    track.classList.toggle("is-hidden", !needed);
-    if (!needed) return;
-
-    const trackW = track.clientWidth;
-    const thumbW = Math.max(24, (viewW / contentW) * trackW);
-    const maxScroll = contentW - viewW;
-    const maxThumbTravel = trackW - thumbW;
-    const left = maxScroll > 0 ? (vp.scrollLeft / maxScroll) * maxThumbTravel : 0;
-    thumb.style.width = `${thumbW}px`;
-    thumb.style.transform = `translateX(${left}px)`;
-  }
-
-  private onScrollbarDown = (e: PointerEvent) => {
-    const vp = this.framesViewportEl();
-    if (!vp) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const track = e.currentTarget as HTMLElement;
-    const thumb = track.querySelector<HTMLElement>(".frames-scrollbar-thumb");
-    track.setPointerCapture(e.pointerId);
-
-    // Clicking the track (not the thumb) jumps so the thumb centers under
-    // the pointer, then the same drag continues from there.
-    if (thumb && e.target !== thumb) {
-      const trackRect = track.getBoundingClientRect();
-      const thumbW = thumb.getBoundingClientRect().width;
-      const travel = Math.max(1, trackRect.width - thumbW);
-      const ratio = (e.clientX - trackRect.left - thumbW / 2) / travel;
-      vp.scrollLeft =
-        Math.max(0, Math.min(1, ratio)) * (vp.scrollWidth - vp.clientWidth);
-    }
-    this.scrollbarDrag = { startX: e.clientX, startScrollLeft: vp.scrollLeft };
-  };
-
-  private onScrollbarMove = (e: PointerEvent) => {
-    if (!this.scrollbarDrag) return;
-    const vp = this.framesViewportEl();
-    const track = e.currentTarget as HTMLElement;
-    const thumb = track.querySelector<HTMLElement>(".frames-scrollbar-thumb");
-    if (!vp || !thumb) return;
-    e.preventDefault();
-    const travel = Math.max(1, track.clientWidth - thumb.getBoundingClientRect().width);
-    const scale = (vp.scrollWidth - vp.clientWidth) / travel;
-    vp.scrollLeft =
-      this.scrollbarDrag.startScrollLeft + (e.clientX - this.scrollbarDrag.startX) * scale;
-  };
-
-  private onScrollbarUp = (e: PointerEvent) => {
-    if (!this.scrollbarDrag) return;
-    this.scrollbarDrag = null;
-    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-  };
-
-  private initFramesObservers() {
-    const vp = this.framesViewportEl();
-    const content = this.renderRoot.querySelector<HTMLElement>(".frames-content");
-    if (!vp || this.framesResizeObserver) return;
-    this.framesResizeObserver = new ResizeObserver(() => this.updateScrollbar());
-    this.framesResizeObserver.observe(vp);
-    if (content) this.framesResizeObserver.observe(content);
-  }
-
   /**
    * The panel's useful height is its fixed chrome plus the timeline ruler and
    * layer rows. Replace the flexible scroll area's current height with its
@@ -4476,16 +4743,8 @@ export class InkwellLayersPanel extends FloatingPanel {
     this.emit("layer-add", { id: newId, name: `Layer ${layerNumber}` });
   }
 
-  firstUpdated(changedProperties: PropertyValues) {
-    super.firstUpdated(changedProperties);
-    this.initFramesObservers();
-    this.updateScrollbar();
-  }
-
   disconnectedCallback() {
     this.cancelRowDrag();
-    this.framesResizeObserver?.disconnect();
-    this.framesResizeObserver = null;
     super.disconnectedCallback();
   }
 
@@ -4716,11 +4975,26 @@ export class InkwellLayersPanel extends FloatingPanel {
   private renderPlaybackActions() {
     const t = this.timeline.value;
     return html`
-      <button type="button" class="tl-btn ${t.playing ? "on" : ""}"
+      <span class="fps-field playback-fps">
+        fps
+        <input
+          type="number"
+          min="1"
+          max="60"
+          .value=${String(t.frameRate)}
+          @change=${(e: Event) => {
+            const value = Number((e.target as HTMLInputElement).value);
+            if (Number.isFinite(value)) this.emit("frame-rate-change", value);
+          }}
+        />
+      </span>
+      <button
+        type="button"
+        class="tl-btn playback-play ${t.playing ? "on" : ""}"
         title=${t.playing ? "Stop" : "Play"}
         @click=${() => this.emit("play-toggle")}
-        >${t.playing ? html`&#9632;` : html`&#9654;`}</button>
-      <span class="frame-counter">
+      >${t.playing ? html`&#9632;` : html`&#9654;`}</button>
+      <span class="frame-counter playback-frames">
         ${t.currentFrame + 1}/<input
           class="duration-input"
           type="number"
@@ -4734,27 +5008,14 @@ export class InkwellLayersPanel extends FloatingPanel {
           }}
         />
       </span>
-      <span class="fps-field">
-        fps
-        <input
-          type="number"
-          min="1"
-          max="60"
-          .value=${String(t.frameRate)}
-          @change=${(e: Event) => {
-            const value = Number((e.target as HTMLInputElement).value);
-            if (Number.isFinite(value)) this.emit("frame-rate-change", value);
-          }}
-        />
-      </span>
     `;
   }
 
   render() {
     const { layers, activeLayerId } = this.layers.value;
     const t = this.timeline.value;
-    // Regular layers only, top layer first; Stage renders as its own fixed
-    // row below the scroll area.
+    // Regular layers only, top layer first; the Stage layer stays in the
+    // document as the fixed background but has no row in the panel.
     const displayLayers = layers.filter((l) => l.kind !== "stage").reverse();
     const nonStageCount = displayLayers.length;
     const frames = Array.from({ length: t.duration }, (_, i) => i);
@@ -4767,10 +5028,12 @@ export class InkwellLayersPanel extends FloatingPanel {
       <div class="block">
         <div class="face">
           <div class="panel-form">
-            ${this.renderDragHandlePill()}
+            ${this.renderDragHandlePill("Layers")}
             <div class="layers-header">
-              <div class="header-group header-left">
-                ${this.renderPanelTitle("Layers")}
+              ${this.renderPlaybackActions()}
+            </div>
+            <div class="timeline-row">
+              <div class="header-group timeline-actions">
                 <button
                   type="button"
                   class="layer-action-button"
@@ -4786,18 +5049,50 @@ export class InkwellLayersPanel extends FloatingPanel {
                   ?disabled=${activeLayerId === STAGE_LAYER_ID || nonStageCount <= 1}
                   @click=${() => this.deleteCurrentLayer()}
                 >${phosphorIcon("trash", 14)}</button>
-              </div>
-              <div class="header-group header-center">
                 ${this.renderKeyframeActions()}
               </div>
-              <div class="header-group header-right">
-                ${this.renderPlaybackActions()}
+              <div class="timeline-strip" data-interactive style="--timeline-frames: ${t.duration}">
+              <inkwell-scrollbar
+                class="frames-scrollbar"
+                orientation="horizontal"
+                for=".frames-viewport"
+                persistent
+              ></inkwell-scrollbar>
+              <div
+                class="strip-ruler"
+                @pointerdown=${this.onScrubDown}
+                @pointermove=${this.onScrubMove}
+                @pointerup=${this.onScrubUp}
+                @pointercancel=${this.onScrubUp}
+              >
+                <div class="strip-ruler-content">
+                  ${frames.map(
+                    (f) => html`
+                      <div
+                        class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
+                        title=${`Go to frame ${f + 1}`}
+                        @click=${() => this.emit("frame-select", { frame: f })}
+                      >
+                        ${f === 0 || (f + 1) % 5 === 0 || f === t.currentFrame ? f + 1 : ""}
+                      </div>
+                    `,
+                  )}
+                </div>
+              </div>
+              <div
+                class="strip-playhead"
+                title="Drag to scrub"
+                @pointerdown=${this.onScrubDown}
+                @pointermove=${this.onScrubMove}
+                @pointerup=${this.onScrubUp}
+                @pointercancel=${this.onScrubUp}
+              ></div>
               </div>
             </div>
-            <div class="layer-scroll">
+            <div class="layer-scroll-wrap">
+              <div class="layer-scroll">
               <div class="layers-body">
                 <div class="side-column">
-                  <div class="ruler-spacer"></div>
                   <div class="layer-list">
                     ${repeat(
                       displayLayers,
@@ -4864,28 +5159,8 @@ export class InkwellLayersPanel extends FloatingPanel {
                     )}
                   </div>
                 </div>
-                <div class="frames-viewport" @scroll=${() => this.updateScrollbar()}>
+                <div class="frames-viewport" @scroll=${this.syncTimelineStrip}>
                   <div class="frames-content">
-                    <div
-                      class="ruler-row"
-                      data-interactive
-                      @pointerdown=${this.onScrubDown}
-                      @pointermove=${this.onScrubMove}
-                      @pointerup=${this.onScrubUp}
-                      @pointercancel=${this.onScrubUp}
-                    >
-                      ${frames.map(
-                        (f) => html`
-                          <div
-                            class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
-                            title=${`Go to frame ${f + 1}`}
-                            @click=${() => this.emit("frame-select", { frame: f })}
-                          >
-                            ${f === 0 || (f + 1) % 5 === 0 || f === t.currentFrame ? f + 1 : ""}
-                          </div>
-                        `,
-                      )}
-                    </div>
                     <div class="strip-list">
                       ${repeat(
                         displayLayers,
@@ -4904,40 +5179,17 @@ export class InkwellLayersPanel extends FloatingPanel {
                         `
                       )}
                     </div>
-                    <div class="playhead" style="--f: ${t.currentFrame}">
-                      <div
-                        class="playhead-grab"
-                        data-interactive
-                        title="Drag to scrub"
-                        @pointerdown=${this.onScrubDown}
-                        @pointermove=${this.onScrubMove}
-                        @pointerup=${this.onScrubUp}
-                        @pointercancel=${this.onScrubUp}
-                      ></div>
-                    </div>
+                    <div class="playhead" style="--f: ${t.currentFrame}"></div>
                   </div>
                 </div>
               </div>
-            </div>
-            <div class="bottom-row">
-              <div
-                class="stage-row ${activeLayerId === STAGE_LAYER_ID ? "active" : ""}"
-                data-interactive
-                title="Stage"
-                @click=${() => this.selectLayer(STAGE_LAYER_ID)}
-              >
-                Stage
               </div>
-              <div
-                class="frames-scrollbar is-hidden"
+              <inkwell-scrollbar
+                class="layers-vscroll"
+                orientation="vertical"
+                for=".layer-scroll"
                 data-interactive
-                @pointerdown=${this.onScrollbarDown}
-                @pointermove=${this.onScrollbarMove}
-                @pointerup=${this.onScrollbarUp}
-                @pointercancel=${this.onScrollbarUp}
-              >
-                <div class="frames-scrollbar-thumb"></div>
-              </div>
+              ></inkwell-scrollbar>
             </div>
           </div>
         </div>

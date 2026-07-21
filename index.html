@@ -94,25 +94,14 @@
                 box-sizing: border-box;
             }
 
+            /* Native scrollbars are hidden app-wide; scrolling surfaces use
+               the custom <inkwell-scrollbar> component instead. */
             * {
-                scrollbar-width: thin;
-                scrollbar-color: var(--inkwell-scrollbar-thumb) transparent;
+                scrollbar-width: none;
             }
 
             *::-webkit-scrollbar {
-                width: 6px;
-                height: 6px;
-            }
-
-            *::-webkit-scrollbar-track {
-                background: transparent;
-            }
-
-            *::-webkit-scrollbar-thumb {
-                background-color: var(--inkwell-scrollbar-thumb);
-                background-clip: content-box;
-                border: 1px solid transparent;
-                border-radius: 999px;
+                display: none;
             }
 
             html,

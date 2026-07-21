@@ -618,10 +618,11 @@ export class PaperRenderer {
       this.onionLayers.push(ghostLayer);
     }
 
-    // sendToBack puts the last-sent layer lowest, so walk ghosts in reverse:
-    // callers pass farthest-first, and farther ghosts belong underneath.
-    for (const layer of [...this.onionLayers].reverse()) {
-      layer.sendToBack();
+    // Ghosts render above all artwork so they stay readable; being unfilled
+    // outlines, they don't obscure the frame underneath. Walk in order so
+    // later ghosts (next-keyframe) end up topmost.
+    for (const layer of this.onionLayers) {
+      layer.bringToFront();
     }
 
     prevActive?.activate();
@@ -673,6 +674,11 @@ export class PaperRenderer {
 
     // Bringing each layer to front in bottom->top sequence yields exact z-order.
     for (const layer of orderedLayers) {
+      layer.bringToFront();
+    }
+
+    // Onion-skin ghosts live above all artwork; keep them there.
+    for (const layer of this.onionLayers) {
       layer.bringToFront();
     }
 

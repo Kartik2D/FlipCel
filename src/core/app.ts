@@ -1533,32 +1533,8 @@ class App {
   }
 
   private onLayerSelect(layerId: string) {
-    if (layerId === STAGE_LAYER_ID) {
-      const state = layerStore.get();
-      const isAlreadyActive = state.activeLayerId === STAGE_LAYER_ID;
-      if (
-        isAlreadyActive &&
-        (this.selectionController.hasSelection() || this.directSelectController.hasSelection())
-      ) {
-        this.selectionController.clearSelection();
-        this.directSelectController.clearSelection();
-        this.functionsPanel.close("hidden");
-        return;
-      }
-
-      this.selectionController.clearSelection();
-      this.directSelectController.clearSelection();
-      this.functionsPanel.close("hidden");
-      stageSelectedStore.set(true);
-      const sc = stageStore.get().color;
-      colorStore.set(sc);
-      prevColorStore.set(sc);
-      layerStore.update((s) => ({ ...s, activeLayerId: STAGE_LAYER_ID }));
-      if (toolStore.get() !== "select") {
-        this.switchTool("select");
-      }
-      return;
-    }
+    // The Stage is not selectable from the layers panel anymore.
+    if (layerId === STAGE_LAYER_ID) return;
 
     stageSelectedStore.set(false);
 
