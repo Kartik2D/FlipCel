@@ -578,6 +578,7 @@ export class PaperRenderer {
    */
   setOnionSkin(
     ghosts: Array<{ jsons: string[]; opacity: number; color: string }>,
+    outline = true,
   ): void {
     // Creating paper.Layer activates it; remember the real active layer.
     const prevActive = this.activeLayerId
@@ -604,16 +605,22 @@ export class PaperRenderer {
       // Outline-only ghosts: every shape becomes an unfilled tinted contour,
       // so ghosts never obscure the current frame's artwork.
       const tint = new paper.Color(ghost.color);
-      const outline = (item: paper.Item) => {
+      const styleGhost = (item: paper.Item) => {
         if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
-          const hadStroke = !!item.strokeColor;
-          item.fillColor = null;
-          item.strokeColor = tint.clone();
-          if (!hadStroke) item.strokeWidth = 1.5;
+          if (outline) {
+            const hadStroke = !!item.strokeColor;
+            item.fillColor = null;
+            item.strokeColor = tint.clone();
+            if (!hadStroke) item.strokeWidth = 1.5;
+          } else {
+            item.fillColor = tint.clone();
+            item.strokeColor = null;
+            item.strokeWidth = 0;
+          }
         }
-        for (const child of item.children ?? []) outline(child);
+        for (const child of item.children ?? []) styleGhost(child);
       };
-      for (const child of [...ghostLayer.children]) outline(child);
+      for (const child of [...ghostLayer.children]) styleGhost(child);
       ghostLayer.opacity = ghost.opacity;
       this.onionLayers.push(ghostLayer);
     }

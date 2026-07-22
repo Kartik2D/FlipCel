@@ -13,11 +13,6 @@ import type { Camera } from "./camera";
 import type { ViewOverlaySettings } from "./stores";
 import type { ToolId } from "./tools";
 
-/** World-space spacing between grid lines (world units). */
-const GRID_STEP_WORLD = 100;
-/** Every Nth line is drawn slightly stronger (e.g. 0, 500, 1000… when step is 100). */
-const GRID_MAJOR_EVERY = 5;
-
 export class UIOverlay {
   private ctx: CanvasRenderingContext2D;
   private config: CanvasConfig;
@@ -26,6 +21,10 @@ export class UIOverlay {
   private brushSizeIndicatorEnabled = true;
   private activeTool: ToolId = "brush";
   private gridEnabled = true;
+  private gridSpacing = 100;
+  private gridMajorEvery = 5;
+  private gridMinorOpacity = 0.06;
+  private gridMajorOpacity = 0.14;
   private isDrawing = false;
   private isMobile = false;
   private maxBrushSize = 4; // Default max brush size in pixel canvas units
@@ -87,6 +86,10 @@ export class UIOverlay {
 
   setViewOverlayPrefs(prefs: ViewOverlaySettings) {
     this.gridEnabled = prefs.gridEnabled;
+    this.gridSpacing = prefs.gridSpacing;
+    this.gridMajorEvery = prefs.gridMajorEvery;
+    this.gridMinorOpacity = prefs.gridMinorOpacity;
+    this.gridMajorOpacity = prefs.gridMajorOpacity;
     this.draw();
   }
 
@@ -153,7 +156,8 @@ export class UIOverlay {
 
     const ctx = this.ctx;
     const bounds = this.camera.getWorldBounds();
-    const step = GRID_STEP_WORLD;
+    const step = this.gridSpacing;
+    const majorEvery = this.gridMajorEvery;
 
     const pad = step;
     const x0 = bounds.x - pad;
@@ -170,22 +174,32 @@ export class UIOverlay {
     ctx.lineWidth = 1;
 
     const drawLine = (sx: number, sy: number, ex: number, ey: number, major: boolean) => {
-      ctx.strokeStyle = major ? "rgba(255, 255, 255, 0.14)" : "rgba(255, 255, 255, 0.06)";
+      const opacity = major ? this.gridMajorOpacity : this.gridMinorOpacity;
+      const whiteA = Math.min(0.22, 0.06 + opacity * 0.85);
+      const blackA = Math.min(0.28, 0.04 + opacity * 0.75);
       ctx.beginPath();
       ctx.moveTo(sx, sy);
       ctx.lineTo(ex, ey);
+      ctx.strokeStyle = `rgba(255, 255, 255, ${whiteA})`;
+      ctx.lineWidth = major ? 1.25 : 1;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+      ctx.strokeStyle = `rgba(0, 0, 0, ${blackA})`;
+      ctx.lineWidth = major ? 0.75 : 0.5;
       ctx.stroke();
     };
 
     for (let wx = startX; wx <= endX + 1e-9; wx += step) {
-      const major = Math.round(wx / step) % GRID_MAJOR_EVERY === 0;
+      const major = Math.round(wx / step) % majorEvery === 0;
       const p0 = this.worldToScreen(wx, y0);
       const p1 = this.worldToScreen(wx, y1);
       drawLine(p0.x, p0.y, p1.x, p1.y, major);
     }
 
     for (let wy = startY; wy <= endY + 1e-9; wy += step) {
-      const major = Math.round(wy / step) % GRID_MAJOR_EVERY === 0;
+      const major = Math.round(wy / step) % majorEvery === 0;
       const p0 = this.worldToScreen(x0, wy);
       const p1 = this.worldToScreen(x1, wy);
       drawLine(p0.x, p0.y, p1.x, p1.y, major);
@@ -217,8 +231,13 @@ export class UIOverlay {
       const scale = this.config.viewportWidth / this.config.pixelWidth;
       const cursorRadius = (this.maxBrushSize / 2 - 0.5) * scale;
 
-      this.ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
-      this.ctx.lineWidth = 1;
+      this.ctx.strokeStyle = "rgba(255, 255, 255, 1)";
+      this.ctx.lineWidth = 2.5;
+      this.ctx.beginPath();
+      this.ctx.arc(viewportX, viewportY, cursorRadius, 0, Math.PI * 2);
+      this.ctx.stroke();
+      this.ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+      this.ctx.lineWidth = 1.25;
       this.ctx.beginPath();
       this.ctx.arc(viewportX, viewportY, cursorRadius, 0, Math.PI * 2);
       this.ctx.stroke();

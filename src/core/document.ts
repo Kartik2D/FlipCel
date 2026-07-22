@@ -22,10 +22,13 @@ import {
   Store,
   layerStore,
   stageSelectedStore,
+  documentColorsStore,
+  viewOverlayStore,
   STAGE_LAYER_ID,
   type Layer,
   type LayerState,
 } from "./stores";
+import { collectDocumentColors } from "./document-colors";
 import type { PaperRenderer } from "./paper-renderer";
 
 // ============================================================
@@ -154,6 +157,9 @@ export class DocumentManager {
     layerStore.subscribe((s) => {
       if (s.activeLayerId === lastActive) return;
       lastActive = s.activeLayerId;
+      if (this.onionSkinEnabled) this.updateOnionSkin();
+    });
+    viewOverlayStore.subscribe(() => {
       if (this.onionSkinEnabled) this.updateOnionSkin();
     });
   }
@@ -642,7 +648,7 @@ export class DocumentManager {
     collectGhost(-1, ONION_PREV_COLOR);
     collectGhost(1, ONION_NEXT_COLOR);
 
-    this.renderer.setOnionSkin(ghosts);
+    this.renderer.setOnionSkin(ghosts, viewOverlayStore.get().onionSkinOutline);
   }
 
   private clampFrame(frame: number): number {
@@ -816,10 +822,15 @@ export class DocumentManager {
   // Timeline store publishing
   // ------------------------------------------------------------
 
+  private refreshDocumentColors(): void {
+    documentColorsStore.set(collectDocumentColors(this.tracks, this.content));
+  }
+
   private publish(): void {
     // Every document mutation funnels through here, so the ghosts always
     // track the latest content, visibility, playhead, and playback state.
     this.updateOnionSkin();
+    this.refreshDocumentColors();
     timelineStore.set({
       tracks: this.tracks.map((t) => ({
         id: t.id,

@@ -200,11 +200,41 @@ export const prevToolStore = new Store<ToolId>("select");
 export interface ViewOverlaySettings {
   /** When false, the world grid overlay is hidden. */
   gridEnabled: boolean;
+  /** When true, onion-skin ghosts render as tinted outlines; when false, filled. */
+  onionSkinOutline: boolean;
+  /** World-space distance between grid lines. */
+  gridSpacing: number;
+  /** Every Nth line is drawn stronger. */
+  gridMajorEvery: number;
+  /** Minor grid line opacity (0–1). */
+  gridMinorOpacity: number;
+  /** Major grid line opacity (0–1). */
+  gridMajorOpacity: number;
 }
 
-export const viewOverlayStore = new Store<ViewOverlaySettings>({
-  gridEnabled: true,
-});
+export function normalizeViewOverlaySettings(
+  prefs: ViewOverlaySettings,
+): ViewOverlaySettings {
+  return {
+    gridEnabled: prefs.gridEnabled,
+    onionSkinOutline: prefs.onionSkinOutline,
+    gridSpacing: Math.max(10, Math.min(500, Math.round(prefs.gridSpacing || 100))),
+    gridMajorEvery: Math.max(2, Math.min(20, Math.round(prefs.gridMajorEvery || 5))),
+    gridMinorOpacity: Math.max(0, Math.min(1, prefs.gridMinorOpacity ?? 0.06)),
+    gridMajorOpacity: Math.max(0, Math.min(1, prefs.gridMajorOpacity ?? 0.14)),
+  };
+}
+
+export const viewOverlayStore = new Store<ViewOverlaySettings>(
+  normalizeViewOverlaySettings({
+    gridEnabled: true,
+    onionSkinOutline: false,
+    gridSpacing: 100,
+    gridMajorEvery: 5,
+    gridMinorOpacity: 0.06,
+    gridMajorOpacity: 0.14,
+  }),
+);
 
 // ============================================================
 // Stage (background rect under vector art)
@@ -221,6 +251,11 @@ export const stageStore = new Store<StageSettings>({
   height: 1080,
   color: "#ffffff",
 });
+
+/**
+ * Unique colors used across the document (stage fill + all keyframe artwork).
+ */
+export const documentColorsStore = new Store<string[]>([]);
 
 /** True when the Stage row is selected in the layer panel (color panel edits stage fill). */
 export const stageSelectedStore = new Store<boolean>(false);

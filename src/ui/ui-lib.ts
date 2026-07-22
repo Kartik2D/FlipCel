@@ -25,14 +25,17 @@ import {
   colorStore,
   prevColorStore,
   colorPanelPrefsStore,
+  documentColorsStore,
   normalizeColorPanelPrefs,
   toolStore,
   modifiersStore,
   toolSettingsStore,
   viewOverlayStore,
+  normalizeViewOverlaySettings,
   themeModeStore,
   StoreController,
   type ColorPanelPrefs,
+  type ViewOverlaySettings,
 } from "../core/stores";
 import type { FunctionMenuItem } from "../core/functions";
 import { historyStateStore } from "../core/history";
@@ -1206,7 +1209,7 @@ export class BlockyButton extends Block {
 
     :host {
       --block-font-weight: 600;
-      --block-font-color: var(--inkwell-text-primary, #29241e);
+      --block-font-color: var(--inkwell-text-primary, #1a1a1a);
       display: inline-block;
       cursor: pointer;
       text-align: center;
@@ -1782,6 +1785,75 @@ export class GenericColorPicker extends BaseColorPicker {
 }
 
 // ============================================================
+// Panel Section (shaded inset group inside panel windows)
+// ============================================================
+
+@customElement("inkwell-panel-section")
+export class InkwellPanelSection extends LitElement {
+  @property({ type: String }) title = "";
+  /** Fill remaining vertical space inside a flex `.panel-form` stack. */
+  @property({ type: Boolean, reflect: true }) grow = false;
+
+  static styles = css`
+    :host {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      border-radius: var(--panel-control-radius, 8px);
+      border: 1px solid color-mix(in srgb, var(--inkwell-panel-border, #555555) 60%, transparent);
+      background: var(
+        --inkwell-panel-inset-bg,
+        color-mix(
+          in srgb,
+          var(--inkwell-panel-depth, #d4d4d4) 45%,
+          var(--block-face-bg, var(--inkwell-panel-surface, #ffffff))
+        )
+      );
+      padding: 10px;
+      color: var(--inkwell-text-secondary, #333333);
+    }
+
+    :host([grow]) {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .section-title {
+      margin: 0 0 10px;
+      font: inherit;
+      font-weight: 600;
+      color: var(--inkwell-text-primary, #1a1a1a);
+    }
+
+    .section-body {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    :host([grow]) .section-body {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+  `;
+
+  render() {
+    return html`
+      ${this.title
+        ? html`<h3 class="section-title">${this.title}</h3>`
+        : nothing}
+      <div class="section-body">
+        <slot></slot>
+      </div>
+    `;
+  }
+}
+
+// ============================================================
 // Floating Panel Base Class
 // ============================================================
 
@@ -1810,6 +1882,7 @@ export class FloatingPanel extends Block {
       max-height: var(--panel-max-height, min(85vh, 720px));
       touch-action: auto;
 
+      --block-font-color: var(--inkwell-text-primary, #1a1a1a);
       --panel-control-radius: 8px;
       --panel-accent: var(--inkwell-accent, #4a6fb5);
       --panel-accent-hover: var(--inkwell-accent-hover, #3d5e9a);
@@ -1855,6 +1928,10 @@ export class FloatingPanel extends Block {
       margin: 0;
     }
 
+    .panel-form > inkwell-panel-section {
+      flex: 0 0 auto;
+    }
+
     section {
       margin-bottom: 12px;
     }
@@ -1865,7 +1942,7 @@ export class FloatingPanel extends Block {
     h3 {
       margin: 0;
       font-weight: 600;
-      color: var(--inkwell-text-muted, #666);
+      color: var(--inkwell-text-primary, #1a1a1a);
     }
 
     .panel-title {
@@ -2016,7 +2093,7 @@ export class FloatingPanel extends Block {
     }
 
     .panel-form label > span:first-child {
-      color: var(--inkwell-text-muted, #666);
+      color: var(--inkwell-text-secondary, #333333);
     }
 
     /* Native selects: match flat panel buttons (depth grey, no shadow) */
@@ -2123,12 +2200,13 @@ export class FloatingPanel extends Block {
       gap: 12px;
       margin: 0;
       min-height: 28px;
+      overflow: hidden;
     }
 
     .toggle span {
       flex: 1;
       min-width: 0;
-      color: var(--inkwell-text-muted, #666);
+      color: var(--inkwell-text-secondary, #333333);
     }
 
     .toggle input[type="checkbox"] {
@@ -2139,9 +2217,11 @@ export class FloatingPanel extends Block {
       height: 24px;
       margin: 0;
       flex: 0 0 auto;
+      box-sizing: border-box;
+      overflow: hidden;
       border-radius: 999px;
-      border: 1.5px solid var(--inkwell-toggle-border, #b3a99d);
-      background: var(--inkwell-toggle-track, #d8d0c7);
+      border: 1.5px solid var(--inkwell-toggle-border, #999999);
+      background: var(--inkwell-toggle-track, #d4d4d4);
       cursor: pointer;
       transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
     }
@@ -2150,7 +2230,7 @@ export class FloatingPanel extends Block {
       content: "";
       position: absolute;
       top: 50%;
-      left: 3px;
+      left: 2px;
       width: 16px;
       height: 16px;
       border-radius: 50%;
@@ -2166,7 +2246,7 @@ export class FloatingPanel extends Block {
     }
 
     .toggle input[type="checkbox"]:checked::after {
-      transform: translate(16px, -50%);
+      transform: translate(14px, -50%);
       background: #ffffff;
     }
 
@@ -2175,7 +2255,7 @@ export class FloatingPanel extends Block {
     }
 
     .toggle input[type="checkbox"]:focus-visible {
-      box-shadow: 0 0 0 3px var(--panel-accent-muted, rgba(74, 111, 181, 0.35));
+      box-shadow: inset 0 0 0 2px var(--panel-accent-muted, rgba(74, 111, 181, 0.35));
     }
 
     .hint {
@@ -2296,6 +2376,7 @@ export class InkwellColorPanel extends FloatingPanel {
   @state() private prevColor = "#000000";
 
   private pickerPrefs = new StoreController(this, colorPanelPrefsStore);
+  private documentColors = new StoreController(this, documentColorsStore);
   private unsubscribeColor?: () => void;
   private unsubscribePrevColor?: () => void;
 
@@ -2305,6 +2386,9 @@ export class InkwellColorPanel extends FloatingPanel {
     :host {
       --block-face-padding: 10px;
       --panel-width: 288px;
+      --picker-border-width: 2px;
+      --picker-border-color: var(--block-border, #9f9f9f);
+      --picker-slider-width: 20px;
     }
 
     .face {
@@ -2325,6 +2409,41 @@ export class InkwellColorPanel extends FloatingPanel {
       width: 100%;
       min-width: 0;
       min-height: 0;
+    }
+
+    .swatches-wrap {
+      flex: 0 0 auto;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .swatches-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .swatch {
+      appearance: none;
+      display: block;
+      width: var(--picker-slider-width);
+      height: var(--picker-slider-width);
+      flex: 0 0 var(--picker-slider-width);
+      padding: 0;
+      border-radius: var(--panel-control-radius, 8px);
+      border: var(--picker-border-width) solid var(--picker-border-color);
+      box-sizing: border-box;
+      overflow: hidden;
+      cursor: pointer;
+    }
+
+    .swatch:hover {
+      filter: brightness(1.05);
+    }
+
+    .swatch[active] {
+      outline: 2px solid var(--panel-accent);
+      outline-offset: 1px;
     }
   `;
 
@@ -2355,6 +2474,44 @@ export class InkwellColorPanel extends FloatingPanel {
     const variant = PICKER_VARIANTS.find((v) => v.id === id);
     if (!variant) return;
     colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...variant.prefs }));
+  }
+
+  private selectSwatch(color: string) {
+    this.color = color;
+    colorStore.set(color);
+    prevColorStore.set(color);
+    this.emit("color-change", color);
+    this.emit("color-change-end", color);
+  }
+
+  private renderSwatches() {
+    const colors = this.documentColors.value;
+    if (colors.length === 0) return nothing;
+
+    const activeColor = this.color.trim().toLowerCase();
+
+    return html`
+      <inkwell-panel-section data-interactive>
+        <div class="swatches-wrap">
+          <div class="swatches-grid">
+            ${repeat(
+              colors,
+              (color) => color,
+              (color) => html`
+                <button
+                  type="button"
+                  class="swatch"
+                  style="background:${color}"
+                  title=${color}
+                  ?active=${color === activeColor}
+                  @click=${() => this.selectSwatch(color)}
+                ></button>
+              `,
+            )}
+          </div>
+        </div>
+      </inkwell-panel-section>
+    `;
   }
 
   render() {
@@ -2395,6 +2552,7 @@ export class InkwellColorPanel extends FloatingPanel {
                 }}
               ></generic-color-picker>
             </div>
+            ${this.renderSwatches()}
           </div>
         </div>
         ${this.resizable ? html`<div class="resize-left"></div><div class="resize-right"></div>` : ""}
@@ -2571,9 +2729,11 @@ export class InkwellToolsPanel extends FloatingPanel {
   private renderToolGroups(): TemplateResult[] {
     return InkwellToolsPanel.TOOL_GROUPS.map(
       (group) => html`
-        <div class="grid">
-          ${group.map((toolId) => this.renderToolButton(toolId))}
-        </div>
+        <inkwell-panel-section data-interactive>
+          <div class="grid">
+            ${group.map((toolId) => this.renderToolButton(toolId))}
+          </div>
+        </inkwell-panel-section>
       `,
     );
   }
@@ -2629,10 +2789,9 @@ export class InkwellToolsPanel extends FloatingPanel {
           <div class="panel-form">
             ${this.renderDragHandlePill("Tools")}
             ${this.renderToolGroups()}
-            <section>
-              ${this.renderPanelTitle("Tool Settings")}
+            <inkwell-panel-section title="Tool Settings" data-interactive>
               ${this.renderToolSettings()}
-            </section>
+            </inkwell-panel-section>
           </div>
         </div>
       </div>
@@ -3031,6 +3190,10 @@ export class InkwellTopBarPanel extends FloatingPanel {
   private readonly panelVisibilityChangeHandler = (e: Event) =>
     this.onPanelVisibilityChange(e as CustomEvent<{ id: string; visible: boolean }>);
 
+  protected override usesFaceScrollbar(): boolean {
+    return false;
+  }
+
   static styles = css`
     ${FloatingPanel.styles}
 
@@ -3042,12 +3205,12 @@ export class InkwellTopBarPanel extends FloatingPanel {
       transform: translateX(-50%);
       --panel-width: auto;
       --panel-min-width: 0;
-      --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-canvas-bg, #ffffff));
+      --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-panel-surface, #ffffff));
       z-index: 1200;
       width: auto;
       max-width: min(calc(100vw - 32px), 640px);
       /* Slightly lighter than the full floating-panels default on compact docks. */
-      --inkwell-shadow-panel: 0 4px 16px rgba(0, 0, 0, 0.2);
+      --inkwell-shadow-panel: var(--inkwell-dock-shadow);
       /* Panel row; icon / control column width. */
       --inkwell-dock-row-h: 44px;
       --inkwell-dock-control: 44px;
@@ -3056,8 +3219,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
     }
 
     .face {
-      overflow-x: visible;
-      overflow-y: visible;
+      overflow: hidden;
       padding: var(--inkwell-dock-face-pt) 12px var(--inkwell-dock-face-pb);
       min-height: calc(
         var(--inkwell-dock-row-h) + var(--inkwell-dock-face-pt) + var(--inkwell-dock-face-pb)
@@ -3315,6 +3477,10 @@ export class InkwellShortcutsPanel extends FloatingPanel {
   private modifiers = new StoreController(this, modifiersStore);
   private timeline = new StoreController(this, timelineStore);
 
+  protected override usesFaceScrollbar(): boolean {
+    return false;
+  }
+
   static styles = css`
     ${FloatingPanel.styles}
     ${dockChipStyles}
@@ -3325,10 +3491,10 @@ export class InkwellShortcutsPanel extends FloatingPanel {
       --panel-right: max(8px, env(safe-area-inset-right, 0px));
       --panel-width: auto;
       --panel-min-width: 0;
-      --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-canvas-bg, #ffffff));
+      --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-panel-surface, #ffffff));
       z-index: 1200;
       width: auto;
-      --inkwell-shadow-panel: 0 4px 16px rgba(0, 0, 0, 0.2);
+      --inkwell-shadow-panel: var(--inkwell-dock-shadow);
       --inkwell-dock-row-h: 44px;
       --inkwell-dock-control: 44px;
       --inkwell-dock-face-pt: 6px;
@@ -3336,8 +3502,7 @@ export class InkwellShortcutsPanel extends FloatingPanel {
     }
 
     .face {
-      overflow-x: visible;
-      overflow-y: visible;
+      overflow: hidden;
       padding: var(--inkwell-dock-face-pt) 12px var(--inkwell-dock-face-pb);
       min-height: calc(
         var(--inkwell-dock-row-h) + var(--inkwell-dock-face-pt) + var(--inkwell-dock-face-pb)
@@ -3463,9 +3628,95 @@ export class InkwellViewPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      --panel-width: 240px;
+      --panel-width: 280px;
     }
   `;
+
+  private updateViewOverlay(patch: Partial<ViewOverlaySettings>) {
+    this.viewOverlay.update((v) =>
+      normalizeViewOverlaySettings({ ...v, ...patch }),
+    );
+  }
+
+  private renderGridSettings(gridOn: boolean) {
+    const {
+      gridSpacing,
+      gridMajorEvery,
+      gridMinorOpacity,
+      gridMajorOpacity,
+    } = this.viewOverlay.value;
+    const minorPct = Math.round(gridMinorOpacity * 100);
+    const majorPct = Math.round(gridMajorOpacity * 100);
+
+    return html`
+      <label>
+        <span>Spacing: ${gridSpacing}</span>
+        <input
+          type="range"
+          min="10"
+          max="500"
+          step="10"
+          .value=${String(gridSpacing)}
+          ?disabled=${!gridOn}
+          @input=${(e: Event) => {
+            this.updateViewOverlay({
+              gridSpacing: parseInt((e.target as HTMLInputElement).value, 10),
+            });
+          }}
+        />
+      </label>
+      <label>
+        <span>Major every: ${gridMajorEvery}</span>
+        <input
+          type="range"
+          min="2"
+          max="20"
+          step="1"
+          .value=${String(gridMajorEvery)}
+          ?disabled=${!gridOn}
+          @input=${(e: Event) => {
+            this.updateViewOverlay({
+              gridMajorEvery: parseInt((e.target as HTMLInputElement).value, 10),
+            });
+          }}
+        />
+      </label>
+      <label>
+        <span>Minor opacity: ${minorPct}%</span>
+        <input
+          type="range"
+          min="0"
+          max="30"
+          step="1"
+          .value=${String(minorPct)}
+          ?disabled=${!gridOn}
+          @input=${(e: Event) => {
+            this.updateViewOverlay({
+              gridMinorOpacity:
+                parseInt((e.target as HTMLInputElement).value, 10) / 100,
+            });
+          }}
+        />
+      </label>
+      <label>
+        <span>Major opacity: ${majorPct}%</span>
+        <input
+          type="range"
+          min="0"
+          max="40"
+          step="1"
+          .value=${String(majorPct)}
+          ?disabled=${!gridOn}
+          @input=${(e: Event) => {
+            this.updateViewOverlay({
+              gridMajorOpacity:
+                parseInt((e.target as HTMLInputElement).value, 10) / 100,
+            });
+          }}
+        />
+      </label>
+    `;
+  }
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(
@@ -3476,42 +3727,63 @@ export class InkwellViewPanel extends FloatingPanel {
   render() {
     const gridOn = this.viewOverlay.value.gridEnabled;
     const onionOn = this.timeline.value.onionSkin;
+    const onionOutline = this.viewOverlay.value.onionSkinOutline;
     return html`
       ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
           <div class="panel-form">
             ${this.renderDragHandlePill("View")}
-            <div class="toggle">
-              <span>Show grid</span>
-              <input
-                type="checkbox"
-                .checked=${gridOn}
-                @change=${(e: Event) => {
-                  const checked = (e.target as HTMLInputElement).checked;
-                  this.viewOverlay.update((v) => ({ ...v, gridEnabled: checked }));
-                }}
-              />
-            </div>
-            <div class="toggle">
-              <span>Onion skin</span>
-              <input
-                type="checkbox"
-                .checked=${onionOn}
-                @change=${() => this.emit("onion-toggle")}
-              />
-            </div>
-            <div class="toggle">
-              <span>Show brush size</span>
-              <input
-                type="checkbox"
-                .checked=${this.brushSizeIndicatorEnabled}
-                @change=${(e: Event) => {
-                  this.brushSizeIndicatorEnabled = (e.target as HTMLInputElement).checked;
-                  this.emit("brush-size-toggle", this.brushSizeIndicatorEnabled);
-                }}
-              />
-            </div>
+            <inkwell-panel-section data-interactive>
+              <div class="toggle">
+                <span>Onion skin</span>
+                <input
+                  type="checkbox"
+                  .checked=${onionOn}
+                  @change=${() => this.emit("onion-toggle")}
+                />
+              </div>
+              <div class="toggle">
+                <span>Skin outline</span>
+                <input
+                  type="checkbox"
+                  .checked=${onionOutline}
+                  @change=${(e: Event) => {
+                    const checked = (e.target as HTMLInputElement).checked;
+                    this.viewOverlay.update((v) =>
+                      normalizeViewOverlaySettings({ ...v, onionSkinOutline: checked }),
+                    );
+                  }}
+                />
+              </div>
+            </inkwell-panel-section>
+            <inkwell-panel-section data-interactive>
+              <div class="toggle">
+                <span>Show grid</span>
+                <input
+                  type="checkbox"
+                  .checked=${gridOn}
+                  @change=${(e: Event) => {
+                    const checked = (e.target as HTMLInputElement).checked;
+                    this.updateViewOverlay({ gridEnabled: checked });
+                  }}
+                />
+              </div>
+              ${this.renderGridSettings(gridOn)}
+            </inkwell-panel-section>
+            <inkwell-panel-section data-interactive>
+              <div class="toggle">
+                <span>Show brush size</span>
+                <input
+                  type="checkbox"
+                  .checked=${this.brushSizeIndicatorEnabled}
+                  @change=${(e: Event) => {
+                    this.brushSizeIndicatorEnabled = (e.target as HTMLInputElement).checked;
+                    this.emit("brush-size-toggle", this.brushSizeIndicatorEnabled);
+                  }}
+                />
+              </div>
+            </inkwell-panel-section>
           </div>
         </div>
       </div>
@@ -3547,76 +3819,80 @@ export class InkwellUniversalPanel extends FloatingPanel {
         <div class="face">
           <div class="panel-form">
             ${this.renderDragHandlePill("Settings")}
-            <div class="toggle">
-              <span>Alias fix</span>
-              <input
-                type="checkbox"
-                .checked=${this.aliasFixEnabled}
-                @change=${(e: Event) => {
-                  this.aliasFixEnabled = (e.target as HTMLInputElement).checked;
-                  this.emit("alias-fix-toggle", this.aliasFixEnabled);
-                }}
-              />
-            </div>
+            <inkwell-panel-section data-interactive>
+              <div class="toggle">
+                <span>Alias fix</span>
+                <input
+                  type="checkbox"
+                  .checked=${this.aliasFixEnabled}
+                  @change=${(e: Event) => {
+                    this.aliasFixEnabled = (e.target as HTMLInputElement).checked;
+                    this.emit("alias-fix-toggle", this.aliasFixEnabled);
+                  }}
+                />
+              </div>
 
-            <div class="toggle">
-              <span>Dark mode</span>
-              <input
-                type="checkbox"
-                .checked=${this.themeMode.value === "dark"}
-                @change=${(e: Event) => {
-                  const checked = (e.target as HTMLInputElement).checked;
-                  this.themeMode.set(checked ? "dark" : "light");
-                }}
-              />
-            </div>
+              <div class="toggle">
+                <span>Dark mode</span>
+                <input
+                  type="checkbox"
+                  .checked=${this.themeMode.value === "dark"}
+                  @change=${(e: Event) => {
+                    const checked = (e.target as HTMLInputElement).checked;
+                    this.themeMode.set(checked ? "dark" : "light");
+                  }}
+                />
+              </div>
+            </inkwell-panel-section>
 
-            <div class="row">
-              <blocky-button
-                flat
-                ?disabled=${!this.history.value.canUndo}
-                @click=${() => this.emit("undo")}
-                >Undo</blocky-button
-              >
-              <blocky-button
-                flat
-                ?disabled=${!this.history.value.canRedo}
-                @click=${() => this.emit("redo")}
-                >Redo</blocky-button
-              >
-            </div>
+            <inkwell-panel-section data-interactive>
+              <div class="row">
+                <blocky-button
+                  flat
+                  ?disabled=${!this.history.value.canUndo}
+                  @click=${() => this.emit("undo")}
+                  >Undo</blocky-button
+                >
+                <blocky-button
+                  flat
+                  ?disabled=${!this.history.value.canRedo}
+                  @click=${() => this.emit("redo")}
+                  >Redo</blocky-button
+                >
+              </div>
 
-            <div class="row">
-              <blocky-button flat @click=${() => this.emit("flatten")}
-                >Flatten</blocky-button
-              >
-              <blocky-button flat danger @click=${() => this.emit("clear")}
-                >Clear</blocky-button
-              >
-            </div>
+              <div class="row">
+                <blocky-button flat @click=${() => this.emit("flatten")}
+                  >Flatten</blocky-button
+                >
+                <blocky-button flat danger @click=${() => this.emit("clear")}
+                  >Clear</blocky-button
+                >
+              </div>
 
-            <div class="row">
-              <blocky-button
-                flat
-                @click=${() =>
-                  this.dispatchEvent(
-                    new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
-                  )}
-                >Export view to SVG</blocky-button
-              >
-            </div>
+              <div class="row">
+                <blocky-button
+                  flat
+                  @click=${() =>
+                    this.dispatchEvent(
+                      new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
+                    )}
+                  >Export view to SVG</blocky-button
+                >
+              </div>
 
-            <div class="row">
-              <blocky-button flat @click=${() => this.emit("doc-save")}
-                >Save</blocky-button
-              >
-              <blocky-button flat @click=${() => this.emit("doc-open")}
-                >Open</blocky-button
-              >
-              <blocky-button flat danger @click=${() => this.emit("doc-new")}
-                >New</blocky-button
-              >
-            </div>
+              <div class="row">
+                <blocky-button flat @click=${() => this.emit("doc-save")}
+                  >Save</blocky-button
+                >
+                <blocky-button flat @click=${() => this.emit("doc-open")}
+                  >Open</blocky-button
+                >
+                <blocky-button flat danger @click=${() => this.emit("doc-new")}
+                  >New</blocky-button
+                >
+              </div>
+            </inkwell-panel-section>
           </div>
         </div>
       </div>
@@ -6057,7 +6333,7 @@ export class InkwellFunctionsPanel extends LitElement {
       border: none;
       border-radius: 6px;
       background: transparent;
-      color: var(--inkwell-text-primary, #29241e);
+      color: var(--inkwell-text-primary, #1a1a1a);
       font: inherit;
       cursor: pointer;
       transition: background 80ms ease;
@@ -6256,6 +6532,7 @@ declare global {
   interface HTMLElementTagNameMap {
     "blocky-button": BlockyButton;
     "generic-color-picker": GenericColorPicker;
+    "inkwell-panel-section": InkwellPanelSection;
     "inkwell-color-panel": InkwellColorPanel;
     "inkwell-top-bar-panel": InkwellTopBarPanel;
     "inkwell-shortcuts-panel": InkwellShortcutsPanel;
