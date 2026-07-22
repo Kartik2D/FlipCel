@@ -5144,6 +5144,10 @@ const WHEEL_FRICTION_TAU_MS = 90;
 /** Coasting ends below this angular velocity (deg/ms). */
 const WHEEL_COAST_STOP_VELOCITY = 0.02;
 const WHEEL_RAD2DEG = 180 / Math.PI;
+/** Hub floor (px); avoids blow-up at the exact center. */
+const WHEEL_HUB_MIN_R = 14;
+/** Lever exponent: 2 = full finger lever, 1 = no distance scaling (rim-normalized). */
+const WHEEL_LEVER_EXPONENT = 1.5;
 
 @customElement("inkwell-wheel-panel")
 export class InkwellWheelPanel extends FloatingPanel {
@@ -5497,7 +5501,7 @@ export class InkwellWheelPanel extends FloatingPanel {
     this.playbackRaf = requestAnimationFrame(this.playbackTick);
   };
 
-  /** Visual wheel radius in screen pixels (lever arm for rim sensitivity). */
+  /** Visual wheel radius in screen pixels. */
   private wheelRimRadius(): number {
     const wheel = this.renderRoot.querySelector<HTMLElement>(".wheel");
     return wheel ? wheel.getBoundingClientRect().width / 2 : 90;
@@ -5513,8 +5517,8 @@ export class InkwellWheelPanel extends FloatingPanel {
   }
 
   /**
-   * Virtual dial: tangential motion at finger bearing, rim as lever arm.
-   * Δθ = (p × d) / (|p| · R)
+   * Virtual dial with rim-normalized lever: denom = r^exp · R^(2−exp) so
+   * sensitivity at the rim matches exp=2 while distance coupling softens.
    */
   private wheelScrubDeg(
     anchorPx: number,
@@ -5523,9 +5527,11 @@ export class InkwellWheelPanel extends FloatingPanel {
     dy: number,
     rimR: number,
   ): number {
-    const r = Math.hypot(anchorPx, anchorPy);
-    if (r === 0 || rimR === 0) return 0;
-    return ((anchorPx * dy - anchorPy * dx) / (r * rimR)) * WHEEL_RAD2DEG;
+    const r = Math.max(Math.hypot(anchorPx, anchorPy), WHEEL_HUB_MIN_R);
+    const denom =
+      Math.pow(r, WHEEL_LEVER_EXPONENT) *
+      Math.pow(rimR, 2 - WHEEL_LEVER_EXPONENT);
+    return ((anchorPx * dy - anchorPy * dx) / denom) * WHEEL_RAD2DEG;
   }
 
   private onWheelDown = (e: PointerEvent) => {
