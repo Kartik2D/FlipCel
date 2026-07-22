@@ -36,7 +36,7 @@ import {
 } from "../core/stores";
 import type { FunctionMenuItem } from "../core/functions";
 import { historyStateStore } from "../core/history";
-import { timelineStore } from "../core/document";
+import { timelineStore, type TimelineState } from "../core/document";
 // ============================================================
 // Phosphor Icons — Duotone weight, inline paths (MIT)
 // https://phosphoricons.com/ · assets from @phosphor-icons/core
@@ -3633,7 +3633,8 @@ import { layerStore, generateLayerId, STAGE_LAYER_ID } from "../core/stores";
 @customElement("inkwell-layers-panel")
 export class InkwellLayersPanel extends FloatingPanel {
   private layers = new StoreController(this, layerStore);
-  private timeline = new StoreController(this, timelineStore);
+  private timelineValue: TimelineState = timelineStore.get();
+  private unsubscribeTimeline: (() => void) | null = null;
   @state() private editingLayerId: string | null = null;
   @state() private editingName = "";
   /**
@@ -4355,14 +4356,143 @@ export class InkwellLayersPanel extends FloatingPanel {
     /** Selection bounds at drag start; set only in move mode. */
     base: { start: number; end: number } | null;
   } | null = null;
-  /** Last frame seen in updated(), to auto-scroll the playhead into view. */
-  private lastSeenFrame = -1;
+  /** Last layer count seen in updated(), to resize the scroll area when rows change. */
   private lastSeenLayerCount = -1;
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(
       new CustomEvent(name, { detail, bubbles: true, composed: true })
     );
+  }
+
+  private getTimeline(): TimelineState {
+    return this.timelineValue;
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.timelineValue = timelineStore.get();
+    this.unsubscribeTimeline = timelineStore.subscribe((t) => this.onTimelineUpdate(t));
+  }
+
+  disconnectedCallback() {
+    this.unsubscribeTimeline?.();
+    this.unsubscribeTimeline = null;
+    this.cancelRowDrag();
+    super.disconnectedCallback();
+  }
+
+  private timelineTracksEqual(
+    a: TimelineState["tracks"],
+    b: TimelineState["tracks"],
+  ): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const ta = a[i];
+      const tb = b[i];
+      if (ta.id !== tb.id || ta.name !== tb.name || ta.visible !== tb.visible) return false;
+      if (ta.keyframes.length !== tb.keyframes.length) return false;
+      for (let j = 0; j < ta.keyframes.length; j++) {
+        const ka = ta.keyframes[j];
+        const kb = tb.keyframes[j];
+        if (
+          ka.frame !== kb.frame ||
+          ka.blank !== kb.blank ||
+          ka.holdUntil !== kb.holdUntil
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /** Full grid rebuild — not just playhead / playback chrome. */
+  private timelineStructureChanged(prev: TimelineState, next: TimelineState): boolean {
+    return (
+      prev.duration !== next.duration ||
+      prev.frameRate !== next.frameRate ||
+      prev.onionSkin !== next.onionSkin ||
+      prev.autoHold !== next.autoHold ||
+      !this.timelineTracksEqual(prev.tracks, next.tracks)
+    );
+  }
+
+  /**
+   * Playhead-only updates paint imperatively so playback doesn't rebuild
+   * layers × frames of DOM every tick.
+   */
+  private onTimelineUpdate(t: TimelineState) {
+    const prev = this.timelineValue;
+    this.timelineValue = t;
+    if (this.timelineStructureChanged(prev, t)) {
+      this.requestUpdate();
+      return;
+    }
+
+    let playheadMoved = false;
+    if (prev.currentFrame !== t.currentFrame) {
+      this.syncPlayheadColumn(prev.currentFrame, t.currentFrame);
+      this.syncPlayheadLine(t.currentFrame);
+      this.syncRulerPlayhead(prev.currentFrame, t.currentFrame);
+      this.syncPlayheadFrameDisplay(t.currentFrame);
+      if (!this.scrubbing) this.ensureFrameVisible(t.currentFrame);
+      playheadMoved = true;
+    }
+    if (prev.playing !== t.playing) {
+      this.syncPlaybackChrome(t);
+    }
+    if (playheadMoved || prev.playing !== t.playing) {
+      this.syncTimelineStrip();
+    }
+  }
+
+  private rulerLabel(frame: number, currentFrame: number): string {
+    if (frame === 0 || (frame + 1) % 5 === 0 || frame === currentFrame) {
+      return String(frame + 1);
+    }
+    return "";
+  }
+
+  private syncPlayheadColumn(oldFrame: number, newFrame: number) {
+    if (oldFrame === newFrame) return;
+    this.renderRoot
+      .querySelectorAll<HTMLElement>(`.frame-cell[data-frame="${oldFrame}"]`)
+      .forEach((el) => el.classList.remove("current"));
+    this.renderRoot
+      .querySelectorAll<HTMLElement>(`.frame-cell[data-frame="${newFrame}"]`)
+      .forEach((el) => el.classList.add("current"));
+  }
+
+  private syncPlayheadLine(frame: number) {
+    const playhead = this.renderRoot.querySelector<HTMLElement>(".playhead");
+    playhead?.style.setProperty("--f", String(frame));
+  }
+
+  private syncRulerPlayhead(oldFrame: number, newFrame: number) {
+    const paint = (frame: number) => {
+      const cell = this.renderRoot.querySelector<HTMLElement>(
+        `.ruler-cell[data-frame="${frame}"]`,
+      );
+      if (!cell) return;
+      cell.classList.toggle("current", frame === newFrame);
+      cell.textContent = this.rulerLabel(frame, newFrame);
+    };
+    if (oldFrame !== newFrame) paint(oldFrame);
+    paint(newFrame);
+  }
+
+  private syncPlayheadFrameDisplay(frame: number) {
+    const label = this.renderRoot.querySelector<HTMLElement>(".playhead-frame-display");
+    if (label) label.textContent = String(frame + 1);
+  }
+
+  private syncPlaybackChrome(t: TimelineState) {
+    const btn = this.renderRoot.querySelector<HTMLElement>(".playback-play");
+    if (!btn) return;
+    btn.classList.toggle("on", t.playing);
+    btn.title = t.playing ? "Stop" : "Play";
+    btn.innerHTML = t.playing ? "&#9632;" : "&#9654;";
   }
 
   private selectLayer(layerId: string) {
@@ -4389,12 +4519,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       this.blockHeight = contentHeight;
     }
 
-    // Follow the playhead during playback.
-    const frame = this.timeline.value.currentFrame;
-    if (frame !== this.lastSeenFrame) {
-      this.lastSeenFrame = frame;
-      if (!this.scrubbing) this.ensureFrameVisible(frame);
-    }
+    // Follow the playhead during playback (imperative path handles most ticks).
 
     // Duration and frame changes move the strip's ruler/flag; scrolling is
     // handled by the viewport's @scroll listener.
@@ -4432,7 +4557,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     const flag = this.renderRoot.querySelector<HTMLElement>(".strip-playhead");
     if (flag) {
       const x =
-        (this.timeline.value.currentFrame + 0.5) * this.frameCellWidth() - scrollLeft;
+        (this.timelineValue.currentFrame + 0.5) * this.frameCellWidth() - scrollLeft;
       flag.style.left = `${x}px`;
     }
   };
@@ -4448,12 +4573,12 @@ export class InkwellLayersPanel extends FloatingPanel {
     if (!content) return 0;
     const rect = content.getBoundingClientRect();
     const frame = Math.floor((e.clientX - rect.left) / this.frameCellWidth());
-    return Math.max(0, Math.min(this.timeline.value.duration - 1, frame));
+    return Math.max(0, Math.min(this.timelineValue.duration - 1, frame));
   }
 
   private scrubTo(e: PointerEvent) {
     const frame = this.frameFromPointer(e);
-    if (frame !== this.timeline.value.currentFrame) {
+    if (frame !== this.timelineValue.currentFrame) {
       this.emit("frame-select", { frame });
     }
     this.ensureFrameVisible(frame);
@@ -4534,7 +4659,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       }
     } else if (drag.base) {
       // Keep at least one frame of the block on the timeline.
-      const duration = this.timeline.value.duration;
+      const duration = this.timelineValue.duration;
       const raw = frame - drag.anchor;
       this.moveDelta = Math.max(
         -drag.base.end,
@@ -4582,7 +4707,7 @@ export class InkwellLayersPanel extends FloatingPanel {
           delta,
         });
         // Selection follows the moved block (clipped to the timeline).
-        const max = this.timeline.value.duration - 1;
+        const max = this.timelineValue.duration - 1;
         this.frameSelection = {
           layerId: drag.layerId,
           start: Math.max(0, Math.min(max, drag.base.start + delta)),
@@ -4669,11 +4794,6 @@ export class InkwellLayersPanel extends FloatingPanel {
     const nonStage = this.layers.value.layers.filter((l) => l.kind !== "stage");
     const layerNumber = nonStage.length + 1;
     this.emit("layer-add", { id: newId, name: `Layer ${layerNumber}` });
-  }
-
-  disconnectedCallback() {
-    this.cancelRowDrag();
-    super.disconnectedCallback();
   }
 
   // ---- Layer row drag-reorder ------------------------------------------
@@ -4808,6 +4928,7 @@ export class InkwellLayersPanel extends FloatingPanel {
         class="frame-cell ${f === currentFrame ? "current" : ""} ${
           selected && f >= selected.start && f <= selected.end ? "in-selection" : ""
         }"
+        data-frame=${f}
         title=${`Frame ${f + 1}`}
         @pointerdown=${(e: PointerEvent) => this.onCellDown(layerId, f, e)}
         @pointermove=${this.onCellMove}
@@ -4881,7 +5002,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   }
 
   private renderKeyframeActions() {
-    const t = this.timeline.value;
+    const t = this.getTimeline();
     return html`
       <button type="button" class="tl-btn" title="Insert keyframe (copies current artwork)"
         @click=${() => this.emit("keyframe-add", { blank: false })}>+K</button>
@@ -4901,7 +5022,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   }
 
   private renderPlaybackActions() {
-    const t = this.timeline.value;
+    const t = this.getTimeline();
     return html`
       <span class="fps-field playback-fps">
         fps
@@ -4923,7 +5044,7 @@ export class InkwellLayersPanel extends FloatingPanel {
         @click=${() => this.emit("play-toggle")}
       >${t.playing ? html`&#9632;` : html`&#9654;`}</button>
       <span class="frame-counter playback-frames">
-        ${t.currentFrame + 1}/<input
+        <span class="playhead-frame-display">${t.currentFrame + 1}</span>/<input
           class="duration-input"
           type="number"
           min="1"
@@ -4941,7 +5062,7 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   render() {
     const { layers, activeLayerId } = this.layers.value;
-    const t = this.timeline.value;
+    const t = this.getTimeline();
     // Regular layers only, top layer first; the Stage layer stays in the
     // document as the fixed background but has no row in the panel.
     const displayLayers = layers.filter((l) => l.kind !== "stage").reverse();
@@ -4998,6 +5119,7 @@ export class InkwellLayersPanel extends FloatingPanel {
                     (f) => html`
                       <div
                         class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
+                        data-frame=${f}
                         title=${`Go to frame ${f + 1}`}
                         @click=${() => this.emit("frame-select", { frame: f })}
                       >
