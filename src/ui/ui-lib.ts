@@ -5155,6 +5155,7 @@ export class InkwellWheelPanel extends FloatingPanel {
   /** Cumulative barrel rotation in degrees; grows clockwise without bound. */
   private rotationDeg = 0;
   @state() private dragging = false;
+  @state() private coasting = false;
 
   private lastClientX = 0;
   private lastClientY = 0;
@@ -5171,8 +5172,6 @@ export class InkwellWheelPanel extends FloatingPanel {
   /** Linear barrel spin while the timeline is playing. */
   private playbackRaf: number | null = null;
   private playbackLastTs = 0;
-  /** Free spin after a flick; slowed by simple exponential friction. */
-  private coasting = false;
   private coastRaf: number | null = null;
   private lastCoastTs = 0;
   private angularVelocity = 0;
@@ -5268,6 +5267,13 @@ export class InkwellWheelPanel extends FloatingPanel {
       position: absolute;
       inset: 0;
       pointer-events: none;
+      transition: transform 350ms cubic-bezier(0.175, 0.885, 0.32, 1.6);
+      will-change: transform;
+    }
+
+    /* Drag, coast, and playback drive the barrel directly — no CSS lag. */
+    .wheel.live .barrel {
+      transition: none;
     }
 
     .chamber {
@@ -5378,6 +5384,31 @@ export class InkwellWheelPanel extends FloatingPanel {
     if (barrel) barrel.style.transform = `rotate(${deg}deg)`;
   }
 
+  private isBarrelLive(): boolean {
+    return this.dragging || this.coasting || this.timeline.value.playing;
+  }
+
+  /** Nearest chamber angle on the same lap as `nearDeg`. */
+  private chamberDegForNotch(notch: number, nearDeg: number): number {
+    const base = notch * WHEEL_DEG_PER_FRAME;
+    return base + Math.round((nearDeg - base) / 360) * 360;
+  }
+
+  /** Ease the barrel onto the current notch (revolver peg lock). */
+  private settleToChamber() {
+    if (this.isBarrelLive()) return;
+    const target = this.chamberDegForNotch(this.lastNotch, this.rotationDeg);
+    if (Math.abs(this.rotationDeg - target) < 0.05) {
+      this.rotationDeg = target;
+      this.setBarrelRotationLive(target);
+      return;
+    }
+    // Lit may not have re-rendered yet after coasting stops — drop .live so CSS can run.
+    this.renderRoot.querySelector<HTMLElement>(".wheel")?.classList.remove("live");
+    this.rotationDeg = target;
+    this.setBarrelRotationLive(target);
+  }
+
   private cancelNotchStepSchedule() {
     if (this.notchStepRaf !== null) {
       cancelAnimationFrame(this.notchStepRaf);
@@ -5436,7 +5467,7 @@ export class InkwellWheelPanel extends FloatingPanel {
       return;
     }
     this.lastNotch += df;
-    this.setBarrelRotationLive(this.lastNotch * WHEEL_DEG_PER_FRAME);
+    this.settleToChamber();
   }
 
   private updatePlaybackRotation(t: { playing: boolean }) {
@@ -5451,9 +5482,13 @@ export class InkwellWheelPanel extends FloatingPanel {
   }
 
   private stopPlaybackRotation() {
+    const wasPlaying = this.playbackRaf !== null;
     if (this.playbackRaf !== null) {
       cancelAnimationFrame(this.playbackRaf);
       this.playbackRaf = null;
+    }
+    if (wasPlaying && !this.isBarrelLive()) {
+      this.settleToChamber();
     }
   }
 
@@ -5481,6 +5516,7 @@ export class InkwellWheelPanel extends FloatingPanel {
     this.angularVelocity *= Math.exp(-dt / WHEEL_FRICTION_TAU_MS);
     if (Math.abs(this.angularVelocity) < WHEEL_COAST_STOP_VELOCITY) {
       this.stopCoasting();
+      this.settleToChamber();
       return;
     }
     this.coastRaf = requestAnimationFrame(this.coastTick);
@@ -5536,6 +5572,7 @@ export class InkwellWheelPanel extends FloatingPanel {
 
   private onWheelDown = (e: PointerEvent) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
+    this.dragging = true;
     if (this.timeline.value.playing) {
       this.dispatchEvent(
         new CustomEvent("play-toggle", { bubbles: true, composed: true }),
@@ -5549,7 +5586,6 @@ export class InkwellWheelPanel extends FloatingPanel {
     } catch {
       // Pointer already released (fast tap) — drag still works uncaptured.
     }
-    this.dragging = true;
     this.lastClientX = e.clientX;
     this.lastClientY = e.clientY;
     this.angularVelocity = 0;
@@ -5578,12 +5614,12 @@ export class InkwellWheelPanel extends FloatingPanel {
 
   private onWheelUp = (e: PointerEvent) => {
     if (!this.dragging) return;
-    this.dragging = false;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
     this.flushNotchSteps();
     if (Math.abs(this.angularVelocity) >= WHEEL_COAST_STOP_VELOCITY) {
       this.startCoasting(this.angularVelocity);
     }
+    this.dragging = false;
     this.updatePlaybackRotation(timelineStore.get());
   };
 
@@ -5595,7 +5631,11 @@ export class InkwellWheelPanel extends FloatingPanel {
         <div class="face">
           <div class="panel-form">
             <div class="wheel-wrap">
-              <div class="wheel ${this.dragging ? "dragging" : ""}">
+              <div
+                class="wheel ${this.dragging ? "dragging" : ""} ${this.isBarrelLive()
+                  ? "live"
+                  : ""}"
+              >
                 <div class="barrel" style="transform: rotate(${this.rotationDeg}deg)">
                   ${chambers.map(
                     (i) => html`
