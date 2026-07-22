@@ -4356,6 +4356,8 @@ export class InkwellLayersPanel extends FloatingPanel {
     /** Selection bounds at drag start; set only in move mode. */
     base: { start: number; end: number } | null;
   } | null = null;
+  /** Element that captured the active frame-cell pointer gesture. */
+  private cellCaptureEl: HTMLElement | null = null;
   /** Last layer count seen in updated(), to resize the scroll area when rows change. */
   private lastSeenLayerCount = -1;
 
@@ -4378,6 +4380,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   disconnectedCallback() {
     this.unsubscribeTimeline?.();
     this.unsubscribeTimeline = null;
+    this.cancelCellDrag();
     this.cancelRowDrag();
     super.disconnectedCallback();
   }
@@ -4419,13 +4422,14 @@ export class InkwellLayersPanel extends FloatingPanel {
   }
 
   /**
-   * Playhead-only updates paint imperatively so playback doesn't rebuild
-   * layers × frames of DOM every tick.
+   * Playhead-only imperative updates run during playback only. While paused,
+   * every store tick re-renders so keyframe spans and selection stay in sync.
    */
   private onTimelineUpdate(t: TimelineState) {
     const prev = this.timelineValue;
     this.timelineValue = t;
-    if (this.timelineStructureChanged(prev, t)) {
+
+    if (this.timelineStructureChanged(prev, t) || !t.playing) {
       this.requestUpdate();
       return;
     }
@@ -4620,10 +4624,33 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   // ---- Frame range selection + move ------------------------------------
 
+  private bindCellDragListeners() {
+    window.addEventListener("pointermove", this.onCellMove);
+    window.addEventListener("pointerup", this.onCellUp);
+    window.addEventListener("pointercancel", this.onCellCancel);
+  }
+
+  private unbindCellDragListeners() {
+    window.removeEventListener("pointermove", this.onCellMove);
+    window.removeEventListener("pointerup", this.onCellUp);
+    window.removeEventListener("pointercancel", this.onCellCancel);
+  }
+
+  private cancelCellDrag() {
+    if (!this.cellDrag) return;
+    this.unbindCellDragListeners();
+    this.cellCaptureEl = null;
+    this.cellDrag = null;
+    this.moveDelta = 0;
+  }
+
   private onCellDown(layerId: string, frame: number, e: PointerEvent) {
     if (e.button !== 0 && e.pointerType === "mouse") return;
     e.stopPropagation();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    this.cellCaptureEl = el;
+    this.bindCellDragListeners();
     const sel = this.frameSelection;
     const inSelection =
       sel !== null &&
@@ -4672,8 +4699,10 @@ export class InkwellLayersPanel extends FloatingPanel {
   private onCellUp = (e: PointerEvent) => {
     const drag = this.cellDrag;
     if (!drag) return;
+    this.unbindCellDragListeners();
+    this.cellCaptureEl?.releasePointerCapture?.(e.pointerId);
+    this.cellCaptureEl = null;
     this.cellDrag = null;
-    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
 
     if (drag.mode === "tap") {
       this.frameSelection = null;
@@ -4720,9 +4749,11 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   private onCellCancel = (e: PointerEvent) => {
     if (!this.cellDrag) return;
+    this.unbindCellDragListeners();
+    this.cellCaptureEl?.releasePointerCapture?.(e.pointerId);
+    this.cellCaptureEl = null;
     this.cellDrag = null;
     this.moveDelta = 0;
-    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
 
   /**
@@ -4931,9 +4962,6 @@ export class InkwellLayersPanel extends FloatingPanel {
         data-frame=${f}
         title=${`Frame ${f + 1}`}
         @pointerdown=${(e: PointerEvent) => this.onCellDown(layerId, f, e)}
-        @pointermove=${this.onCellMove}
-        @pointerup=${this.onCellUp}
-        @pointercancel=${this.onCellCancel}
         @click=${(e: Event) => {
           // Don't bubble into the row's layer-select (which switches tools);
           // taps are handled in onCellUp.
