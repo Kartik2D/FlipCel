@@ -5147,7 +5147,7 @@ const WHEEL_RAD2DEG = 180 / Math.PI;
 /** Hub floor (px); avoids blow-up at the exact center. */
 const WHEEL_HUB_MIN_R = 14;
 /** Lever exponent: 2 = full finger lever, 1 = no distance scaling (rim-normalized). */
-const WHEEL_LEVER_EXPONENT = 1.5;
+const WHEEL_LEVER_EXPONENT = 1.25;
 
 @customElement("inkwell-wheel-panel")
 export class InkwellWheelPanel extends FloatingPanel {
