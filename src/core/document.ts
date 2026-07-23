@@ -546,8 +546,7 @@ export class DocumentManager {
    * Copy the frames in start..end to a destination range. Artwork is cloned so
    * edits to either copy stay independent. When `destStart` is omitted, copies
    * land immediately after the source (tap-to-duplicate). Returns the
-   * destination range, or null when there is no room, nothing to copy, or the
-   * destination overlaps the source.
+   * destination range, or null when there is no room or nothing to copy.
    */
   duplicateFrameRange(
     layerId: string,
@@ -562,12 +561,11 @@ export class DocumentManager {
     const dest = destStart ?? end + 1;
     const destEnd = dest + len - 1;
     if (dest < 0 || destEnd >= this.duration) return null;
-    if (dest <= end && destEnd >= start) return null;
 
     const segment = this.extractFrameRange(track, start, end);
     if (segment.length === 0) return null;
 
-    this.cutFrameRange(track, dest, destEnd);
+    this.cutDestinationForDuplicate(track, dest, destEnd, start, end);
 
     const offset = dest - start;
     for (const kf of segment) {
@@ -584,6 +582,30 @@ export class DocumentManager {
     this.reloadCurrentFrame();
     this.publish();
     return { start: dest, end: destEnd };
+  }
+
+  /** Clear destination frames that are not part of the source being duplicated. */
+  private cutDestinationForDuplicate(
+    track: LayerTrack,
+    destStart: number,
+    destEnd: number,
+    sourceStart: number,
+    sourceEnd: number,
+  ): void {
+    if (destEnd < sourceStart) {
+      this.cutFrameRange(track, destStart, destEnd);
+      return;
+    }
+    if (destStart > sourceEnd) {
+      this.cutFrameRange(track, destStart, destEnd);
+      return;
+    }
+    if (destStart < sourceStart) {
+      this.cutFrameRange(track, destStart, sourceStart - 1);
+    }
+    if (destEnd > sourceEnd) {
+      this.cutFrameRange(track, sourceEnd + 1, destEnd);
+    }
   }
 
   /**

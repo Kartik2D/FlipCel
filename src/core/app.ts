@@ -383,44 +383,70 @@ class App {
       this.onKeyframeAdd(blank);
     });
     this.layersPanel.addEventListener("keyframe-remove", (e: Event) => {
-      const range = (e as CustomEvent<{ layerId: string; start: number; end: number } | null>)
-        .detail;
+      const range = (
+        e as CustomEvent<
+          | { layerId?: string; layerIds?: string[]; start: number; end: number }
+          | null
+        >
+      ).detail;
       this.onKeyframeRemove(range ?? undefined);
     });
     this.layersPanel.addEventListener("frames-move", (e: Event) => {
-      const { layerId, start, end, delta } = (
-        e as CustomEvent<{ layerId: string; start: number; end: number; delta: number }>
-      ).detail;
-      this.onFramesMove(layerId, start, end, delta);
-    });
-    this.layersPanel.addEventListener("frames-duplicate", (e: Event) => {
-      const { layerId, start, end } = (
-        e as CustomEvent<{ layerId: string; start: number; end: number }>
-      ).detail;
-      this.onFramesDuplicate(layerId, start, end);
-    });
-    this.layersPanel.addEventListener("frames-duplicate-drag-start", (e: Event) => {
-      const { layerId, start, end } = (
-        e as CustomEvent<{ layerId: string; start: number; end: number }>
-      ).detail;
-      this.onFramesDuplicateDragStart(layerId, start, end);
-    });
-    this.layersPanel.addEventListener("frames-duplicate-drag-end", (e: Event) => {
-      const { layerId, start, end, delta } = (
+      const { layerId, layerIds, start, end, delta } = (
         e as CustomEvent<{
-          layerId: string;
+          layerId?: string;
+          layerIds?: string[];
           start: number;
           end: number;
           delta: number;
         }>
       ).detail;
-      this.onFramesDuplicateDragEnd(layerId, start, end, delta);
+      this.onFramesMove(layerIds, layerId, start, end, delta);
+    });
+    this.layersPanel.addEventListener("frames-duplicate", (e: Event) => {
+      const { layerId, layerIds, start, end } = (
+        e as CustomEvent<{
+          layerId?: string;
+          layerIds?: string[];
+          start: number;
+          end: number;
+        }>
+      ).detail;
+      this.onFramesDuplicate(layerIds, layerId, start, end);
+    });
+    this.layersPanel.addEventListener("frames-duplicate-drag-start", (e: Event) => {
+      const { layerId, layerIds, start, end } = (
+        e as CustomEvent<{
+          layerId?: string;
+          layerIds?: string[];
+          start: number;
+          end: number;
+        }>
+      ).detail;
+      this.onFramesDuplicateDragStart(layerIds, layerId, start, end);
+    });
+    this.layersPanel.addEventListener("frames-duplicate-drag-end", (e: Event) => {
+      const { layerId, layerIds, start, end, delta } = (
+        e as CustomEvent<{
+          layerId?: string;
+          layerIds?: string[];
+          start: number;
+          end: number;
+          delta: number;
+        }>
+      ).detail;
+      this.onFramesDuplicateDragEnd(layerIds, layerId, start, end, delta);
     });
     this.layersPanel.addEventListener("frames-reverse", (e: Event) => {
-      const { layerId, start, end } = (
-        e as CustomEvent<{ layerId: string; start: number; end: number }>
+      const { layerId, layerIds, start, end } = (
+        e as CustomEvent<{
+          layerId?: string;
+          layerIds?: string[];
+          start: number;
+          end: number;
+        }>
       ).detail;
-      this.onFramesReverse(layerId, start, end);
+      this.onFramesReverse(layerIds, layerId, start, end);
     });
     this.layersPanel.addEventListener("keyframe-hold-toggle", (e: Event) => {
       const { frame, layerId } = (e as CustomEvent<{ frame: number; layerId: string }>).detail;
@@ -1760,68 +1786,160 @@ class App {
   }
 
   /** Delete a frame range; without one, the playhead frame on the active layer. */
-  private onKeyframeRemove(range?: { layerId: string; start: number; end: number }) {
-    const layerId = range?.layerId ?? this.timelineTargetLayerId();
-    if (!layerId) return;
+  private onKeyframeRemove(
+    range?: { layerId?: string; layerIds?: string[]; start: number; end: number },
+  ) {
+    const fallbackLayerId = this.timelineTargetLayerId();
+    const targets = this.frameActionTargets(
+      range?.layerIds,
+      range?.layerId ?? fallbackLayerId ?? undefined,
+    );
+    if (targets.length === 0) return;
     this.selectionController.clearSelection();
     this.directSelectController.clearSelection();
     const frame = this.documentManager.getCurrentFrame();
     const start = range?.start ?? frame;
     const end = range?.end ?? frame;
-    if (this.documentManager.removeFrameRange(layerId, start, end)) {
+    let changed = false;
+    for (const layerId of targets) {
+      if (this.documentManager.removeFrameRange(layerId, start, end)) {
+        changed = true;
+      }
+    }
+    if (changed) {
       this.historyManager.snapshot();
       this.requestRedraw();
     }
   }
 
-  private onFramesMove(layerId: string, start: number, end: number, delta: number) {
-    // Commit live edits first so an in-progress drawing travels with its frame.
-    this.commitLiveEdits();
-    this.selectionController.clearSelection();
-    this.directSelectController.clearSelection();
-    if (this.documentManager.moveFrameRange(layerId, start, end, delta)) {
-      this.historyManager.snapshot();
-      this.requestRedraw();
-    }
+  private frameActionTargets(
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+  ): string[] {
+    if (layerIds && layerIds.length > 0) return layerIds;
+    if (layerId) return [layerId];
+    return [];
   }
 
-  private onFramesDuplicate(layerId: string, start: number, end: number) {
-    this.commitLiveEdits();
-    const result = this.documentManager.duplicateFrameRange(layerId, start, end);
-    if (!result) return;
-    this.layersPanel.setFrameSelection({ layerId, start: result.start, end: result.end });
-    this.historyManager.snapshot();
-    this.requestRedraw();
-  }
-
-  private onFramesDuplicateDragStart(_layerId: string, _start: number, _end: number) {
-    this.commitLiveEdits();
-  }
-
-  private onFramesDuplicateDragEnd(
-    layerId: string,
+  private onFramesMove(
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
     start: number,
     end: number,
     delta: number,
   ) {
+    const targets = this.frameActionTargets(layerIds, layerId);
+    if (targets.length === 0) return;
+    // Commit live edits first so an in-progress drawing travels with its frame.
     this.commitLiveEdits();
-    if (delta === 0) return;
-    const destStart = start + delta;
-    const result = this.documentManager.duplicateFrameRange(
-      layerId,
-      start,
-      end,
-      destStart,
-    );
-    if (!result) return;
-    this.layersPanel.setFrameSelection({ layerId, start: result.start, end: result.end });
+    this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
+    let changed = false;
+    for (const id of targets) {
+      if (this.documentManager.moveFrameRange(id, start, end, delta)) {
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.historyManager.snapshot();
+      this.requestRedraw();
+    }
+  }
+
+  private onFramesDuplicate(
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+  ) {
+    const targets = this.frameActionTargets(layerIds, layerId);
+    if (targets.length === 0) return;
+    this.commitLiveEdits();
+    let changed = false;
+    let destStart: number | null = null;
+    let destEnd: number | null = null;
+    for (const id of targets) {
+      const result = this.documentManager.duplicateFrameRange(id, start, end);
+      if (!result) continue;
+      changed = true;
+      destStart = result.start;
+      destEnd = result.end;
+    }
+    if (!changed || destStart === null || destEnd === null) return;
+    this.layersPanel.setFrameSelection({
+      layerIds: targets,
+      start: destStart,
+      end: destEnd,
+    });
     this.historyManager.snapshot();
     this.requestRedraw();
   }
 
-  private onFramesReverse(layerId: string, start: number, end: number) {
+  private onFramesDuplicateDragStart(
+    _layerIds: string[] | undefined,
+    _layerId: string | undefined,
+    _start: number,
+    _end: number,
+  ) {
     this.commitLiveEdits();
-    if (this.documentManager.reverseFrameRange(layerId, start, end)) {
+  }
+
+  private onFramesDuplicateDragEnd(
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+    delta: number,
+  ) {
+    const targets = this.frameActionTargets(layerIds, layerId);
+    if (targets.length === 0) return;
+    this.commitLiveEdits();
+    if (delta === 0) {
+      this.onFramesDuplicate(layerIds, layerId, start, end);
+      return;
+    }
+    const destStart = start + delta;
+    let changed = false;
+    let resultStart: number | null = null;
+    let resultEnd: number | null = null;
+    for (const id of targets) {
+      const result = this.documentManager.duplicateFrameRange(
+        id,
+        start,
+        end,
+        destStart,
+      );
+      if (!result) continue;
+      changed = true;
+      resultStart = result.start;
+      resultEnd = result.end;
+    }
+    if (!changed || resultStart === null || resultEnd === null) return;
+    this.layersPanel.setFrameSelection({
+      layerIds: targets,
+      start: resultStart,
+      end: resultEnd,
+    });
+    this.historyManager.snapshot();
+    this.requestRedraw();
+  }
+
+  private onFramesReverse(
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+  ) {
+    const targets = this.frameActionTargets(layerIds, layerId);
+    if (targets.length === 0) return;
+    this.commitLiveEdits();
+    let changed = false;
+    for (const id of targets) {
+      if (this.documentManager.reverseFrameRange(id, start, end)) {
+        changed = true;
+      }
+    }
+    if (changed) {
       this.historyManager.snapshot();
       this.requestRedraw();
     }

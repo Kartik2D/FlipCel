@@ -3949,6 +3949,14 @@ export class InkwellUniversalPanel extends FloatingPanel {
 
 import { layerStore, generateLayerId, STAGE_LAYER_ID } from "../core/stores";
 
+type LayersFrameSelection = {
+  start: number;
+  end: number;
+  layerIds: string[];
+  /** Row where the drag started; horizontal actions use this layer only. */
+  anchorLayerId: string;
+};
+
 @customElement("inkwell-layers-panel")
 export class InkwellLayersPanel extends FloatingPanel {
   private layers = new StoreController(this, layerStore);
@@ -3979,12 +3987,10 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     :host {
       --panel-width: 480px;
+      --panel-max-height: none;
       --layers-control-size: 24px;
       --layers-side-width: 196px;
       --frame-cell-w: 15px;
-      --inkwell-timeline-playhead-tint: 32%;
-      --inkwell-timeline-active-row-tint: 28%;
-      --inkwell-timeline-selection-tint: 36%;
     }
 
     .block {
@@ -4410,7 +4416,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       margin: 0 1px;
       border: none;
       border-radius: 4px;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      background: var(--inkwell-timeline-cell-bg, var(--block-depth-color, var(--inkwell-panel-depth)));
       cursor: pointer;
       touch-action: none;
       -webkit-tap-highlight-color: transparent;
@@ -4420,26 +4426,32 @@ export class InkwellLayersPanel extends FloatingPanel {
       cursor: grab;
     }
 
-    /* Aseprite-style cross shading: the playhead column is tinted in every
-       row, the selected layer's row is tinted across every frame, and only
-       their intersection gets the solid box. */
+    /* Aseprite-style cross shading: playhead column and selected-layer row
+       each lift toward panel surface (value contrast), with a blended fill at
+       their intersection plus the playhead ring. */
     .frame-cell.current {
-      background: color-mix(
-        in srgb,
-        var(--inkwell-accent, #4a6fb5) var(--inkwell-timeline-playhead-tint, 32%),
-        var(--block-depth-color, var(--inkwell-panel-depth))
+      background: var(
+        --inkwell-timeline-playhead-bg,
+        color-mix(in srgb, var(--inkwell-playhead, #f2c14e) 18%, var(--inkwell-panel-surface))
       );
     }
 
     .strip-row.active .frame-cell {
-      background: color-mix(
-        in srgb,
-        var(--inkwell-accent, #4a6fb5) var(--inkwell-timeline-active-row-tint, 28%),
-        var(--block-depth-color, var(--inkwell-panel-depth))
+      background: var(
+        --inkwell-timeline-active-row-bg,
+        color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 22%, var(--inkwell-panel-surface))
       );
     }
 
     .strip-row.active .frame-cell.current {
+      background: var(
+        --inkwell-timeline-active-playhead-bg,
+        color-mix(
+          in srgb,
+          var(--inkwell-timeline-active-row-bg, var(--inkwell-accent)) 52%,
+          var(--inkwell-timeline-playhead-bg, var(--inkwell-playhead, #f2c14e))
+        )
+      );
       box-shadow: inset 0 0 0 2px var(--inkwell-playhead, #f2c14e);
     }
 
@@ -4508,7 +4520,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       border-radius: 4px;
       background: color-mix(
         in srgb,
-        var(--inkwell-accent, #4a6fb5) var(--inkwell-timeline-selection-tint, 36%),
+        var(--inkwell-timeline-selection-bg, var(--inkwell-accent, #4a6fb5)) 88%,
         transparent
       );
       box-shadow: inset 0 0 0 2px var(--inkwell-accent, #4a6fb5);
@@ -4520,7 +4532,11 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .frame-selection.duplicating {
-      background: color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 22%, transparent);
+      background: color-mix(
+        in srgb,
+        var(--inkwell-timeline-selection-bg, var(--inkwell-accent, #4a6fb5)) 55%,
+        transparent
+      );
       box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 70%, transparent);
       border: 1px dashed var(--inkwell-accent, #4a6fb5);
     }
@@ -4596,6 +4612,54 @@ export class InkwellLayersPanel extends FloatingPanel {
     .span-pill.moving-out,
     .span-dot.moving-out {
       opacity: 0.25;
+    }
+
+    .span-pill.reverse-hidden,
+    .span-dot.reverse-hidden {
+      opacity: 0;
+    }
+
+    /* Reverse preview: spin keyframe markers 180° around the selection center. */
+    .reverse-overlay {
+      z-index: 6;
+    }
+
+    .reverse-spin {
+      position: absolute;
+      top: 50%;
+      left: calc(var(--pivot-f) * var(--frame-cell-w, 15px));
+      width: 0;
+      height: 0;
+      transform: rotate(0deg);
+      animation: timeline-reverse-spin 480ms
+        var(--inkwell-motion-bounce-easing, cubic-bezier(0.34, 1.25, 0.64, 1)) forwards;
+    }
+
+    @keyframes timeline-reverse-spin {
+      to {
+        transform: rotate(180deg);
+      }
+    }
+
+    .reverse-spin .span-dot,
+    .reverse-spin .span-pill {
+      position: absolute;
+      top: 0;
+      left: calc((var(--center-f) + 0.5 - var(--pivot-f)) * var(--frame-cell-w, 15px));
+    }
+
+    .reverse-spin .span-dot {
+      transform: translate(-50%, -50%);
+    }
+
+    .reverse-spin .span-pill {
+      width: calc(var(--len) * var(--frame-cell-w, 15px) - 6px);
+      height: 6px;
+      transform: translate(-50%, -50%);
+    }
+
+    .frame-selection.reversing {
+      opacity: 0;
     }
 
     .ghost-overlay {
@@ -4740,12 +4804,22 @@ export class InkwellLayersPanel extends FloatingPanel {
   private scrubbing = false;
   /** Last frame-cell tap, for double-tap (toggle keyframe hold) detection. */
   private lastCellTap: { layerId: string; frame: number; time: number } | null = null;
-  /** Selected frame range on one layer's strip (inclusive, start <= end). */
-  @state() private frameSelection: {
-    layerId: string;
+  /** Selected frame range across one or more layer rows (inclusive). */
+  @state() private frameSelection: LayersFrameSelection | null = null;
+  /** Spinning keyframe markers while a frame-range reverse is previewed. */
+  @state() private reverseAnimation: {
+    layerIds: string[];
     start: number;
     end: number;
+    markersByLayerId: Record<
+      string,
+      Array<
+        | { kind: "dot"; fromF: number; blank: boolean }
+        | { kind: "pill"; fromF: number; len: number }
+      >
+    >;
   } | null = null;
+  private reverseSpinLayersRemaining = 0;
   /** Live frame offset while dragging the selection to a new time. */
   @state() private moveDelta = 0;
   /**
@@ -4755,18 +4829,21 @@ export class InkwellLayersPanel extends FloatingPanel {
    */
   private cellDrag: {
     layerId: string;
+    anchorLayerIndex: number;
     anchor: number;
     startX: number;
+    startY: number;
     mode: "tap" | "select" | "move";
     /** Selection bounds at drag start; set only in move mode. */
-    base: { start: number; end: number } | null;
+    base: { start: number; end: number; layerIds: string[] } | null;
   } | null = null;
   /** Live duplicate preview while dragging from the frame-actions popover. */
   private duplicatePlacement: {
-    layerId: string;
+    layerIds: string[];
     sourceStart: number;
     sourceEnd: number;
     anchor: number;
+    pointerId: number;
   } | null = null;
   private frameActionDrag: {
     kind: "duplicate";
@@ -4774,16 +4851,17 @@ export class InkwellLayersPanel extends FloatingPanel {
     startX: number;
     startY: number;
     dragging: boolean;
-    layerId: string;
+    anchorFrame: number;
+    layerIds: string[];
     sourceStart: number;
     sourceEnd: number;
   } | null = null;
+  private readonly frameActionDragCapture = { capture: true };
   private suppressFrameActionClick: string | null = null;
   /** Screen position for the frame-actions popover (fixed; avoids overflow clipping). */
   @state() private frameActionsAnchor: { x: number; y: number } | null = null;
   /** Last frame seen in updated(), to auto-scroll the playhead into view. */
   private lastSeenFrame = -1;
-  private lastSeenLayerCount = -1;
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(
@@ -4792,40 +4870,116 @@ export class InkwellLayersPanel extends FloatingPanel {
   }
 
   /** Called by the app after a non-drag duplicate. */
-  setFrameSelection(sel: { layerId: string; start: number; end: number } | null) {
-    this.frameSelection = sel;
+  setFrameSelection(
+    sel: { layerId?: string; layerIds?: string[]; start: number; end: number } | null,
+  ) {
+    this.frameSelection = sel
+      ? {
+          start: sel.start,
+          end: sel.end,
+          layerIds: sel.layerIds ?? (sel.layerId ? [sel.layerId] : []),
+          anchorLayerId: sel.layerId ?? sel.layerIds?.[0] ?? "",
+        }
+      : null;
     this.duplicatePlacement = null;
     this.moveDelta = 0;
   }
 
+  private displayLayerIds(): string[] {
+    return this.layers.value.layers
+      .filter((layer) => layer.kind !== "stage")
+      .reverse()
+      .map((layer) => layer.id);
+  }
+
+  private layerRowPitch(): number {
+    const row = this.renderRoot.querySelector<HTMLElement>(".strip-row");
+    if (row) {
+      const list = row.parentElement;
+      const rowRect = row.getBoundingClientRect();
+      if (list) {
+        const gap = Number.parseFloat(getComputedStyle(list).rowGap || "0") || 4;
+        return rowRect.height + gap;
+      }
+      return rowRect.height + 4;
+    }
+    const raw = getComputedStyle(this).getPropertyValue("--layers-control-size");
+    const parsed = Number.parseFloat(raw);
+    return (Number.isFinite(parsed) ? parsed : 24) + 4;
+  }
+
+  private layerIndexFromPointer(e: PointerEvent): number {
+    const rows = Array.from(this.renderRoot.querySelectorAll<HTMLElement>(".strip-row"));
+    if (rows.length === 0) return 0;
+    for (let i = 0; i < rows.length; i++) {
+      const rect = rows[i].getBoundingClientRect();
+      if (e.clientY < rect.bottom) return i;
+    }
+    return rows.length - 1;
+  }
+
+  private layerActionDetail(sel: LayersFrameSelection) {
+    return {
+      layerId: sel.anchorLayerId,
+      layerIds: [...sel.layerIds],
+      start: sel.start,
+      end: sel.end,
+    };
+  }
+
   /** Begin a drag-duplicate preview (no document change until release). */
   beginDuplicateDragPreview(
-    layerId: string,
+    layerIds: string[],
     sourceStart: number,
     sourceEnd: number,
     anchorFrame: number,
+    pointerId: number,
   ) {
     this.duplicatePlacement = {
-      layerId,
+      layerIds: [...layerIds],
       sourceStart,
       sourceEnd,
       anchor: anchorFrame,
+      pointerId,
     };
     this.moveDelta = 0;
-    this.frameActionsAnchor = null;
     this.requestUpdate();
   }
 
   private bindFrameActionDragListeners() {
-    window.addEventListener("pointermove", this.onFrameActionDragMove);
-    window.addEventListener("pointerup", this.onFrameActionDragUp);
-    window.addEventListener("pointercancel", this.onFrameActionDragCancel);
+    window.addEventListener(
+      "pointermove",
+      this.onFrameActionDragMove,
+      this.frameActionDragCapture,
+    );
+    window.addEventListener(
+      "pointerup",
+      this.onFrameActionDragUp,
+      this.frameActionDragCapture,
+    );
+    window.addEventListener(
+      "pointercancel",
+      this.onFrameActionDragCancel,
+      this.frameActionDragCapture,
+    );
   }
 
   private unbindFrameActionDragListeners() {
-    window.removeEventListener("pointermove", this.onFrameActionDragMove);
-    window.removeEventListener("pointerup", this.onFrameActionDragUp);
-    window.removeEventListener("pointercancel", this.onFrameActionDragCancel);
+    window.removeEventListener(
+      "pointermove",
+      this.onFrameActionDragMove,
+      this.frameActionDragCapture,
+    );
+    window.removeEventListener(
+      "pointerup",
+      this.onFrameActionDragUp,
+      this.frameActionDragCapture,
+    );
+    window.removeEventListener(
+      "pointercancel",
+      this.onFrameActionDragCancel,
+      this.frameActionDragCapture,
+    );
   }
 
   private cancelFrameActionDrag() {
@@ -4841,6 +4995,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       this.cellDrag === null &&
       this.frameActionDrag === null &&
       this.duplicatePlacement === null &&
+      this.reverseAnimation === null &&
       this.moveDelta === 0
     );
   }
@@ -4851,7 +5006,11 @@ export class InkwellLayersPanel extends FloatingPanel {
       if (this.frameActionsAnchor !== null) this.frameActionsAnchor = null;
       return;
     }
-    const el = this.renderRoot.querySelector<HTMLElement>(".frame-selection");
+    const sel = this.frameSelection;
+    if (!sel) return;
+    const el = this.renderRoot.querySelector<HTMLElement>(
+      `.strip-row[data-layer-id="${sel.anchorLayerId}"] .frame-selection`,
+    );
     if (!el) {
       if (this.frameActionsAnchor !== null) this.frameActionsAnchor = null;
       return;
@@ -4876,21 +5035,148 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   private onFrameActionDuplicateClick() {
     const sel = this.frameSelection;
-    if (!sel) return;
-    this.emit("frames-duplicate", { ...sel });
+    if (!sel || sel.layerIds.length === 0) return;
+    this.emit("frames-duplicate", this.layerActionDetail(sel));
   }
 
   private onFrameActionReverseClick() {
     const sel = this.frameSelection;
-    if (!sel) return;
-    this.emit("frames-reverse", { ...sel });
+    if (!sel || this.reverseAnimation) return;
+    if (sel.end <= sel.start) return;
+    this.beginReverseAnimation(sel);
+  }
+
+  private collectReverseMarkers(
+    keyframes: Array<{ frame: number; blank: boolean; holdUntil: number }>,
+    start: number,
+    end: number,
+    duration: number,
+  ): Array<
+    | { kind: "dot"; fromF: number; blank: boolean }
+    | { kind: "pill"; fromF: number; len: number }
+  > {
+    const markers: Array<
+      | { kind: "dot"; fromF: number; blank: boolean }
+      | { kind: "pill"; fromF: number; len: number }
+    > = [];
+    for (const kf of keyframes) {
+      const spanEnd = Math.min(kf.holdUntil, duration - 1);
+      if (kf.frame > end || spanEnd < start) continue;
+      const len = Math.max(1, spanEnd - kf.frame + 1);
+      if (len === 1) {
+        markers.push({ kind: "dot", fromF: kf.frame, blank: kf.blank });
+      } else {
+        markers.push({ kind: "pill", fromF: kf.frame, len });
+      }
+    }
+    return markers;
+  }
+
+  private beginReverseAnimation(sel: LayersFrameSelection) {
+    const markersByLayerId: Record<
+      string,
+      Array<
+        | { kind: "dot"; fromF: number; blank: boolean }
+        | { kind: "pill"; fromF: number; len: number }
+      >
+    > = {};
+    for (const layerId of sel.layerIds) {
+      const track = this.timeline.value.tracks.find((t) => t.id === layerId);
+      const markers = this.collectReverseMarkers(
+        track?.keyframes ?? [],
+        sel.start,
+        sel.end,
+        this.timeline.value.duration,
+      );
+      if (markers.length > 0) {
+        markersByLayerId[layerId] = markers;
+      }
+    }
+    const layersWithMarkers = Object.keys(markersByLayerId);
+    if (layersWithMarkers.length === 0) {
+      this.emit("frames-reverse", this.layerActionDetail(sel));
+      return;
+    }
+    this.reverseSpinLayersRemaining = layersWithMarkers.length;
+    this.reverseAnimation = {
+      layerIds: sel.layerIds,
+      start: sel.start,
+      end: sel.end,
+      markersByLayerId,
+    };
+  }
+
+  private onReverseSpinEnd = (e: AnimationEvent) => {
+    if (e.animationName !== "timeline-reverse-spin" || e.target !== e.currentTarget) return;
+    this.reverseSpinLayersRemaining = Math.max(0, this.reverseSpinLayersRemaining - 1);
+    if (this.reverseSpinLayersRemaining > 0) return;
+    const anim = this.reverseAnimation;
+    if (!anim) return;
+    this.reverseAnimation = null;
+    this.emit("frames-reverse", {
+      layerIds: anim.layerIds,
+      start: anim.start,
+      end: anim.end,
+    });
+  };
+
+  private renderReverseSpinOverlay(layerId: string) {
+    const anim = this.reverseAnimation;
+    if (!anim || !anim.layerIds.includes(layerId)) return nothing;
+    const markers = anim.markersByLayerId[layerId];
+    if (!markers?.length) return nothing;
+
+    const pivotF = (anim.start + anim.end + 1) / 2;
+    const markerEls = markers.map((marker) => {
+      const centerF =
+        marker.kind === "dot" ? marker.fromF : marker.fromF + (marker.len - 1) / 2;
+      const style = `--center-f: ${centerF}; --pivot-f: ${pivotF}; --sel-start: ${anim.start}; --sel-end: ${anim.end}`;
+      if (marker.kind === "dot") {
+        return html`<div
+          class="span-dot ${marker.blank ? "" : "span-dot--filled"}"
+          style=${`${style}`}
+        ></div>`;
+      }
+      return html`<div
+        class="span-pill"
+        style=${`${style}; --len: ${marker.len}`}
+      ></div>`;
+    });
+
+    return html`
+      <div class="span-overlay reverse-overlay">
+        <div
+          class="reverse-spin"
+          style="--pivot-f: ${pivotF}; --sel-start: ${anim.start}; --sel-end: ${anim.end}"
+          @animationend=${this.onReverseSpinEnd}
+        >
+          ${markerEls}
+        </div>
+      </div>
+    `;
   }
 
   private onFrameActionDeleteClick() {
     const sel = this.frameSelection;
     if (!sel) return;
     this.frameSelection = null;
-    this.emit("keyframe-remove", { ...sel });
+    this.emit("keyframe-remove", {
+      layerIds: sel.layerIds,
+      start: sel.start,
+      end: sel.end,
+    });
+  }
+
+  private clampFrameMoveDelta(
+    raw: number,
+    rangeStart: number,
+    rangeEnd: number,
+    duration: number,
+  ): number {
+    return Math.max(
+      -rangeEnd,
+      Math.min(duration - 1 - rangeStart, raw),
+    );
   }
 
   private onFrameActionDuplicateDown(e: PointerEvent) {
@@ -4898,18 +5184,22 @@ export class InkwellLayersPanel extends FloatingPanel {
     if (!sel || e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     this.frameActionDrag = {
       kind: "duplicate",
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
       dragging: false,
-      layerId: sel.layerId,
+      anchorFrame: Math.max(
+        sel.start,
+        Math.min(sel.end, this.frameFromPointer(e)),
+      ),
+      layerIds: [...sel.layerIds],
       sourceStart: sel.start,
       sourceEnd: sel.end,
     };
     this.bindFrameActionDragListeners();
+    this.requestUpdate();
   }
 
   private updateDuplicatePlacementFromPointer(e: PointerEvent) {
@@ -4920,9 +5210,11 @@ export class InkwellLayersPanel extends FloatingPanel {
     const frame = this.frameFromPointer(e);
     const duration = this.timeline.value.duration;
     const raw = frame - placement.anchor;
-    const next = Math.max(
-      -placement.sourceStart,
-      Math.min(duration - 1 - placement.sourceEnd, raw),
+    const next = this.clampFrameMoveDelta(
+      raw,
+      placement.sourceStart,
+      placement.sourceEnd,
+      duration,
     );
     if (next !== this.moveDelta) {
       this.moveDelta = next;
@@ -4933,22 +5225,25 @@ export class InkwellLayersPanel extends FloatingPanel {
   private onFrameActionDragMove = (e: PointerEvent) => {
     const drag = this.frameActionDrag;
     if (drag) {
-      const dx = e.clientX - drag.startX;
-      const dy = e.clientY - drag.startY;
+      if (e.pointerId !== drag.pointerId) return;
+      const dx = Math.abs(e.clientX - drag.startX);
+      const dy = Math.abs(e.clientY - drag.startY);
+      const thresholdX = this.frameCellWidth() * 0.6;
+      const thresholdY = this.layerRowPitch() * 0.6;
       if (!drag.dragging) {
-        if (dx * dx + dy * dy < 25) return;
+        if (dx < thresholdX && dy < thresholdY) return;
         drag.dragging = true;
-        this.frameActionsAnchor = null;
         this.emit("frames-duplicate-drag-start", {
-          layerId: drag.layerId,
+          layerIds: drag.layerIds,
           start: drag.sourceStart,
           end: drag.sourceEnd,
         });
         this.beginDuplicateDragPreview(
-          drag.layerId,
+          drag.layerIds,
           drag.sourceStart,
           drag.sourceEnd,
-          this.frameFromPointer(e),
+          drag.anchorFrame,
+          drag.pointerId,
         );
         this.frameActionDrag = null;
       } else {
@@ -4956,42 +5251,45 @@ export class InkwellLayersPanel extends FloatingPanel {
       }
     }
 
+    const placement = this.duplicatePlacement;
+    if (placement && e.pointerId !== placement.pointerId) return;
     this.updateDuplicatePlacementFromPointer(e);
   };
 
   private onFrameActionDragUp = (e: PointerEvent) => {
     const drag = this.frameActionDrag;
-    if (drag && !drag.dragging) {
-      this.onFrameActionDuplicateClick();
+    if (drag) {
+      if (e.pointerId !== drag.pointerId) return;
+      if (!drag.dragging) {
+        this.suppressFrameActionClick = "duplicate";
+        this.onFrameActionDuplicateClick();
+      }
       this.frameActionDrag = null;
       this.unbindFrameActionDragListeners();
-      this.releaseFrameActionDuplicateCapture(e);
+      this.requestUpdate();
       return;
     }
 
-    if (this.duplicatePlacement) {
+    const placement = this.duplicatePlacement;
+    if (placement) {
+      if (e.pointerId !== placement.pointerId) return;
       this.suppressFrameActionClick = "duplicate";
       this.finalizeDuplicatePlacement();
     }
     this.frameActionDrag = null;
     this.unbindFrameActionDragListeners();
-    this.releaseFrameActionDuplicateCapture(e);
+    this.requestUpdate();
   };
 
-  private releaseFrameActionDuplicateCapture(e: PointerEvent) {
-    const btn = this.renderRoot.querySelector<HTMLButtonElement>(
-      '.frame-action-btn[aria-label="Duplicate"]',
-    );
-    btn?.releasePointerCapture?.(e.pointerId);
-  }
-
   private onFrameActionDragCancel = (e: PointerEvent) => {
-    if (this.duplicatePlacement) {
-      this.finalizeDuplicatePlacement();
-    }
+    const activePointerId =
+      this.duplicatePlacement?.pointerId ?? this.frameActionDrag?.pointerId;
+    if (activePointerId !== undefined && e.pointerId !== activePointerId) return;
+    this.duplicatePlacement = null;
+    this.moveDelta = 0;
     this.frameActionDrag = null;
     this.unbindFrameActionDragListeners();
-    this.releaseFrameActionDuplicateCapture(e);
+    this.requestUpdate();
   };
 
   private readonly globalFrameDuplicateDragEndHandler = (e: Event) => {
@@ -5005,8 +5303,9 @@ export class InkwellLayersPanel extends FloatingPanel {
     const delta = this.moveDelta;
     this.duplicatePlacement = null;
     this.moveDelta = 0;
+    if (delta === 0) return;
     this.emit("frames-duplicate-drag-end", {
-      layerId: placement.layerId,
+      layerIds: placement.layerIds,
       start: placement.sourceStart,
       end: placement.sourceEnd,
       delta,
@@ -5046,7 +5345,7 @@ export class InkwellLayersPanel extends FloatingPanel {
               class="frame-action-btn"
               title="Reverse frame order"
               aria-label="Reverse"
-              ?disabled=${len < 2}
+              ?disabled=${len < 2 || this.reverseAnimation !== null}
               @click=${() => this.onFrameActionReverseClick()}
             >${phosphorIcon("arrows-left-right", 14)}</button>
             <button
@@ -5068,23 +5367,6 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   updated(changedProperties: Map<string, unknown>) {
     super.updated(changedProperties);
-
-    const layerCount = this.layers.value.layers.filter(
-      (layer) => layer.kind !== "stage",
-    ).length;
-    const layerCountChanged = layerCount !== this.lastSeenLayerCount;
-    this.lastSeenLayerCount = layerCount;
-
-    // A manually sized panel should track its content as layers are added or
-    // removed, and never preserve empty vertical space below the final layer.
-    const contentHeight = this.getResizeMaxHeight(this.getBoundingClientRect().width);
-    if (
-      this.blockHeight !== null &&
-      Number.isFinite(contentHeight) &&
-      (layerCountChanged || this.blockHeight > contentHeight + 0.5)
-    ) {
-      this.blockHeight = contentHeight;
-    }
 
     // Follow the playhead during playback.
     const frame = this.timeline.value.currentFrame;
@@ -5206,15 +5488,21 @@ export class InkwellLayersPanel extends FloatingPanel {
     const sel = this.frameSelection;
     const inSelection =
       sel !== null &&
-      sel.layerId === layerId &&
+      sel.layerIds.includes(layerId) &&
       frame >= sel.start &&
       frame <= sel.end;
+    const displayIds = this.displayLayerIds();
+    const anchorLayerIndex = displayIds.indexOf(layerId);
     this.cellDrag = {
       layerId,
+      anchorLayerIndex: anchorLayerIndex >= 0 ? anchorLayerIndex : 0,
       anchor: frame,
       startX: e.clientX,
+      startY: e.clientY,
       mode: "tap",
-      base: inSelection ? { start: sel.start, end: sel.end } : null,
+      base: inSelection
+        ? { start: sel.start, end: sel.end, layerIds: [...sel.layerIds] }
+        : null,
     };
   }
 
@@ -5223,26 +5511,50 @@ export class InkwellLayersPanel extends FloatingPanel {
     if (!drag) return;
 
     if (drag.mode === "tap") {
-      if (Math.abs(e.clientX - drag.startX) < this.frameCellWidth() * 0.6) return;
-      drag.mode = drag.base ? "move" : "select";
+      const dx = Math.abs(e.clientX - drag.startX);
+      const dy = Math.abs(e.clientY - drag.startY);
+      const thresholdX = this.frameCellWidth() * 0.6;
+      const thresholdY = this.layerRowPitch() * 0.6;
+      if (dx < thresholdX && dy < thresholdY) return;
+      drag.mode = drag.base !== null && dx > dy ? "move" : "select";
     }
     e.preventDefault();
 
     const frame = this.frameFromPointer(e);
     if (drag.mode === "select") {
+      const displayIds = this.displayLayerIds();
+      if (displayIds.length === 0) return;
+      const layerIndex = this.layerIndexFromPointer(e);
+      const layerStart = Math.min(drag.anchorLayerIndex, layerIndex);
+      const layerEnd = Math.max(drag.anchorLayerIndex, layerIndex);
+      const layerIds = displayIds.slice(layerStart, layerEnd + 1);
       const start = Math.min(drag.anchor, frame);
       const end = Math.max(drag.anchor, frame);
       const cur = this.frameSelection;
-      if (!cur || cur.layerId !== drag.layerId || cur.start !== start || cur.end !== end) {
-        this.frameSelection = { layerId: drag.layerId, start, end };
+      if (
+        !cur ||
+        cur.anchorLayerId !== drag.layerId ||
+        cur.start !== start ||
+        cur.end !== end ||
+        cur.layerIds.length !== layerIds.length ||
+        cur.layerIds.some((id, i) => id !== layerIds[i])
+      ) {
+        this.frameSelection = {
+          start,
+          end,
+          layerIds,
+          anchorLayerId: drag.layerId,
+        };
       }
     } else if (drag.base) {
       // Keep at least one frame of the block on the timeline.
       const duration = this.timeline.value.duration;
       const raw = frame - drag.anchor;
-      this.moveDelta = Math.max(
-        -drag.base.end,
-        Math.min(duration - 1 - drag.base.start, raw),
+      this.moveDelta = this.clampFrameMoveDelta(
+        raw,
+        drag.base.start,
+        drag.base.end,
+        duration,
       );
     }
     this.ensureFrameVisible(frame);
@@ -5275,17 +5587,20 @@ export class InkwellLayersPanel extends FloatingPanel {
       const delta = this.moveDelta;
       this.moveDelta = 0;
       if (delta !== 0) {
+        const anchorLayerId =
+          this.frameSelection?.anchorLayerId ?? drag.layerId;
         this.emit("frames-move", {
-          layerId: drag.layerId,
+          layerIds: drag.base.layerIds,
           start: drag.base.start,
           end: drag.base.end,
           delta,
         });
         const max = this.timeline.value.duration - 1;
         this.frameSelection = {
-          layerId: drag.layerId,
           start: Math.max(0, Math.min(max, drag.base.start + delta)),
           end: Math.max(0, Math.min(max, drag.base.end + delta)),
+          layerIds: drag.base.layerIds,
+          anchorLayerId,
         };
       }
     }
@@ -5302,23 +5617,6 @@ export class InkwellLayersPanel extends FloatingPanel {
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
     this.requestUpdate();
   };
-
-  /**
-   * The panel's useful height is its fixed chrome plus the timeline ruler and
-   * layer rows. Replace the flexible scroll area's current height with its
-   * actual content height so resizing cannot create blank space underneath.
-   */
-  protected getResizeMaxHeight(_width: number): number {
-    const panelHeight = this.getBoundingClientRect().height;
-    const scroll = this.renderRoot.querySelector<HTMLElement>(".layer-scroll");
-    const body = this.renderRoot.querySelector<HTMLElement>(".layers-body");
-    if (!scroll || !body || panelHeight <= 0) {
-      return Number.POSITIVE_INFINITY;
-    }
-    return Math.ceil(
-      panelHeight - scroll.getBoundingClientRect().height + body.scrollHeight,
-    );
-  }
 
   private startLayerRename(layerId: string, currentName: string, e: Event) {
     e.stopPropagation();
@@ -5515,7 +5813,10 @@ export class InkwellLayersPanel extends FloatingPanel {
     currentFrame: number,
   ) {
     const sel = this.frameSelection;
-    const selected = sel !== null && sel.layerId === layerId ? sel : null;
+    const selected =
+      sel !== null && sel.layerIds.includes(layerId)
+        ? { start: sel.start, end: sel.end }
+        : null;
     const cells = Array.from({ length: duration }, (_, f) => html`
       <button
         type="button"
@@ -5536,7 +5837,9 @@ export class InkwellLayersPanel extends FloatingPanel {
     `);
 
     const dup =
-      this.duplicatePlacement?.layerId === layerId ? this.duplicatePlacement : null;
+      this.duplicatePlacement?.layerIds.includes(layerId) ? this.duplicatePlacement : null;
+    const reversing =
+      this.reverseAnimation?.layerIds.includes(layerId) ? this.reverseAnimation : null;
     const cellMoving = selected !== null && this.moveDelta !== 0 && dup === null;
     const dupDelta = dup ? this.moveDelta : 0;
     const dupPreviewing = dup !== null && dupDelta !== 0;
@@ -5551,13 +5854,19 @@ export class InkwellLayersPanel extends FloatingPanel {
         moving && selected && kf.frame <= selected.end && spanEnd >= selected.start
           ? "moving-out"
           : "";
+      const reverseHidden =
+        reversing &&
+        kf.frame <= reversing.end &&
+        spanEnd >= reversing.start
+          ? "reverse-hidden"
+          : "";
       // A one-frame span is just a keyframe: a dot (hollow when blank —
       // blank keyframes are always single-frame).
       if (len === 1) {
-        return html`<div class="span-dot ${kf.blank ? "" : "span-dot--filled"} ${leaving}" style="--f: ${kf.frame}"></div>`;
+        return html`<div class="span-dot ${kf.blank ? "" : "span-dot--filled"} ${leaving} ${reverseHidden}" style="--f: ${kf.frame}"></div>`;
       }
       // Held span: pill from the keyframe to its hold end.
-      return html`<div class="span-pill ${leaving}" style="--f: ${kf.frame}; --len: ${len}"></div>`;
+      return html`<div class="span-pill ${leaving} ${reverseHidden}" style="--f: ${kf.frame}; --len: ${len}"></div>`;
     });
 
     // Would-be frames while dragging the selection: the selected slice of
@@ -5608,11 +5917,12 @@ export class InkwellLayersPanel extends FloatingPanel {
       <div class="frame-strip">
         <div class="frame-cells">${cells}</div>
         <div class="span-overlay">${spans}</div>
+        ${this.renderReverseSpinOverlay(layerId)}
         ${ghosts ? html`<div class="span-overlay ghost-overlay">${ghosts}</div>` : nothing}
         ${dupGhosts ? html`<div class="span-overlay ghost-overlay">${dupGhosts}</div>` : nothing}
         ${selected && !dupPreviewing
           ? html`<div
-              class="frame-selection ${cellMoving ? "moving" : ""}"
+              class="frame-selection ${cellMoving ? "moving" : ""} ${reversing ? "reversing" : ""}"
               style="--f: ${selected.start + (cellMoving ? this.moveDelta : 0)}; --len: ${
                 selected.end - selected.start + 1
               }"
@@ -5648,7 +5958,15 @@ export class InkwellLayersPanel extends FloatingPanel {
         @click=${() => {
           const sel = this.frameSelection;
           this.frameSelection = null;
-          this.emit("keyframe-remove", sel ? { ...sel } : null);
+          if (!sel) {
+            this.emit("keyframe-remove", null);
+            return;
+          }
+          this.emit("keyframe-remove", {
+            layerIds: sel.layerIds,
+            start: sel.start,
+            end: sel.end,
+          });
         }}>&#215;K</button>
       <button type="button" class="tl-btn ${t.autoHold ? "on" : ""}"
         title="Auto hold: new keyframes extend the previous keyframe's hold"
@@ -5713,9 +6031,11 @@ export class InkwellLayersPanel extends FloatingPanel {
         <div class="face">
           <div class="panel-form">
             ${this.renderDragHandlePill("Layers")}
-            <div class="layers-header">
-              ${this.renderPlaybackActions()}
-            </div>
+            <inkwell-panel-section data-interactive>
+              <div class="layers-header">
+                ${this.renderPlaybackActions()}
+              </div>
+            </inkwell-panel-section>
             <div class="timeline-row">
               <div class="header-group timeline-actions">
                 <button
@@ -5853,6 +6173,7 @@ export class InkwellLayersPanel extends FloatingPanel {
                         (layer) => html`
                           <div
                             class="strip-row ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
+                            data-layer-id=${layer.id}
                           >
                             ${this.renderFrameStrip(
                               layer.id,
