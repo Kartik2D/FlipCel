@@ -261,8 +261,8 @@ abstract class BaseColorPicker extends LitElement {
  * track-jump, and hides itself while the content fits.
  *
  * Layout is left to the consumer: the host is a plain block that can be
- * placed in flow (like the timeline's frames scrollbar) or absolutely
- * positioned as an overlay (like panel faces).
+ * placed in flow (like the timeline's frames scrollbar) or docked in a
+ * gutter beside the scroll target (like panel faces).
  */
 @customElement("inkwell-scrollbar")
 export class InkwellScrollbar extends LitElement {
@@ -276,10 +276,16 @@ export class InkwellScrollbar extends LitElement {
    * fill the whole track instead of the bar hiding itself.
    */
   @property({ type: Boolean, reflect: true }) persistent = false;
+  /**
+   * When true, reserves space on the scroll target so content does not sit
+   * under the bar (sets `data-vscroll-gutter` / `data-hscroll-gutter`).
+   */
+  @property({ type: Boolean }) gutter = true;
 
   static styles = css`
     :host {
       --scrollbar-size: 8px;
+      --scrollbar-gutter: calc(var(--scrollbar-size) + 4px);
       --scrollbar-track-bg: var(--block-depth-color, var(--inkwell-panel-depth, rgba(120, 120, 120, 0.16)));
       --scrollbar-thumb-bg: color-mix(
         in srgb,
@@ -390,7 +396,9 @@ export class InkwellScrollbar extends LitElement {
   updated(changed: PropertyValues) {
     super.updated(changed);
     if (changed.has("forSelector")) this.resolveForSelector();
-    if (changed.has("orientation") || changed.has("persistent")) this.sync();
+    if (changed.has("orientation") || changed.has("persistent") || changed.has("gutter")) {
+      this.sync();
+    }
   }
 
   private resolveForSelector() {
@@ -415,6 +423,8 @@ export class InkwellScrollbar extends LitElement {
   }
 
   private detachFromTarget() {
+    const t = this._target;
+    if (t) this.clearGutterAttributes(t);
     this._target?.removeEventListener("scroll", this.onTargetScroll);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
@@ -436,6 +446,27 @@ export class InkwellScrollbar extends LitElement {
 
   private onTargetScroll = () => this.sync();
 
+  private clearGutterAttributes(t: HTMLElement) {
+    t.removeAttribute("data-vscroll-gutter");
+    t.removeAttribute("data-hscroll-gutter");
+  }
+
+  private syncGutterAttributes(visible: boolean) {
+    const t = this._target;
+    if (!t || !this.gutter) {
+      if (t) this.clearGutterAttributes(t);
+      return;
+    }
+    const h = this.horizontal;
+    if (h) {
+      t.toggleAttribute("data-hscroll-gutter", visible);
+      t.removeAttribute("data-vscroll-gutter");
+    } else {
+      t.toggleAttribute("data-vscroll-gutter", visible);
+      t.removeAttribute("data-hscroll-gutter");
+    }
+  }
+
   private thumbEl(): HTMLElement | null {
     return this.renderRoot?.querySelector<HTMLElement>(".thumb") ?? null;
   }
@@ -449,7 +480,9 @@ export class InkwellScrollbar extends LitElement {
     const view = h ? t.clientWidth : t.clientHeight;
     const content = h ? t.scrollWidth : t.scrollHeight;
     const needed = content > view + 1 && view > 0;
-    this.toggleAttribute("data-hidden", !needed && !this.persistent);
+    const visible = needed || this.persistent;
+    this.toggleAttribute("data-hidden", !visible);
+    this.syncGutterAttributes(visible);
     if (!needed && !this.persistent) return;
 
     const trackLen = h ? this.clientWidth : this.clientHeight;
@@ -603,6 +636,8 @@ export class Block extends LitElement {
       --block-font-size: 12px;
       --block-font-weight: 500;
       --block-font-color: var(--inkwell-text-secondary, #6b6b6b);
+      --scrollbar-size: 8px;
+      --scrollbar-gutter: calc(var(--scrollbar-size) + 4px);
 
       display: block;
       box-sizing: border-box;
@@ -614,8 +649,8 @@ export class Block extends LitElement {
       color: var(--block-font-color);
     }
 
-    /* Native scrollbars are hidden everywhere; scrolling surfaces get an
-       overlaid <inkwell-scrollbar> instead (see ensureFaceScrollbar). */
+    /* Native scrollbars are hidden everywhere; scrolling surfaces get a
+       guttered <inkwell-scrollbar> instead (see ensureFaceScrollbar). */
     :host,
     * {
       scrollbar-width: none;
@@ -625,7 +660,7 @@ export class Block extends LitElement {
       display: none;
     }
 
-    /* Vertical overlay scrollbar for the .face scroller, injected by the
+    /* Vertical scrollbar gutter for the .face scroller, injected by the
        base class so every panel gets it for free. */
     .face-scrollbar {
       position: absolute;
@@ -633,6 +668,10 @@ export class Block extends LitElement {
       bottom: calc(var(--block-depth) + 8px);
       right: 4px;
       z-index: 30;
+    }
+
+    .face[data-vscroll-gutter] {
+      padding-right: calc(var(--block-face-padding) + var(--scrollbar-gutter));
     }
 
     :host([dragging]) {
@@ -663,6 +702,7 @@ export class Block extends LitElement {
       padding: var(--block-face-padding);
       height: 100%;
       overflow: auto;
+      overscroll-behavior: none;
     }
 
     /* Resize corner zones in the depth area */
@@ -1132,7 +1172,7 @@ export class Block extends LitElement {
 
   /**
    * Every Block subclass renders a .block > .face pair with its own
-   * template, so the shared overlay scrollbar is appended imperatively
+   * template, so the shared gutter scrollbar is appended imperatively
    * (Lit leaves foreign children of .block alone). It auto-hides while
    * the face content fits. Fixed-size panels (e.g. the jog wheel) opt out.
    */
@@ -1803,7 +1843,6 @@ export class InkwellPanelSection extends LitElement {
       min-width: 0;
       box-sizing: border-box;
       border-radius: var(--panel-control-radius, 8px);
-      border: 1px solid color-mix(in srgb, var(--inkwell-panel-border, #555555) 60%, transparent);
       background: var(
         --inkwell-panel-inset-bg,
         color-mix(
@@ -1883,6 +1922,7 @@ export class FloatingPanel extends Block {
       flex-direction: column;
       max-height: var(--panel-max-height, min(85vh, 720px));
       touch-action: auto;
+      overscroll-behavior: none;
 
       --block-font-color: var(--inkwell-text-primary, #1a1a1a);
       --panel-control-radius: 8px;
@@ -1908,6 +1948,7 @@ export class FloatingPanel extends Block {
       height: auto;
       overflow-x: hidden;
       overflow-y: auto;
+      overscroll-behavior: none;
     }
 
     /* Form stack: use inside .face for sliders, fields, toggles */
@@ -3941,6 +3982,9 @@ export class InkwellLayersPanel extends FloatingPanel {
       --layers-control-size: 24px;
       --layers-side-width: 196px;
       --frame-cell-w: 15px;
+      --inkwell-timeline-playhead-tint: 32%;
+      --inkwell-timeline-active-row-tint: 28%;
+      --inkwell-timeline-selection-tint: 36%;
     }
 
     .block {
@@ -4247,13 +4291,15 @@ export class InkwellLayersPanel extends FloatingPanel {
     /* Two real columns: a fixed name/controls column and a frames column
        that is the only horizontal scroller. Vertical scrolling happens in
        .layer-scroll and moves both columns together. The wrap is the
-       positioning context for the overlaid vertical scrollbar. */
+       positioning context for the guttered vertical scrollbar. */
     .layer-scroll-wrap {
       position: relative;
       display: flex;
       flex-direction: column;
       flex: 1 1 auto;
       min-height: 0;
+      --scrollbar-size: 8px;
+      --scrollbar-gutter: calc(var(--scrollbar-size) + 4px);
     }
 
     .layer-scroll {
@@ -4261,6 +4307,11 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
+      overscroll-behavior: none;
+    }
+
+    .layer-scroll[data-vscroll-gutter] {
+      padding-right: var(--scrollbar-gutter);
     }
 
     .layers-vscroll {
@@ -4291,6 +4342,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-width: 0;
       overflow-x: auto;
       overflow-y: hidden;
+      overscroll-behavior: none;
       /* Native scrollbar is replaced by the custom .frames-scrollbar below. */
       scrollbar-width: none;
       -ms-overflow-style: none;
@@ -4374,7 +4426,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     .frame-cell.current {
       background: color-mix(
         in srgb,
-        var(--inkwell-accent, #4a6fb5) 18%,
+        var(--inkwell-accent, #4a6fb5) var(--inkwell-timeline-playhead-tint, 32%),
         var(--block-depth-color, var(--inkwell-panel-depth))
       );
     }
@@ -4382,7 +4434,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     .strip-row.active .frame-cell {
       background: color-mix(
         in srgb,
-        var(--inkwell-accent, #4a6fb5) 12%,
+        var(--inkwell-accent, #4a6fb5) var(--inkwell-timeline-active-row-tint, 28%),
         var(--block-depth-color, var(--inkwell-panel-depth))
       );
     }
@@ -4454,7 +4506,11 @@ export class InkwellLayersPanel extends FloatingPanel {
       left: calc(var(--f) * var(--frame-cell-w, 15px) + 1px);
       width: calc(var(--len) * var(--frame-cell-w, 15px) - 2px);
       border-radius: 4px;
-      background: color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 24%, transparent);
+      background: color-mix(
+        in srgb,
+        var(--inkwell-accent, #4a6fb5) var(--inkwell-timeline-selection-tint, 36%),
+        transparent
+      );
       box-shadow: inset 0 0 0 2px var(--inkwell-accent, #4a6fb5);
       pointer-events: none;
     }
@@ -4464,7 +4520,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .frame-selection.duplicating {
-      background: color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 14%, transparent);
+      background: color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 22%, transparent);
       box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 70%, transparent);
       border: 1px dashed var(--inkwell-accent, #4a6fb5);
     }
@@ -5685,6 +5741,7 @@ export class InkwellLayersPanel extends FloatingPanel {
                 orientation="horizontal"
                 for=".frames-viewport"
                 persistent
+                .gutter=${false}
               ></inkwell-scrollbar>
               <div
                 class="strip-ruler"
