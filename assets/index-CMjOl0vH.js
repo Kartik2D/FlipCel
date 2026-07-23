@@ -3157,30 +3157,34 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
     ${Hi.styles}
 
     :host {
-      /* Special case: fixed-size host where the FACE is a true circle. The
-         block is taller than it is wide by the 3D depth, so the panel shell
-         reads as a slightly elongated puck while the face stays circular. */
+      /* Reversed layout: barrel (pegs) on the outside, drag ring on the
+         inside around the play-button hub. The barrel extends past the
+         wheel circle by --barrel-outset; the grab ring fills the annular
+         gap between the hub pill and the wheel edge. */
       --wheel-size: 180px;
-      --wheel-grab-outset: 16px;
-      --panel-size: 224px;
+      --barrel-outset: 16px;
+      --grab-ring-inset: 30px;
+      --panel-size: 240px;
       --panel-width: var(--panel-size);
       --panel-min-width: 0;
       --chamber-size: 19px;
-      --chamber-inset: 9px;
+      --chamber-outer-inset: 9px;
       height: calc(var(--panel-size) + var(--block-depth));
       min-height: calc(var(--panel-size) + var(--block-depth));
       max-height: calc(var(--panel-size) + var(--block-depth));
     }
 
-    /* Stadium-shaped block: circle stretched vertically by the depth. */
+    /* Stadium-shaped block: circle stretched vertically by the depth.
+       overflow: visible so the outer barrel ring isn't clipped. */
     .block {
       border-radius: calc(var(--panel-size) / 2);
+      overflow: visible;
     }
 
     /* Fixed-size content; never show a scrollbar next to the wheel. */
     .face {
       border-radius: 50%;
-      overflow: hidden;
+      overflow: visible;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -3190,6 +3194,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
     .panel-form {
       align-items: center;
       justify-content: center;
+      overflow: visible;
     }
 
     .wheel-wrap {
@@ -3197,6 +3202,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       flex-direction: column;
       align-items: center;
       gap: 8px;
+      overflow: visible;
     }
 
     .wheel {
@@ -3204,28 +3210,46 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       width: var(--wheel-size);
       height: var(--wheel-size);
       border-radius: 50%;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      background: transparent;
       -webkit-tap-highlight-color: transparent;
     }
 
-    /* Hit target extends past the visual rim into the face margin (panel drag zone). */
+    /* Inner ring around the hub: this is the PANEL DRAG zone.
+       No data-interactive, no scrub events — pointer events bubble
+       up to the Block which starts a window drag. */
     .wheel-grab {
       position: absolute;
-      inset: calc(-1 * var(--wheel-grab-outset));
+      inset: var(--grab-ring-inset);
       border-radius: 50%;
-      z-index: 1;
-      cursor: grab;
-      touch-action: none;
+      z-index: 3;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
     }
 
     .wheel.dragging .wheel-grab {
       cursor: grabbing;
     }
 
+    /* Outer scrub ring: non-rotating hit target over the barrel.
+       Captures pointer events for animation scrub / jog. */
+    .scrub-ring {
+      position: absolute;
+      inset: calc(-1 * var(--barrel-outset));
+      border-radius: 50%;
+      z-index: 1;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .wheel.dragging .scrub-ring {
+      cursor: grabbing;
+    }
+
+    /* Barrel is now the OUTER ring: extends past the wheel circle. */
     .barrel {
       position: absolute;
-      inset: 0;
+      inset: calc(-1 * var(--barrel-outset));
       pointer-events: none;
+      border-radius: 50%;
       transition: transform var(--wheel-settle-duration, 350ms)
         var(--wheel-settle-easing, cubic-bezier(0.175, 0.885, 0.32, 1.6));
       will-change: transform;
@@ -3244,13 +3268,13 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       height: var(--chamber-size);
       margin: calc(var(--chamber-size) / -2) 0 0 calc(var(--chamber-size) / -2);
       border-radius: 50%;
-      background: var(--block-face-bg, var(--inkwell-panel-surface));
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
       pointer-events: none;
     }
 
     /* Solid accent hub pill: the play button sits centered on the wheel's
-       hub and the pill runs right to the wheel's edge, ending in the
-       current frame number. */
+       hub and the pill runs right to the inner grab ring edge, ending in
+       the current frame number. */
     .hub-pill {
       --hub-pill-height: 44px;
       position: absolute;
@@ -3258,14 +3282,16 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       /* Left edge placed so the play half is centered on the wheel hub. */
       left: calc(50% - var(--hub-pill-height) / 2);
       transform: translateY(-50%);
-      width: calc(var(--wheel-size) / 2 + var(--hub-pill-height) / 2 + 6px);
+      /* Width set so the CENTRE of the frame-number badge lands on
+         the same radius as the CENTRE of the barrel pegs. */
+      width: calc(var(--hub-pill-height) + var(--wheel-size) / 2 + var(--barrel-outset) - var(--chamber-size) / 2 - var(--chamber-outer-inset));
       height: var(--hub-pill-height);
       border-radius: 999px;
       overflow: hidden;
       display: flex;
       align-items: stretch;
       background: var(--inkwell-accent, #4a6fb5);
-      z-index: 2;
+      z-index: 4;
       pointer-events: none;
     }
 
@@ -3311,7 +3337,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       user-select: none;
       -webkit-user-select: none;
     }
-  `;connectedCallback(){super.connectedCallback(),this.resizable=!1,this.blockWidth=null,this.blockHeight=null,this.syncWheelFrictionMotion();let e=Fn.get().currentFrame;this.lastFrame=e,this.lastNotch=e,this.rotationDeg=this.lastNotch*pa,this.unsubscribeTimeline=Fn.subscribe(e=>{this.syncRotationToFrame(e.currentFrame,e.duration),this.updatePlaybackRotation(e)})}disconnectedCallback(){this.unsubscribeTimeline?.(),this.unsubscribeTimeline=null,this.cancelNotchStepSchedule(),this.stopPlaybackRotation(),this.stopCoasting(),super.disconnectedCallback()}setBarrelRotationLive(e){this.rotationDeg=e;let t=this.renderRoot.querySelector(`.barrel`);t&&(t.style.transform=`rotate(${e}deg)`)}isBarrelLive(){return this.dragging||this.coasting||this.timeline.value.playing}chamberDegForNotch(e,t){let n=e*pa;return n+Math.round((t-n)/360)*360}settleToChamber(){if(this.isBarrelLive())return;let e=this.chamberDegForNotch(this.lastNotch,this.rotationDeg);if(Math.abs(this.rotationDeg-e)<.05){this.rotationDeg=e,this.setBarrelRotationLive(e);return}this.renderRoot.querySelector(`.wheel`)?.classList.remove(`live`),this.rotationDeg=e,this.setBarrelRotationLive(e)}cancelNotchStepSchedule(){this.notchStepRaf!==null&&(cancelAnimationFrame(this.notchStepRaf),this.notchStepRaf=null)}scheduleNotchSteps(){this.notchStepRaf===null&&(this.notchStepRaf=requestAnimationFrame(()=>{this.notchStepRaf=null,this.emitNotchSteps()}))}flushNotchSteps(){this.cancelNotchStepSchedule(),this.emitNotchSteps()}emitStep(e){this.suppressSync=!0;try{this.dispatchEvent(new CustomEvent(`frame-step`,{detail:e,bubbles:!0,composed:!0}))}finally{this.suppressSync=!1}}emitNotchSteps(){let e=Math.round(this.rotationDeg/pa);if(e!==this.lastNotch){let t=e-this.lastNotch;this.lastNotch=e,this.emitStep(t)}}syncRotationToFrame(e,t){if(e===this.lastFrame)return;let n=e-this.lastFrame;if(t>1&&Math.abs(n)>t/2&&(n-=Math.sign(n)*t),this.lastFrame=e,!(this.suppressSync||this.dragging||this.coasting)){if(Fn.get().playing){this.lastNotch+=n;return}this.lastNotch+=n,this.settleToChamber()}}updatePlaybackRotation(e){e.playing&&!this.dragging&&!this.coasting?this.playbackRaf===null&&(this.playbackLastTs=performance.now(),this.playbackRaf=requestAnimationFrame(this.playbackTick)):this.stopPlaybackRotation()}stopPlaybackRotation(){let e=this.playbackRaf!==null;this.playbackRaf!==null&&(cancelAnimationFrame(this.playbackRaf),this.playbackRaf=null),e&&!this.isBarrelLive()&&this.settleToChamber()}stopCoasting(){this.coastRaf!==null&&(cancelAnimationFrame(this.coastRaf),this.coastRaf=null),this.coasting=!1}startCoasting(e){this.stopCoasting(),this.angularVelocity=e,this.coasting=!0,this.lastCoastTs=performance.now(),this.coastRaf=requestAnimationFrame(this.coastTick)}wheelRimRadius(){let e=this.renderRoot.querySelector(`.wheel`);return e?e.getBoundingClientRect().width/2:90}wheelOffset(e){let t=e.currentTarget.getBoundingClientRect(),n=t.left+t.width/2,r=t.top+t.height/2;return{px:e.clientX-n,py:e.clientY-r}}wheelScrubDeg(e,t,n,r,i){let a=Math.max(Math.hypot(e,t),ga)**+_a*i**(2-_a);return(e*r-t*n)/a*ha}render(){let e=this.timeline.value,t=Array.from({length:fa},(e,t)=>t);return X`
+  `;connectedCallback(){super.connectedCallback(),this.resizable=!1,this.blockWidth=null,this.blockHeight=null,this.syncWheelFrictionMotion();let e=Fn.get().currentFrame;this.lastFrame=e,this.lastNotch=e,this.rotationDeg=this.lastNotch*pa,this.unsubscribeTimeline=Fn.subscribe(e=>{this.syncRotationToFrame(e.currentFrame,e.duration),this.updatePlaybackRotation(e)})}disconnectedCallback(){this.unsubscribeTimeline?.(),this.unsubscribeTimeline=null,this.cancelNotchStepSchedule(),this.stopPlaybackRotation(),this.stopCoasting(),super.disconnectedCallback()}setBarrelRotationLive(e){this.rotationDeg=e;let t=this.renderRoot.querySelector(`.barrel`);t&&(t.style.transform=`rotate(${e}deg)`)}isBarrelLive(){return this.dragging||this.coasting||this.timeline.value.playing}chamberDegForNotch(e,t){let n=e*pa;return n+Math.round((t-n)/360)*360}settleToChamber(){if(this.isBarrelLive())return;let e=this.chamberDegForNotch(this.lastNotch,this.rotationDeg);if(Math.abs(this.rotationDeg-e)<.05){this.rotationDeg=e,this.setBarrelRotationLive(e);return}this.renderRoot.querySelector(`.wheel`)?.classList.remove(`live`),this.rotationDeg=e,this.setBarrelRotationLive(e)}cancelNotchStepSchedule(){this.notchStepRaf!==null&&(cancelAnimationFrame(this.notchStepRaf),this.notchStepRaf=null)}scheduleNotchSteps(){this.notchStepRaf===null&&(this.notchStepRaf=requestAnimationFrame(()=>{this.notchStepRaf=null,this.emitNotchSteps()}))}flushNotchSteps(){this.cancelNotchStepSchedule(),this.emitNotchSteps()}emitStep(e){this.suppressSync=!0;try{this.dispatchEvent(new CustomEvent(`frame-step`,{detail:e,bubbles:!0,composed:!0}))}finally{this.suppressSync=!1}}emitNotchSteps(){let e=Math.round(this.rotationDeg/pa);if(e!==this.lastNotch){let t=e-this.lastNotch;this.lastNotch=e,this.emitStep(t)}}syncRotationToFrame(e,t){if(e===this.lastFrame)return;let n=e-this.lastFrame;if(t>1&&Math.abs(n)>t/2&&(n-=Math.sign(n)*t),this.lastFrame=e,!(this.suppressSync||this.dragging||this.coasting)){if(Fn.get().playing){this.lastNotch+=n;return}this.lastNotch+=n,this.settleToChamber()}}updatePlaybackRotation(e){e.playing&&!this.dragging&&!this.coasting?this.playbackRaf===null&&(this.playbackLastTs=performance.now(),this.playbackRaf=requestAnimationFrame(this.playbackTick)):this.stopPlaybackRotation()}stopPlaybackRotation(){let e=this.playbackRaf!==null;this.playbackRaf!==null&&(cancelAnimationFrame(this.playbackRaf),this.playbackRaf=null),e&&!this.isBarrelLive()&&this.settleToChamber()}stopCoasting(){this.coastRaf!==null&&(cancelAnimationFrame(this.coastRaf),this.coastRaf=null),this.coasting=!1}startCoasting(e){this.stopCoasting(),this.angularVelocity=e,this.coasting=!0,this.lastCoastTs=performance.now(),this.coastRaf=requestAnimationFrame(this.coastTick)}wheelRimRadius(){let e=this.renderRoot.querySelector(`.scrub-ring`);return e?e.getBoundingClientRect().width/2:106}wheelOffset(e){let t=e.currentTarget.getBoundingClientRect(),n=t.left+t.width/2,r=t.top+t.height/2;return{px:e.clientX-n,py:e.clientY-r}}wheelScrubDeg(e,t,n,r,i){let a=Math.max(Math.hypot(e,t),ga)**+_a*i**(2-_a);return(e*r-t*n)/a*ha}render(){let e=this.timeline.value,t=Array.from({length:fa},(e,t)=>t);return X`
       <div class="block">
         <div class="face">
           <div class="panel-form">
@@ -3324,12 +3350,15 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
                       <div
                         class="chamber"
                         style="transform: rotate(${e*pa}deg)
-                          translateY(calc(var(--wheel-size) / -2 + var(--chamber-size) / 2 + var(--chamber-inset)))"
+                          translateY(calc((var(--wheel-size) / 2 + var(--barrel-outset)) * -1 + var(--chamber-size) / 2 + var(--chamber-outer-inset)))"
                       ></div>
                     `)}
                 </div>
                 <div
                   class="wheel-grab"
+                ></div>
+                <div
+                  class="scrub-ring"
                   data-interactive
                   title="Drag to spin or scrub the playhead"
                   @pointerdown=${this.onWheelDown}
