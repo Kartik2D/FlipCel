@@ -393,6 +393,35 @@ class App {
       ).detail;
       this.onFramesMove(layerId, start, end, delta);
     });
+    this.layersPanel.addEventListener("frames-duplicate", (e: Event) => {
+      const { layerId, start, end } = (
+        e as CustomEvent<{ layerId: string; start: number; end: number }>
+      ).detail;
+      this.onFramesDuplicate(layerId, start, end);
+    });
+    this.layersPanel.addEventListener("frames-duplicate-drag-start", (e: Event) => {
+      const { layerId, start, end } = (
+        e as CustomEvent<{ layerId: string; start: number; end: number }>
+      ).detail;
+      this.onFramesDuplicateDragStart(layerId, start, end);
+    });
+    this.layersPanel.addEventListener("frames-duplicate-drag-end", (e: Event) => {
+      const { layerId, start, end, delta } = (
+        e as CustomEvent<{
+          layerId: string;
+          start: number;
+          end: number;
+          delta: number;
+        }>
+      ).detail;
+      this.onFramesDuplicateDragEnd(layerId, start, end, delta);
+    });
+    this.layersPanel.addEventListener("frames-reverse", (e: Event) => {
+      const { layerId, start, end } = (
+        e as CustomEvent<{ layerId: string; start: number; end: number }>
+      ).detail;
+      this.onFramesReverse(layerId, start, end);
+    });
     this.layersPanel.addEventListener("keyframe-hold-toggle", (e: Event) => {
       const { frame, layerId } = (e as CustomEvent<{ frame: number; layerId: string }>).detail;
       this.onKeyframeHoldToggle(layerId, frame);
@@ -1751,6 +1780,48 @@ class App {
     this.selectionController.clearSelection();
     this.directSelectController.clearSelection();
     if (this.documentManager.moveFrameRange(layerId, start, end, delta)) {
+      this.historyManager.snapshot();
+      this.requestRedraw();
+    }
+  }
+
+  private onFramesDuplicate(layerId: string, start: number, end: number) {
+    this.commitLiveEdits();
+    const result = this.documentManager.duplicateFrameRange(layerId, start, end);
+    if (!result) return;
+    this.layersPanel.setFrameSelection({ layerId, start: result.start, end: result.end });
+    this.historyManager.snapshot();
+    this.requestRedraw();
+  }
+
+  private onFramesDuplicateDragStart(_layerId: string, _start: number, _end: number) {
+    this.commitLiveEdits();
+  }
+
+  private onFramesDuplicateDragEnd(
+    layerId: string,
+    start: number,
+    end: number,
+    delta: number,
+  ) {
+    this.commitLiveEdits();
+    if (delta === 0) return;
+    const destStart = start + delta;
+    const result = this.documentManager.duplicateFrameRange(
+      layerId,
+      start,
+      end,
+      destStart,
+    );
+    if (!result) return;
+    this.layersPanel.setFrameSelection({ layerId, start: result.start, end: result.end });
+    this.historyManager.snapshot();
+    this.requestRedraw();
+  }
+
+  private onFramesReverse(layerId: string, start: number, end: number) {
+    this.commitLiveEdits();
+    if (this.documentManager.reverseFrameRange(layerId, start, end)) {
       this.historyManager.snapshot();
       this.requestRedraw();
     }

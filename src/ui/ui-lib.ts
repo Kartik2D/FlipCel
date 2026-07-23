@@ -39,7 +39,7 @@ import {
 } from "../core/stores";
 import type { FunctionMenuItem } from "../core/functions";
 import { historyStateStore } from "../core/history";
-import { timelineStore, type TimelineState } from "../core/document";
+import { timelineStore } from "../core/document";
 // ============================================================
 // Phosphor Icons — Duotone weight, inline paths (MIT)
 // https://phosphoricons.com/ · assets from @phosphor-icons/core
@@ -80,6 +80,8 @@ const PHOSPHOR_ICONS: Record<string, string> = {
     '<rect x="28" y="56" width="200" height="144" rx="12" stroke="currentColor" stroke-width="16" fill="none"/><path d="M28 92h200M28 164h200" stroke="currentColor" stroke-width="12" fill="none"/><path d="M76 56v36M128 56v36M180 56v36M76 164v36M128 164v36M180 164v36" stroke="currentColor" stroke-width="12" fill="none"/>',
   "jog-wheel":
     '<circle cx="128" cy="43" r="20"/><circle cx="188" cy="68" r="20"/><circle cx="213" cy="128" r="20"/><circle cx="188" cy="188" r="20"/><circle cx="128" cy="213" r="20"/><circle cx="68" cy="188" r="20"/><circle cx="43" cy="128" r="20"/><circle cx="68" cy="68" r="20"/><circle cx="128" cy="128" r="12"/>',
+  "arrows-left-right":
+    '<path d="M216,128H40M88,72l-56,56,56,56M168,72l56,56-56,56" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/>',
   "grid-four":
     '<rect x="36" y="36" width="80" height="80" rx="10"/><rect x="140" y="36" width="80" height="80" rx="10"/><rect x="36" y="140" width="80" height="80" rx="10"/><rect x="140" y="140" width="80" height="80" rx="10"/>',
   "onion-skin":
@@ -3909,8 +3911,7 @@ import { layerStore, generateLayerId, STAGE_LAYER_ID } from "../core/stores";
 @customElement("inkwell-layers-panel")
 export class InkwellLayersPanel extends FloatingPanel {
   private layers = new StoreController(this, layerStore);
-  private timelineValue: TimelineState = timelineStore.get();
-  private unsubscribeTimeline: (() => void) | null = null;
+  private timeline = new StoreController(this, timelineStore);
   @state() private editingLayerId: string | null = null;
   @state() private editingName = "";
   /**
@@ -4462,6 +4463,78 @@ export class InkwellLayersPanel extends FloatingPanel {
       opacity: 0.75;
     }
 
+    .frame-selection.duplicating {
+      background: color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 14%, transparent);
+      box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 70%, transparent);
+      border: 1px dashed var(--inkwell-accent, #4a6fb5);
+    }
+
+    /* Quick actions for a selected frame range (duplicate / reverse / delete). */
+    .frame-actions-fixed {
+      position: fixed;
+      z-index: 2100;
+      transform: translate(-50%, -100%);
+      pointer-events: auto;
+      animation: frame-actions-pop-in 180ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
+    }
+
+    @keyframes frame-actions-pop-in {
+      0% { transform: translate(-50%, calc(-100% + 4px)) scale(0.85); opacity: 0; }
+      100% { transform: translate(-50%, -100%) scale(1); opacity: 1; }
+    }
+
+    .frame-actions-shell {
+      background: var(--inkwell-panel-depth, #bcbcbc);
+      border: 2px solid var(--inkwell-panel-border, #555555);
+      border-radius: 10px;
+      padding: 0 0 5px 0;
+      box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
+      overflow: hidden;
+    }
+
+    .frame-actions-face {
+      background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
+      border-radius: 8px;
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .frame-action-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--inkwell-text-primary, #1a1a1a);
+      font: inherit;
+      cursor: pointer;
+      touch-action: none;
+    }
+
+    .frame-action-btn:hover {
+      background: var(--inkwell-accent-muted, rgba(77, 115, 215, 0.28));
+    }
+
+    .frame-action-btn.danger {
+      color: var(--inkwell-danger, #af5b5b);
+    }
+
+    .frame-action-btn.danger:hover {
+      background: var(--inkwell-panel-active-danger, rgba(255, 122, 122, 0.58));
+    }
+
+    .frame-action-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
     /* Move preview: the departing artwork fades in place while a ghost of
        the would-be frames travels with the selection box. */
     .span-pill.moving-out,
@@ -4632,9 +4705,28 @@ export class InkwellLayersPanel extends FloatingPanel {
     /** Selection bounds at drag start; set only in move mode. */
     base: { start: number; end: number } | null;
   } | null = null;
-  /** Element that captured the active frame-cell pointer gesture. */
-  private cellCaptureEl: HTMLElement | null = null;
-  /** Last layer count seen in updated(), to resize the scroll area when rows change. */
+  /** Live duplicate preview while dragging from the frame-actions popover. */
+  private duplicatePlacement: {
+    layerId: string;
+    sourceStart: number;
+    sourceEnd: number;
+    anchor: number;
+  } | null = null;
+  private frameActionDrag: {
+    kind: "duplicate";
+    pointerId: number;
+    startX: number;
+    startY: number;
+    dragging: boolean;
+    layerId: string;
+    sourceStart: number;
+    sourceEnd: number;
+  } | null = null;
+  private suppressFrameActionClick: string | null = null;
+  /** Screen position for the frame-actions popover (fixed; avoids overflow clipping). */
+  @state() private frameActionsAnchor: { x: number; y: number } | null = null;
+  /** Last frame seen in updated(), to auto-scroll the playhead into view. */
+  private lastSeenFrame = -1;
   private lastSeenLayerCount = -1;
 
   private emit(name: string, detail?: unknown) {
@@ -4643,136 +4735,275 @@ export class InkwellLayersPanel extends FloatingPanel {
     );
   }
 
-  private getTimeline(): TimelineState {
-    return this.timelineValue;
+  /** Called by the app after a non-drag duplicate. */
+  setFrameSelection(sel: { layerId: string; start: number; end: number } | null) {
+    this.frameSelection = sel;
+    this.duplicatePlacement = null;
+    this.moveDelta = 0;
   }
 
-  connectedCallback() {
-    super.connectedCallback();
-    this.timelineValue = timelineStore.get();
-    this.unsubscribeTimeline = timelineStore.subscribe((t) => this.onTimelineUpdate(t));
+  /** Begin a drag-duplicate preview (no document change until release). */
+  beginDuplicateDragPreview(
+    layerId: string,
+    sourceStart: number,
+    sourceEnd: number,
+    anchorFrame: number,
+  ) {
+    this.duplicatePlacement = {
+      layerId,
+      sourceStart,
+      sourceEnd,
+      anchor: anchorFrame,
+    };
+    this.moveDelta = 0;
+    this.frameActionsAnchor = null;
+    this.requestUpdate();
   }
 
-  disconnectedCallback() {
-    this.unsubscribeTimeline?.();
-    this.unsubscribeTimeline = null;
-    this.cancelCellDrag();
-    this.cancelRowDrag();
-    super.disconnectedCallback();
+  private bindFrameActionDragListeners() {
+    window.addEventListener("pointermove", this.onFrameActionDragMove);
+    window.addEventListener("pointerup", this.onFrameActionDragUp);
+    window.addEventListener("pointercancel", this.onFrameActionDragCancel);
   }
 
-  private timelineTracksEqual(
-    a: TimelineState["tracks"],
-    b: TimelineState["tracks"],
-  ): boolean {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      const ta = a[i];
-      const tb = b[i];
-      if (ta.id !== tb.id || ta.name !== tb.name || ta.visible !== tb.visible) return false;
-      if (ta.keyframes.length !== tb.keyframes.length) return false;
-      for (let j = 0; j < ta.keyframes.length; j++) {
-        const ka = ta.keyframes[j];
-        const kb = tb.keyframes[j];
-        if (
-          ka.frame !== kb.frame ||
-          ka.blank !== kb.blank ||
-          ka.holdUntil !== kb.holdUntil
-        ) {
-          return false;
-        }
-      }
-    }
-    return true;
+  private unbindFrameActionDragListeners() {
+    window.removeEventListener("pointermove", this.onFrameActionDragMove);
+    window.removeEventListener("pointerup", this.onFrameActionDragUp);
+    window.removeEventListener("pointercancel", this.onFrameActionDragCancel);
   }
 
-  /** Full grid rebuild — not just playhead / playback chrome. */
-  private timelineStructureChanged(prev: TimelineState, next: TimelineState): boolean {
+  private cancelFrameActionDrag() {
+    this.unbindFrameActionDragListeners();
+    this.frameActionDrag = null;
+    this.duplicatePlacement = null;
+    this.moveDelta = 0;
+  }
+
+  private showFrameActionsForSelection(): boolean {
     return (
-      prev.duration !== next.duration ||
-      prev.frameRate !== next.frameRate ||
-      prev.onionSkin !== next.onionSkin ||
-      prev.autoHold !== next.autoHold ||
-      !this.timelineTracksEqual(prev.tracks, next.tracks)
+      this.frameSelection !== null &&
+      this.cellDrag === null &&
+      this.frameActionDrag === null &&
+      this.duplicatePlacement === null &&
+      this.moveDelta === 0
     );
   }
 
-  /**
-   * Playhead-only imperative updates run during playback only. While paused,
-   * every store tick re-renders so keyframe spans and selection stay in sync.
-   */
-  private onTimelineUpdate(t: TimelineState) {
-    const prev = this.timelineValue;
-    this.timelineValue = t;
+  /** Pin the popover above the selection box in viewport coordinates. */
+  private syncFrameActionsAnchor() {
+    if (!this.showFrameActionsForSelection()) {
+      if (this.frameActionsAnchor !== null) this.frameActionsAnchor = null;
+      return;
+    }
+    const el = this.renderRoot.querySelector<HTMLElement>(".frame-selection");
+    if (!el) {
+      if (this.frameActionsAnchor !== null) this.frameActionsAnchor = null;
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    const popW = 118;
+    const popH = 44;
+    let x = rect.left + rect.width / 2;
+    let y = rect.top - 4;
+    x = Math.max(margin + popW / 2, Math.min(window.innerWidth - margin - popW / 2, x));
+    y = Math.max(margin + popH, Math.min(window.innerHeight - margin, y));
+    const next = { x, y };
+    if (
+      this.frameActionsAnchor?.x === next.x &&
+      this.frameActionsAnchor?.y === next.y
+    ) {
+      return;
+    }
+    this.frameActionsAnchor = next;
+  }
 
-    if (this.timelineStructureChanged(prev, t) || !t.playing) {
-      this.requestUpdate();
+  private onFrameActionDuplicateClick() {
+    const sel = this.frameSelection;
+    if (!sel) return;
+    this.emit("frames-duplicate", { ...sel });
+  }
+
+  private onFrameActionReverseClick() {
+    const sel = this.frameSelection;
+    if (!sel) return;
+    this.emit("frames-reverse", { ...sel });
+  }
+
+  private onFrameActionDeleteClick() {
+    const sel = this.frameSelection;
+    if (!sel) return;
+    this.frameSelection = null;
+    this.emit("keyframe-remove", { ...sel });
+  }
+
+  private onFrameActionDuplicateDown(e: PointerEvent) {
+    const sel = this.frameSelection;
+    if (!sel || e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    this.frameActionDrag = {
+      kind: "duplicate",
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      dragging: false,
+      layerId: sel.layerId,
+      sourceStart: sel.start,
+      sourceEnd: sel.end,
+    };
+    this.bindFrameActionDragListeners();
+  }
+
+  private updateDuplicatePlacementFromPointer(e: PointerEvent) {
+    const placement = this.duplicatePlacement;
+    if (!placement) return;
+
+    e.preventDefault();
+    const frame = this.frameFromPointer(e);
+    const duration = this.timeline.value.duration;
+    const raw = frame - placement.anchor;
+    const next = Math.max(
+      -placement.sourceStart,
+      Math.min(duration - 1 - placement.sourceEnd, raw),
+    );
+    if (next !== this.moveDelta) {
+      this.moveDelta = next;
+    }
+    this.ensureFrameVisible(frame);
+  }
+
+  private onFrameActionDragMove = (e: PointerEvent) => {
+    const drag = this.frameActionDrag;
+    if (drag) {
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (!drag.dragging) {
+        if (dx * dx + dy * dy < 25) return;
+        drag.dragging = true;
+        this.frameActionsAnchor = null;
+        this.emit("frames-duplicate-drag-start", {
+          layerId: drag.layerId,
+          start: drag.sourceStart,
+          end: drag.sourceEnd,
+        });
+        this.beginDuplicateDragPreview(
+          drag.layerId,
+          drag.sourceStart,
+          drag.sourceEnd,
+          this.frameFromPointer(e),
+        );
+        this.frameActionDrag = null;
+      } else {
+        return;
+      }
+    }
+
+    this.updateDuplicatePlacementFromPointer(e);
+  };
+
+  private onFrameActionDragUp = (e: PointerEvent) => {
+    const drag = this.frameActionDrag;
+    if (drag && !drag.dragging) {
+      this.onFrameActionDuplicateClick();
+      this.frameActionDrag = null;
+      this.unbindFrameActionDragListeners();
+      this.releaseFrameActionDuplicateCapture(e);
       return;
     }
 
-    let playheadMoved = false;
-    if (prev.currentFrame !== t.currentFrame) {
-      this.syncPlayheadColumn(prev.currentFrame, t.currentFrame);
-      this.syncPlayheadLine(t.currentFrame);
-      this.syncRulerPlayhead(prev.currentFrame, t.currentFrame);
-      this.syncPlayheadFrameDisplay(t.currentFrame);
-      if (!this.scrubbing) this.ensureFrameVisible(t.currentFrame);
-      playheadMoved = true;
+    if (this.duplicatePlacement) {
+      this.suppressFrameActionClick = "duplicate";
+      this.finalizeDuplicatePlacement();
     }
-    if (prev.playing !== t.playing) {
-      this.syncPlaybackChrome(t);
+    this.frameActionDrag = null;
+    this.unbindFrameActionDragListeners();
+    this.releaseFrameActionDuplicateCapture(e);
+  };
+
+  private releaseFrameActionDuplicateCapture(e: PointerEvent) {
+    const btn = this.renderRoot.querySelector<HTMLButtonElement>(
+      '.frame-action-btn[aria-label="Duplicate"]',
+    );
+    btn?.releasePointerCapture?.(e.pointerId);
+  }
+
+  private onFrameActionDragCancel = (e: PointerEvent) => {
+    if (this.duplicatePlacement) {
+      this.finalizeDuplicatePlacement();
     }
-    if (playheadMoved || prev.playing !== t.playing) {
-      this.syncTimelineStrip();
-    }
+    this.frameActionDrag = null;
+    this.unbindFrameActionDragListeners();
+    this.releaseFrameActionDuplicateCapture(e);
+  };
+
+  private readonly globalFrameDuplicateDragEndHandler = (e: Event) => {
+    if (!this.duplicatePlacement) return;
+    this.onFrameActionDragUp(e as PointerEvent);
+  };
+
+  private finalizeDuplicatePlacement() {
+    const placement = this.duplicatePlacement;
+    if (!placement) return;
+    const delta = this.moveDelta;
+    this.duplicatePlacement = null;
+    this.moveDelta = 0;
+    this.emit("frames-duplicate-drag-end", {
+      layerId: placement.layerId,
+      start: placement.sourceStart,
+      end: placement.sourceEnd,
+      delta,
+    });
   }
 
-  private rulerLabel(frame: number, currentFrame: number): string {
-    if (frame === 0 || (frame + 1) % 5 === 0 || frame === currentFrame) {
-      return String(frame + 1);
-    }
-    return "";
-  }
-
-  private syncPlayheadColumn(oldFrame: number, newFrame: number) {
-    if (oldFrame === newFrame) return;
-    this.renderRoot
-      .querySelectorAll<HTMLElement>(`.frame-cell[data-frame="${oldFrame}"]`)
-      .forEach((el) => el.classList.remove("current"));
-    this.renderRoot
-      .querySelectorAll<HTMLElement>(`.frame-cell[data-frame="${newFrame}"]`)
-      .forEach((el) => el.classList.add("current"));
-  }
-
-  private syncPlayheadLine(frame: number) {
-    const playhead = this.renderRoot.querySelector<HTMLElement>(".playhead");
-    playhead?.style.setProperty("--f", String(frame));
-  }
-
-  private syncRulerPlayhead(oldFrame: number, newFrame: number) {
-    const paint = (frame: number) => {
-      const cell = this.renderRoot.querySelector<HTMLElement>(
-        `.ruler-cell[data-frame="${frame}"]`,
-      );
-      if (!cell) return;
-      cell.classList.toggle("current", frame === newFrame);
-      cell.textContent = this.rulerLabel(frame, newFrame);
-    };
-    if (oldFrame !== newFrame) paint(oldFrame);
-    paint(newFrame);
-  }
-
-  private syncPlayheadFrameDisplay(frame: number) {
-    const label = this.renderRoot.querySelector<HTMLElement>(".playhead-frame-display");
-    if (label) label.textContent = String(frame + 1);
-  }
-
-  private syncPlaybackChrome(t: TimelineState) {
-    const btn = this.renderRoot.querySelector<HTMLElement>(".playback-play");
-    if (!btn) return;
-    btn.classList.toggle("on", t.playing);
-    btn.title = t.playing ? "Stop" : "Play";
-    btn.innerHTML = t.playing ? "&#9632;" : "&#9654;";
+  private renderFrameActionsPopover(sel: { start: number; end: number }) {
+    if (!this.frameActionsAnchor) return nothing;
+    const len = sel.end - sel.start + 1;
+    const { x, y } = this.frameActionsAnchor;
+    return html`
+      <div
+        class="frame-actions-fixed"
+        style="left: ${x}px; top: ${y}px"
+        data-interactive
+        @pointerdown=${(e: Event) => e.stopPropagation()}
+      >
+        <div class="frame-actions-shell">
+          <div class="frame-actions-face">
+            <button
+              type="button"
+              class="frame-action-btn"
+              title="Duplicate (drag to place)"
+              aria-label="Duplicate"
+              @pointerdown=${this.onFrameActionDuplicateDown}
+              @click=${() => {
+                if (this.suppressFrameActionClick === "duplicate") {
+                  this.suppressFrameActionClick = null;
+                  return;
+                }
+                if (this.frameActionDrag) return;
+                this.onFrameActionDuplicateClick();
+              }}
+            >${phosphorIcon("copy", 14)}</button>
+            <button
+              type="button"
+              class="frame-action-btn"
+              title="Reverse frame order"
+              aria-label="Reverse"
+              ?disabled=${len < 2}
+              @click=${() => this.onFrameActionReverseClick()}
+            >${phosphorIcon("arrows-left-right", 14)}</button>
+            <button
+              type="button"
+              class="frame-action-btn danger"
+              title="Delete keyframes"
+              aria-label="Delete"
+              @click=${() => this.onFrameActionDeleteClick()}
+            >${phosphorIcon("trash", 14)}</button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   private selectLayer(layerId: string) {
@@ -4799,11 +5030,18 @@ export class InkwellLayersPanel extends FloatingPanel {
       this.blockHeight = contentHeight;
     }
 
-    // Follow the playhead during playback (imperative path handles most ticks).
+    // Follow the playhead during playback.
+    const frame = this.timeline.value.currentFrame;
+    if (frame !== this.lastSeenFrame) {
+      this.lastSeenFrame = frame;
+      if (!this.scrubbing) this.ensureFrameVisible(frame);
+    }
 
     // Duration and frame changes move the strip's ruler/flag; scrolling is
     // handled by the viewport's @scroll listener.
     this.syncTimelineStrip();
+
+    void this.updateComplete.then(() => this.syncFrameActionsAnchor());
 
     if (!changedProperties.has("editingLayerId") || !this.editingLayerId) return;
     void this.updateComplete.then(() => {
@@ -4837,9 +5075,14 @@ export class InkwellLayersPanel extends FloatingPanel {
     const flag = this.renderRoot.querySelector<HTMLElement>(".strip-playhead");
     if (flag) {
       const x =
-        (this.timelineValue.currentFrame + 0.5) * this.frameCellWidth() - scrollLeft;
+        (this.timeline.value.currentFrame + 0.5) * this.frameCellWidth() - scrollLeft;
       flag.style.left = `${x}px`;
     }
+  };
+
+  private onFramesViewportScroll = () => {
+    this.syncTimelineStrip();
+    this.syncFrameActionsAnchor();
   };
 
   private frameCellWidth(): number {
@@ -4853,12 +5096,12 @@ export class InkwellLayersPanel extends FloatingPanel {
     if (!content) return 0;
     const rect = content.getBoundingClientRect();
     const frame = Math.floor((e.clientX - rect.left) / this.frameCellWidth());
-    return Math.max(0, Math.min(this.timelineValue.duration - 1, frame));
+    return Math.max(0, Math.min(this.timeline.value.duration - 1, frame));
   }
 
   private scrubTo(e: PointerEvent) {
     const frame = this.frameFromPointer(e);
-    if (frame !== this.timelineValue.currentFrame) {
+    if (frame !== this.timeline.value.currentFrame) {
       this.emit("frame-select", { frame });
     }
     this.ensureFrameVisible(frame);
@@ -4900,33 +5143,10 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   // ---- Frame range selection + move ------------------------------------
 
-  private bindCellDragListeners() {
-    window.addEventListener("pointermove", this.onCellMove);
-    window.addEventListener("pointerup", this.onCellUp);
-    window.addEventListener("pointercancel", this.onCellCancel);
-  }
-
-  private unbindCellDragListeners() {
-    window.removeEventListener("pointermove", this.onCellMove);
-    window.removeEventListener("pointerup", this.onCellUp);
-    window.removeEventListener("pointercancel", this.onCellCancel);
-  }
-
-  private cancelCellDrag() {
-    if (!this.cellDrag) return;
-    this.unbindCellDragListeners();
-    this.cellCaptureEl = null;
-    this.cellDrag = null;
-    this.moveDelta = 0;
-  }
-
   private onCellDown(layerId: string, frame: number, e: PointerEvent) {
     if (e.button !== 0 && e.pointerType === "mouse") return;
     e.stopPropagation();
-    const el = e.currentTarget as HTMLElement;
-    el.setPointerCapture(e.pointerId);
-    this.cellCaptureEl = el;
-    this.bindCellDragListeners();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     const sel = this.frameSelection;
     const inSelection =
       sel !== null &&
@@ -4962,7 +5182,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       }
     } else if (drag.base) {
       // Keep at least one frame of the block on the timeline.
-      const duration = this.timelineValue.duration;
+      const duration = this.timeline.value.duration;
       const raw = frame - drag.anchor;
       this.moveDelta = Math.max(
         -drag.base.end,
@@ -4975,16 +5195,13 @@ export class InkwellLayersPanel extends FloatingPanel {
   private onCellUp = (e: PointerEvent) => {
     const drag = this.cellDrag;
     if (!drag) return;
-    this.unbindCellDragListeners();
-    this.cellCaptureEl?.releasePointerCapture?.(e.pointerId);
-    this.cellCaptureEl = null;
     this.cellDrag = null;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
 
     if (drag.mode === "tap") {
       this.frameSelection = null;
+      this.frameActionsAnchor = null;
       this.emit("frame-select", { frame: drag.anchor, layerId: drag.layerId });
-      // Double-tap on a keyframe's span toggles its hold (extend to the
-      // next keyframe / end of animation, or back to a single frame).
       const now = performance.now();
       const last = this.lastCellTap;
       if (
@@ -4998,10 +5215,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       } else {
         this.lastCellTap = { layerId: drag.layerId, frame: drag.anchor, time: now };
       }
-      return;
-    }
-
-    if (drag.mode === "move" && drag.base) {
+    } else if (drag.mode === "move" && drag.base) {
       const delta = this.moveDelta;
       this.moveDelta = 0;
       if (delta !== 0) {
@@ -5011,8 +5225,7 @@ export class InkwellLayersPanel extends FloatingPanel {
           end: drag.base.end,
           delta,
         });
-        // Selection follows the moved block (clipped to the timeline).
-        const max = this.timelineValue.duration - 1;
+        const max = this.timeline.value.duration - 1;
         this.frameSelection = {
           layerId: drag.layerId,
           start: Math.max(0, Math.min(max, drag.base.start + delta)),
@@ -5021,15 +5234,17 @@ export class InkwellLayersPanel extends FloatingPanel {
       }
     }
     // "select" mode: the live-updated selection simply stays.
+
+    // cellDrag is not @state — re-render so the actions popover can appear.
+    this.requestUpdate();
   };
 
   private onCellCancel = (e: PointerEvent) => {
     if (!this.cellDrag) return;
-    this.unbindCellDragListeners();
-    this.cellCaptureEl?.releasePointerCapture?.(e.pointerId);
-    this.cellCaptureEl = null;
     this.cellDrag = null;
     this.moveDelta = 0;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    this.requestUpdate();
   };
 
   /**
@@ -5101,6 +5316,22 @@ export class InkwellLayersPanel extends FloatingPanel {
     const nonStage = this.layers.value.layers.filter((l) => l.kind !== "stage");
     const layerNumber = nonStage.length + 1;
     this.emit("layer-add", { id: newId, name: `Layer ${layerNumber}` });
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    window.addEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
+    window.addEventListener("pointercancel", this.globalFrameDuplicateDragEndHandler);
+    window.addEventListener("blur", this.globalFrameDuplicateDragEndHandler);
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
+    window.removeEventListener("pointercancel", this.globalFrameDuplicateDragEndHandler);
+    window.removeEventListener("blur", this.globalFrameDuplicateDragEndHandler);
+    this.cancelFrameActionDrag();
+    this.cancelRowDrag();
+    super.disconnectedCallback();
   }
 
   // ---- Layer row drag-reorder ------------------------------------------
@@ -5235,9 +5466,11 @@ export class InkwellLayersPanel extends FloatingPanel {
         class="frame-cell ${f === currentFrame ? "current" : ""} ${
           selected && f >= selected.start && f <= selected.end ? "in-selection" : ""
         }"
-        data-frame=${f}
         title=${`Frame ${f + 1}`}
         @pointerdown=${(e: PointerEvent) => this.onCellDown(layerId, f, e)}
+        @pointermove=${this.onCellMove}
+        @pointerup=${this.onCellUp}
+        @pointercancel=${this.onCellCancel}
         @click=${(e: Event) => {
           // Don't bubble into the row's layer-select (which switches tools);
           // taps are handled in onCellUp.
@@ -5246,7 +5479,13 @@ export class InkwellLayersPanel extends FloatingPanel {
       ></button>
     `);
 
-    const moving = selected !== null && this.moveDelta !== 0;
+    const dup =
+      this.duplicatePlacement?.layerId === layerId ? this.duplicatePlacement : null;
+    const cellMoving = selected !== null && this.moveDelta !== 0 && dup === null;
+    const dupDelta = dup ? this.moveDelta : 0;
+    const dupPreviewing = dup !== null && dupDelta !== 0;
+
+    const moving = cellMoving;
     const spans = keyframes.map((kf) => {
       const spanEnd = Math.min(kf.holdUntil, duration - 1);
       const len = Math.max(1, spanEnd - kf.frame + 1);
@@ -5267,7 +5506,7 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     // Would-be frames while dragging the selection: the selected slice of
     // each span, shifted by the current delta and clipped to the timeline.
-    const ghosts = moving && selected
+    const ghosts = cellMoving && selected
       ? keyframes.flatMap((kf) => {
           const spanEnd = Math.min(kf.holdUntil, duration - 1);
           const from = Math.max(kf.frame, selected.start);
@@ -5288,16 +5527,52 @@ export class InkwellLayersPanel extends FloatingPanel {
         })
       : null;
 
+    const dupGhosts = dupPreviewing && dup
+      ? keyframes.flatMap((kf) => {
+          const spanEnd = Math.min(kf.holdUntil, duration - 1);
+          const from = Math.max(kf.frame, dup.sourceStart);
+          const to = Math.min(spanEnd, dup.sourceEnd);
+          if (to < from) return [];
+          const shiftedFrom = Math.max(0, from + dupDelta);
+          const shiftedTo = Math.min(duration - 1, to + dupDelta);
+          if (shiftedTo < shiftedFrom) return [];
+          const len = shiftedTo - shiftedFrom + 1;
+          if (len === 1) {
+            return [
+              html`<div class="span-dot ${kf.blank ? "" : "span-dot--filled"}" style="--f: ${shiftedFrom}"></div>`,
+            ];
+          }
+          return [
+            html`<div class="span-pill" style="--f: ${shiftedFrom}; --len: ${len}"></div>`,
+          ];
+        })
+      : null;
+
     return html`
       <div class="frame-strip">
         <div class="frame-cells">${cells}</div>
         <div class="span-overlay">${spans}</div>
         ${ghosts ? html`<div class="span-overlay ghost-overlay">${ghosts}</div>` : nothing}
-        ${selected
+        ${dupGhosts ? html`<div class="span-overlay ghost-overlay">${dupGhosts}</div>` : nothing}
+        ${selected && !dupPreviewing
           ? html`<div
-              class="frame-selection ${this.moveDelta !== 0 ? "moving" : ""}"
-              style="--f: ${selected.start + this.moveDelta}; --len: ${
+              class="frame-selection ${cellMoving ? "moving" : ""}"
+              style="--f: ${selected.start + (cellMoving ? this.moveDelta : 0)}; --len: ${
                 selected.end - selected.start + 1
+              }"
+            ></div>`
+          : nothing}
+        ${selected && dupPreviewing
+          ? html`<div
+              class="frame-selection"
+              style="--f: ${selected.start}; --len: ${selected.end - selected.start + 1}"
+            ></div>`
+          : nothing}
+        ${dupPreviewing && dup
+          ? html`<div
+              class="frame-selection duplicating"
+              style="--f: ${dup.sourceStart + dupDelta}; --len: ${
+                dup.sourceEnd - dup.sourceStart + 1
               }"
             ></div>`
           : nothing}
@@ -5306,7 +5581,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   }
 
   private renderKeyframeActions() {
-    const t = this.getTimeline();
+    const t = this.timeline.value;
     return html`
       <button type="button" class="tl-btn" title="Insert keyframe (copies current artwork)"
         @click=${() => this.emit("keyframe-add", { blank: false })}>+K</button>
@@ -5326,7 +5601,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   }
 
   private renderPlaybackActions() {
-    const t = this.getTimeline();
+    const t = this.timeline.value;
     return html`
       <span class="fps-field playback-fps">
         fps
@@ -5348,7 +5623,7 @@ export class InkwellLayersPanel extends FloatingPanel {
         @click=${() => this.emit("play-toggle")}
       >${t.playing ? html`&#9632;` : html`&#9654;`}</button>
       <span class="frame-counter playback-frames">
-        <span class="playhead-frame-display">${t.currentFrame + 1}</span>/<input
+        ${t.currentFrame + 1}/<input
           class="duration-input"
           type="number"
           min="1"
@@ -5366,7 +5641,7 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   render() {
     const { layers, activeLayerId } = this.layers.value;
-    const t = this.getTimeline();
+    const t = this.timeline.value;
     // Regular layers only, top layer first; the Stage layer stays in the
     // document as the fixed background but has no row in the panel.
     const displayLayers = layers.filter((l) => l.kind !== "stage").reverse();
@@ -5423,7 +5698,6 @@ export class InkwellLayersPanel extends FloatingPanel {
                     (f) => html`
                       <div
                         class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
-                        data-frame=${f}
                         title=${`Go to frame ${f + 1}`}
                         @click=${() => this.emit("frame-select", { frame: f })}
                       >
@@ -5513,7 +5787,7 @@ export class InkwellLayersPanel extends FloatingPanel {
                     )}
                   </div>
                 </div>
-                <div class="frames-viewport" @scroll=${this.syncTimelineStrip}>
+                <div class="frames-viewport" @scroll=${this.onFramesViewportScroll}>
                   <div class="frames-content">
                     <div class="strip-list">
                       ${repeat(
@@ -5547,6 +5821,9 @@ export class InkwellLayersPanel extends FloatingPanel {
             </div>
           </div>
         </div>
+        ${this.frameSelection && this.showFrameActionsForSelection()
+          ? this.renderFrameActionsPopover(this.frameSelection)
+          : nothing}
         ${this.resizable
           ? html`
               <div class="resize-left"></div>
@@ -5558,6 +5835,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   }
 }
 
+// ============================================================
 // ============================================================
 // Wheel Panel (revolver-barrel jog wheel)
 // ============================================================

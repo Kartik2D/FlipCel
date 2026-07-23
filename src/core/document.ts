@@ -196,6 +196,14 @@ export class DocumentManager {
     return `c${Date.now().toString(36)}-${this.contentIdCounter++}`;
   }
 
+  /** Copy artwork into a fresh content entry (used when duplicating frames). */
+  private cloneContentId(contentId: string): string {
+    if (contentId === EMPTY_CONTENT_ID) return EMPTY_CONTENT_ID;
+    const id = this.newContentId();
+    this.content.set(id, this.content.get(contentId) ?? "");
+    return id;
+  }
+
   /**
    * Drop content entries not referenced by the given id sets (called by the
    * history manager after trimming its stack, since history entries are the
@@ -527,6 +535,77 @@ export class DocumentManager {
         contentId: kf.contentId,
         holdUntil: Math.min(this.duration - 1, to),
       });
+    }
+
+    this.reloadCurrentFrame();
+    this.publish();
+    return true;
+  }
+
+  /**
+   * Copy the frames in start..end to a destination range. Artwork is cloned so
+   * edits to either copy stay independent. When `destStart` is omitted, copies
+   * land immediately after the source (tap-to-duplicate). Returns the
+   * destination range, or null when there is no room, nothing to copy, or the
+   * destination overlaps the source.
+   */
+  duplicateFrameRange(
+    layerId: string,
+    start: number,
+    end: number,
+    destStart?: number,
+  ): { start: number; end: number } | null {
+    const track = this.getTrack(layerId);
+    if (!track) return null;
+    [start, end] = this.normalizeRange(start, end);
+    const len = end - start + 1;
+    const dest = destStart ?? end + 1;
+    const destEnd = dest + len - 1;
+    if (dest < 0 || destEnd >= this.duration) return null;
+    if (dest <= end && destEnd >= start) return null;
+
+    const segment = this.extractFrameRange(track, start, end);
+    if (segment.length === 0) return null;
+
+    this.cutFrameRange(track, dest, destEnd);
+
+    const offset = dest - start;
+    for (const kf of segment) {
+      const from = kf.frameIndex + offset;
+      const to = kf.holdUntil + offset;
+      if (to < 0 || from > this.duration - 1) continue;
+      this.insertKeyframe(track, {
+        frameIndex: Math.max(0, from),
+        contentId: this.cloneContentId(kf.contentId),
+        holdUntil: Math.min(this.duration - 1, to),
+      });
+    }
+
+    this.reloadCurrentFrame();
+    this.publish();
+    return { start: dest, end: destEnd };
+  }
+
+  /**
+   * Reverse the visible artwork order across start..end (frame-by-frame).
+   * Returns true when the range changed.
+   */
+  reverseFrameRange(layerId: string, start: number, end: number): boolean {
+    const track = this.getTrack(layerId);
+    if (!track) return false;
+    [start, end] = this.normalizeRange(start, end);
+    if (start >= end) return false;
+
+    const frameContents: string[] = [];
+    for (let frame = start; frame <= end; frame++) {
+      frameContents.push(this.contentIdAt(track, frame));
+    }
+    frameContents.reverse();
+
+    if (!this.cutFrameRange(track, start, end)) return false;
+
+    for (let i = 0; i < frameContents.length; i++) {
+      this.placeKeyframe(track, start + i, frameContents[i]!);
     }
 
     this.reloadCurrentFrame();
