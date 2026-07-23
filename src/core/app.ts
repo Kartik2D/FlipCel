@@ -56,6 +56,7 @@ import {
 } from "./functions";
 import type {
   InkwellColorPanel,
+  InkwellColorPopup,
   InkwellToolsPanel,
   InkwellUniversalPanel,
   InkwellViewPanel,
@@ -81,6 +82,8 @@ import {
   stageSelectedStore,
   STAGE_LAYER_ID,
   generateLayerId,
+  DEFAULT_STAGE_WIDTH,
+  DEFAULT_STAGE_HEIGHT,
   type ThemeMode,
 } from "./stores";
 import { getStageFitViewportInsets } from "./stage-fit-insets";
@@ -128,6 +131,7 @@ class App {
     });
   }, 800);
   private colorPanel: InkwellColorPanel;
+  private colorPopup: InkwellColorPopup;
   private toolsPanel: InkwellToolsPanel;
   private universalPanel: InkwellUniversalPanel;
   private viewPanel: InkwellViewPanel;
@@ -150,6 +154,7 @@ class App {
   private lastDisplayZoom = Number.NaN;
   private functionsPanelDismissed = false;
   private lastFunctionsPanelKey = "";
+  private stageColorPickerSession = false;
   private selectionGestureActive = false;
   private duplicateDragSession:
     | {
@@ -248,6 +253,7 @@ class App {
 
     // Get panel Lit elements
     this.colorPanel = document.getElementById("color-panel") as InkwellColorPanel;
+    this.colorPopup = document.getElementById("color-popup") as InkwellColorPopup;
     this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
     this.viewPanel = document.getElementById("view-panel") as InkwellViewPanel;
@@ -322,11 +328,18 @@ class App {
   }
 
   private setupPanelEvents() {
-    this.colorPanel.addEventListener("color-change", (e: Event) => {
-      this.onColorPickerChange((e as CustomEvent<string>).detail);
-    });
-    this.colorPanel.addEventListener("color-change-end", (e: Event) => {
-      this.onColorPickerChangeEnd((e as CustomEvent<string>).detail);
+    for (const picker of [this.colorPanel, this.colorPopup]) {
+      picker.addEventListener("color-change", (e: Event) => {
+        this.onColorPickerChange((e as CustomEvent<string>).detail);
+      });
+      picker.addEventListener("color-change-end", (e: Event) => {
+        this.onColorPickerChangeEnd((e as CustomEvent<string>).detail);
+      });
+    }
+
+    this.colorPopup.addEventListener("panel-visibility-change", (e: Event) => {
+      const { visible } = (e as CustomEvent<{ id: string; visible: boolean }>).detail;
+      if (!visible) this.stageColorPickerSession = false;
     });
 
     // Tools panel events - sync to inputManager and handle selection placement
@@ -359,6 +372,17 @@ class App {
     this.shortcutsPanel.addEventListener("play-toggle", () => this.onPlayToggle());
     this.universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {
       this.onAliasFixToggle((e as CustomEvent<boolean>).detail);
+    });
+    this.universalPanel.addEventListener("stage-color-picker-open", (e: Event) => {
+      const anchor = (e as CustomEvent<HTMLElement>).detail;
+      const stageColor = stageStore.get().color;
+      colorStore.set(stageColor);
+      prevColorStore.set(stageColor);
+      this.stageColorPickerSession = true;
+      void this.colorPopup.showNearAnchor(anchor);
+    });
+    this.universalPanel.addEventListener("stage-size-change", () => {
+      this.historyManager.snapshot();
     });
     this.universalPanel.addEventListener("export-view-svg", () => this.onExportViewSvg());
     this.universalPanel.addEventListener("doc-save", () => this.onDocSave());
@@ -1350,7 +1374,7 @@ class App {
   }
 
   private onColorPickerChange(color: string) {
-    if (stageSelectedStore.get()) {
+    if (this.stageColorPickerSession || stageSelectedStore.get()) {
       stageStore.update((s) => ({ ...s, color }));
       return;
     }
@@ -1364,7 +1388,7 @@ class App {
   }
 
   private onColorPickerChangeEnd(color: string) {
-    if (stageSelectedStore.get()) {
+    if (this.stageColorPickerSession || stageSelectedStore.get()) {
       stageStore.update((s) => ({ ...s, color }));
       this.historyManager.snapshot();
       return;
@@ -2030,7 +2054,7 @@ class App {
     const layerId = generateLayerId();
     this.applyLoadedDocument({
       version: 1,
-      stage: { width: 1920, height: 1080, color: "#ffffff" },
+      stage: { width: DEFAULT_STAGE_WIDTH, height: DEFAULT_STAGE_HEIGHT, color: "#ffffff" },
       frameRate: DEFAULT_FRAME_RATE,
       duration: DEFAULT_DURATION,
       tracks: [

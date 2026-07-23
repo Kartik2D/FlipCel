@@ -246,9 +246,37 @@ export interface StageSettings {
   color: string;
 }
 
+/** Vector-friendly artboard bounds — avoid tiny sketches or 4K+ extremes. */
+export const STAGE_SIZE_MIN = 512;
+export const STAGE_SIZE_MAX = 1920;
+export const STAGE_SIZE_STEP = 8;
+export const DEFAULT_STAGE_WIDTH = 1280;
+export const DEFAULT_STAGE_HEIGHT = 720;
+
+/** Common artboard sizes shown as slider notches (within min/max, step-aligned). */
+export const STAGE_SIZE_PRESETS = [512, 720, 1024, 1280, 1920] as const;
+
+/** Pull slider values toward a preset when within this distance (px). */
+export const STAGE_SIZE_SNAP_THRESHOLD = 64;
+
+export function clampStageDimension(value: number): number {
+  const clamped = Math.max(STAGE_SIZE_MIN, Math.min(STAGE_SIZE_MAX, value));
+  return Math.round(clamped / STAGE_SIZE_STEP) * STAGE_SIZE_STEP;
+}
+
+export function snapStageDimension(value: number): number {
+  const clamped = clampStageDimension(value);
+  for (const preset of STAGE_SIZE_PRESETS) {
+    if (Math.abs(clamped - preset) <= STAGE_SIZE_SNAP_THRESHOLD) {
+      return preset;
+    }
+  }
+  return clamped;
+}
+
 export const stageStore = new Store<StageSettings>({
-  width: 1920,
-  height: 1080,
+  width: DEFAULT_STAGE_WIDTH,
+  height: DEFAULT_STAGE_HEIGHT,
   color: "#ffffff",
 });
 

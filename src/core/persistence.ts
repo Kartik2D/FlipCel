@@ -6,6 +6,7 @@
  * stringify cost, no localStorage size cap) debounced from history snapshots.
  */
 import type { SerializedDocument } from "./document";
+import { DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from "./stores";
 
 const DB_NAME = "inkwell";
 const DB_VERSION = 1;
@@ -42,8 +43,8 @@ export function parseSerializedDocument(data: unknown): SerializedDocument {
   return {
     version: 1,
     stage: {
-      width: Number(doc.stage?.width) || 1920,
-      height: Number(doc.stage?.height) || 1080,
+      width: Number(doc.stage?.width) || DEFAULT_STAGE_WIDTH,
+      height: Number(doc.stage?.height) || DEFAULT_STAGE_HEIGHT,
       color: typeof doc.stage?.color === "string" ? doc.stage.color : "#ffffff",
     },
     frameRate: Number(doc.frameRate) || 12,

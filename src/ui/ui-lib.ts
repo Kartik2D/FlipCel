@@ -34,6 +34,13 @@ import {
   normalizeViewOverlaySettings,
   themeModeStore,
   wheelFrictionStore,
+  stageStore,
+  clampStageDimension,
+  snapStageDimension,
+  STAGE_SIZE_MIN,
+  STAGE_SIZE_MAX,
+  STAGE_SIZE_STEP,
+  STAGE_SIZE_PRESETS,
   wheelFrictionMotion,
   wheelFrictionTauMs,
   WHEEL_FRICTION_OPTIONS,
@@ -771,6 +778,18 @@ export class Block extends LitElement {
 
   private _isWhitespaceTarget(e: PointerEvent): boolean {
     const path = e.composedPath();
+
+    // Compact popups: drag from a title-bar handle unless an interactive child was hit.
+    for (const el of path) {
+      if (el === this) break;
+      if (el instanceof HTMLElement) {
+        if (el.hasAttribute("data-interactive")) return false;
+        const tag = el.tagName.toLowerCase();
+        if (tag === "button" || tag === "input" || tag === "blocky-button") return false;
+        if (el.hasAttribute("data-drag-handle")) return true;
+      }
+    }
+
     const blockEl = this.renderRoot.querySelector(".block");
     const faceEl = this.renderRoot.querySelector(".face");
 
@@ -2425,18 +2444,33 @@ export class FloatingPanel extends Block {
     `;
   }
 
+  /** Floating panels show a center grab pill; popups use the title bar instead. */
+  protected showsDragHandlePill(): boolean {
+    return true;
+  }
+
+  /** When true, the whole title bar is draggable (no grab pill). */
+  protected headerActsAsDragHandle(): boolean {
+    return false;
+  }
+
   /**
    * Title bar row: title (left), drag pill (center), close (right).
    */
   protected renderDragHandlePill(title?: string) {
     const showClose = this.pinned && this.showPinnedClose;
-    const showPill = this.draggable;
+    const showPill = this.draggable && this.showsDragHandlePill();
+    const headerDraggable = this.draggable && this.headerActsAsDragHandle();
     const reserveCloseSlot = this.showPinnedClose;
-    if (!showPill && !title && !showClose && !reserveCloseSlot) return html``;
+    if (!showPill && !headerDraggable && !title && !showClose && !reserveCloseSlot) {
+      return html``;
+    }
 
     return html`
       <div
-        class="panel-header ${title ? "has-title" : ""} ${showClose ? "has-close" : ""}"
+        class="panel-header ${title ? "has-title" : ""} ${showClose ? "has-close" : ""} ${headerDraggable ? "is-drag-handle" : ""}"
+        ?data-drag-handle=${headerDraggable}
+        title=${headerDraggable ? "Drag to move" : nothing}
       >
         <div class="panel-header-slot panel-header-start">
           ${title ? this.renderPanelTitle(title) : nothing}
@@ -2481,6 +2515,199 @@ export class FloatingPanel extends Block {
 }
 
 // ============================================================
+// Popup Window Base Class
+// ============================================================
+
+/**
+ * Compact floating window for small dialogs and settings.
+ * No title bar — content only, anchored near a trigger, dismisses on outside click.
+ */
+export class PopupWindow extends FloatingPanel {
+  private anchorEl: HTMLElement | null = null;
+  private anchorSnapshot: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null = null;
+  private anchorWatchRaf: number | null = null;
+
+  private readonly outsidePointerHandler = (e: PointerEvent) => {
+    if (this.style.display === "none") return;
+
+    const path = e.composedPath();
+    if (path.includes(this)) return;
+
+    const clickedTrigger = path.some(
+      (node) =>
+        node instanceof HTMLElement && node.getAttribute("data-panel-trigger") === this.id,
+    );
+    if (clickedTrigger) return;
+
+    this.hidePanel();
+  };
+
+  static styles = css`
+    ${FloatingPanel.styles}
+
+    :host {
+      --panel-width: 220px;
+      --panel-min-width: 160px;
+      --panel-max-height: min(70vh, 420px);
+      --block-face-padding: 8px;
+    }
+
+    .panel-body > .face {
+      border-radius: calc(var(--block-radius) - 2px);
+    }
+  `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.setAttribute("data-popup", "");
+    document.addEventListener("pointerdown", this.outsidePointerHandler, true);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    document.removeEventListener("pointerdown", this.outsidePointerHandler, true);
+    this.stopAnchorWatch();
+  }
+
+  override hidePanel() {
+    this.stopAnchorWatch();
+    super.hidePanel();
+  }
+
+  private snapshotAnchorRect(el: HTMLElement) {
+    const rect = el.getBoundingClientRect();
+    return {
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  private anchorHasMoved(
+    before: { left: number; top: number; width: number; height: number },
+    after: { left: number; top: number; width: number; height: number },
+  ): boolean {
+    return (
+      Math.abs(before.left - after.left) > 0.5 ||
+      Math.abs(before.top - after.top) > 0.5 ||
+      Math.abs(before.width - after.width) > 0.5 ||
+      Math.abs(before.height - after.height) > 0.5
+    );
+  }
+
+  private startAnchorWatch(anchor: HTMLElement) {
+    this.stopAnchorWatch();
+    this.anchorEl = anchor;
+    this.anchorSnapshot = this.snapshotAnchorRect(anchor);
+
+    const tick = () => {
+      if (this.style.display === "none") {
+        this.stopAnchorWatch();
+        return;
+      }
+
+      const el = this.anchorEl;
+      if (!el || !el.isConnected) {
+        this.hidePanel();
+        return;
+      }
+
+      const next = this.snapshotAnchorRect(el);
+      if (this.anchorSnapshot && this.anchorHasMoved(this.anchorSnapshot, next)) {
+        this.hidePanel();
+        return;
+      }
+
+      this.anchorWatchRaf = requestAnimationFrame(tick);
+    };
+
+    this.anchorWatchRaf = requestAnimationFrame(tick);
+  }
+
+  private stopAnchorWatch() {
+    if (this.anchorWatchRaf !== null) {
+      cancelAnimationFrame(this.anchorWatchRaf);
+      this.anchorWatchRaf = null;
+    }
+    this.anchorEl = null;
+    this.anchorSnapshot = null;
+  }
+
+  protected onDragCommitted() {
+    // Popups stay ephemeral so outside-click dismissal still works after drag.
+  }
+
+  protected showsDragHandlePill(): boolean {
+    return false;
+  }
+
+  protected headerActsAsDragHandle(): boolean {
+    return false;
+  }
+
+  /** Popup shell: scrollable body only, no title bar. */
+  protected renderPopupBlock(content: TemplateResult) {
+    return html`
+      <div class="block">
+        <div class="panel-body">
+          <div class="face">
+            <div class="panel-form">${content}</div>
+          </div>
+        </div>
+        ${this.resizable
+          ? html`<div class="resize-left"></div><div class="resize-right"></div>`
+          : nothing}
+      </div>
+    `;
+  }
+
+  /** Open below an anchor (e.g. a contextual trigger). Dismisses on outside click. */
+  async showNearAnchor(anchor: HTMLElement) {
+    this.style.display = "";
+    await this.updateComplete;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    anchorPanelBelowTrigger(this, anchor);
+    raisePanelZIndex(this);
+    this.startAnchorWatch(anchor);
+  }
+}
+
+function anchorPanelBelowTrigger(panelEl: HTMLElement, triggerEl: HTMLElement) {
+  const triggerRect = triggerEl.getBoundingClientRect();
+  const gap = 10;
+  const panelRect = panelEl.getBoundingClientRect();
+  const idealLeft = triggerRect.left + triggerRect.width / 2 - panelRect.width / 2;
+  const maxLeft = window.innerWidth - panelRect.width - 8;
+  const clampedLeft = Math.max(8, Math.min(idealLeft, maxLeft));
+  let top = triggerRect.bottom + gap;
+
+  if (top + panelRect.height > window.innerHeight - 8) {
+    top = Math.max(8, triggerRect.top - panelRect.height - gap);
+  }
+
+  panelEl.style.left = `${Math.round(clampedLeft)}px`;
+  panelEl.style.top = `${Math.round(top)}px`;
+  panelEl.style.right = "auto";
+  panelEl.style.bottom = "auto";
+}
+
+function raisePanelZIndex(panelEl: HTMLElement) {
+  const allPanels = document.querySelectorAll<HTMLElement>("[data-panel]");
+  let maxZIndex = 1000;
+  allPanels.forEach((panel) => {
+    const zIndex = parseInt(window.getComputedStyle(panel).zIndex || "1000", 10);
+    if (zIndex > maxZIndex) maxZIndex = zIndex;
+  });
+  panelEl.style.zIndex = `${maxZIndex + 1}`;
+}
+
+// ============================================================
 // Color Panel (generic configurable picker)
 // ============================================================
 
@@ -2521,18 +2748,210 @@ function exactVariantId(prefs: ColorPanelPrefs): string {
   );
 }
 
+const colorPickerSharedStyles = css`
+  .panel-body > .face {
+    overflow: hidden;
+  }
+
+  .panel-body .panel-form {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .row {
+    flex: 0 0 auto;
+  }
+
+  .picker-wrap {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .swatches-wrap {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .swatches-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .swatch {
+    appearance: none;
+    display: block;
+    width: var(--picker-slider-width);
+    height: var(--picker-slider-width);
+    flex: 0 0 var(--picker-slider-width);
+    padding: 0;
+    border-radius: var(--panel-control-radius, 8px);
+    border: var(--picker-border-width) solid var(--picker-border-color);
+    box-sizing: border-box;
+    overflow: hidden;
+    cursor: pointer;
+  }
+
+  .swatch:hover {
+    filter: brightness(1.05);
+  }
+
+  .swatch[active] {
+    outline: 2px solid var(--panel-accent);
+    outline-offset: 1px;
+  }
+`;
+
+type PanelConstructor = abstract new (...args: any[]) => FloatingPanel;
+
+function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
+  abstract class ColorPickerFeaturesClass extends Base {
+    constructor(...args: any[]) {
+      super(...args);
+    }
+
+    @property({ type: String }) color = "#037ffc";
+    @state() protected prevColor = "#000000";
+
+    protected pickerPrefs = new StoreController(this, colorPanelPrefsStore);
+    protected documentColors = new StoreController(this, documentColorsStore);
+    private unsubscribeColor?: () => void;
+    private unsubscribePrevColor?: () => void;
+
+    connectedCallback() {
+      super.connectedCallback();
+      this.unsubscribeColor = colorStore.subscribe((c) => {
+        if (this.color !== c) this.color = c;
+      });
+      this.unsubscribePrevColor = prevColorStore.subscribe((p) => {
+        this.prevColor = p;
+      });
+
+      /* If persisted prefs don't match any of the new variants (legacy HSV/HSL
+         state), snap to the first variant so the UI isn't inconsistent. */
+      const prefs = colorPanelPrefsStore.get();
+      if (!exactVariantId(prefs)) {
+        colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...PICKER_VARIANTS[0].prefs }));
+      }
+    }
+
+    disconnectedCallback() {
+      super.disconnectedCallback();
+      this.unsubscribeColor?.();
+      this.unsubscribePrevColor?.();
+    }
+
+    protected emitColorEvent(name: string, detail?: unknown) {
+      this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
+    }
+
+    private onVariantChange(id: string) {
+      const variant = PICKER_VARIANTS.find((v) => v.id === id);
+      if (!variant) return;
+      colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...variant.prefs }));
+    }
+
+    private selectSwatch(color: string) {
+      this.color = color;
+      colorStore.set(color);
+      prevColorStore.set(color);
+      this.emitColorEvent("color-change", color);
+      this.emitColorEvent("color-change-end", color);
+    }
+
+    private renderSwatches() {
+      const colors = this.documentColors.value;
+      if (colors.length === 0) return nothing;
+
+      const activeColor = this.color.trim().toLowerCase();
+
+      return html`
+        <inkwell-panel-section data-interactive>
+          <div class="swatches-wrap">
+            <div class="swatches-grid">
+              ${repeat(
+                colors,
+                (color) => color,
+                (color) => html`
+                  <button
+                    type="button"
+                    class="swatch"
+                    style="background:${color}"
+                    title=${color}
+                    ?active=${color === activeColor}
+                    @click=${() => this.selectSwatch(color)}
+                  ></button>
+                `,
+              )}
+            </div>
+          </div>
+        </inkwell-panel-section>
+      `;
+    }
+
+    protected renderColorPickerContent() {
+      const prefs = this.pickerPrefs.value;
+      const activeVariant = exactVariantId(prefs) || PICKER_VARIANTS[0].id;
+      const showVariantTabs = this.showPickerVariantTabs();
+      const showDocumentSwatches = this.showDocumentColorSwatches();
+
+      return html`
+        ${showVariantTabs
+          ? html`
+              <inkwell-panel-section data-interactive>
+                <div class="row">
+                  ${PICKER_VARIANTS.map(
+                    (v) => html`
+                      <blocky-button
+                        flat
+                        ?active=${v.id === activeVariant}
+                        @click=${() => this.onVariantChange(v.id)}
+                        >${v.label}</blocky-button
+                      >
+                    `,
+                  )}
+                </div>
+              </inkwell-panel-section>
+            `
+          : nothing}
+        <div class="picker-wrap">
+          <generic-color-picker
+            .color=${this.color}
+            .prevColor=${this.prevColor}
+            .prefs=${prefs}
+            @input=${(e: CustomEvent<{ value: string }>) => {
+              this.color = e.detail.value;
+              colorStore.set(this.color);
+              this.emitColorEvent("color-change", this.color);
+            }}
+            @change=${() => {
+              prevColorStore.set(this.color);
+              this.emitColorEvent("color-change-end", this.color);
+            }}
+          ></generic-color-picker>
+        </div>
+        ${showDocumentSwatches ? this.renderSwatches() : nothing}
+      `;
+    }
+
+    protected showPickerVariantTabs(): boolean {
+      return true;
+    }
+
+    protected showDocumentColorSwatches(): boolean {
+      return true;
+    }
+  }
+
+  return ColorPickerFeaturesClass;
+}
+
 @customElement("inkwell-color-panel")
-export class InkwellColorPanel extends FloatingPanel {
-  @property({ type: String }) color = "#037ffc";
-  @state() private prevColor = "#000000";
-
-  private pickerPrefs = new StoreController(this, colorPanelPrefsStore);
-  private documentColors = new StoreController(this, documentColorsStore);
-  private unsubscribeColor?: () => void;
-  private unsubscribePrevColor?: () => void;
-
+export class InkwellColorPanel extends ColorPickerFeatures(FloatingPanel) {
   static styles = css`
     ${FloatingPanel.styles}
+    ${colorPickerSharedStyles}
 
     :host {
       --panel-width: 288px;
@@ -2541,169 +2960,49 @@ export class InkwellColorPanel extends FloatingPanel {
       --picker-slider-width: 20px;
     }
 
-    .panel-body > .face {
-      overflow: hidden;
-    }
-
-    .panel-body .panel-form {
-      height: 100%;
-      min-height: 0;
-    }
-
-    .row {
-      flex: 0 0 auto;
-    }
-
     .picker-wrap {
       flex: 1 1 auto;
-      width: 100%;
-      min-width: 0;
       min-height: 0;
-    }
-
-    .swatches-wrap {
-      flex: 0 0 auto;
-      width: 100%;
-      min-width: 0;
-    }
-
-    .swatches-grid {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-    }
-
-    .swatch {
-      appearance: none;
-      display: block;
-      width: var(--picker-slider-width);
-      height: var(--picker-slider-width);
-      flex: 0 0 var(--picker-slider-width);
-      padding: 0;
-      border-radius: var(--panel-control-radius, 8px);
-      border: var(--picker-border-width) solid var(--picker-border-color);
-      box-sizing: border-box;
-      overflow: hidden;
-      cursor: pointer;
-    }
-
-    .swatch:hover {
-      filter: brightness(1.05);
-    }
-
-    .swatch[active] {
-      outline: 2px solid var(--panel-accent);
-      outline-offset: 1px;
     }
   `;
 
-  connectedCallback() {
-    super.connectedCallback();
-    this.unsubscribeColor = colorStore.subscribe((c) => { if (this.color !== c) this.color = c; });
-    this.unsubscribePrevColor = prevColorStore.subscribe((p) => { this.prevColor = p; });
+  render() {
+    return this.renderFloatingBlock("Color", this.renderColorPickerContent());
+  }
+}
 
-    /* If persisted prefs don't match any of the new variants (legacy HSV/HSL
-       state), snap to the first variant so the UI isn't inconsistent. */
-    const prefs = colorPanelPrefsStore.get();
-    if (!exactVariantId(prefs)) {
-      colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...PICKER_VARIANTS[0].prefs }));
+@customElement("inkwell-color-popup")
+export class InkwellColorPopup extends ColorPickerFeatures(PopupWindow) {
+  static styles = css`
+    ${PopupWindow.styles}
+    ${colorPickerSharedStyles}
+
+    :host {
+      --panel-width: 204px;
+      --picker-border-width: 2px;
+      --picker-border-color: var(--block-border, #9f9f9f);
+      --picker-slider-width: 16px;
+      --picker-handle-size: 10px;
+      --picker-gap: 6px;
     }
-  }
 
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    this.unsubscribeColor?.();
-    this.unsubscribePrevColor?.();
-  }
+    .picker-wrap {
+      flex: 0 0 auto;
+      height: 132px;
+      min-height: 0;
+    }
 
-  private emit(name: string, detail?: unknown) {
-    this.dispatchEvent(new CustomEvent(name, { detail, bubbles: true, composed: true }));
-  }
+    .panel-form {
+      gap: 8px;
+    }
+  `;
 
-  private onVariantChange(id: string) {
-    const variant = PICKER_VARIANTS.find((v) => v.id === id);
-    if (!variant) return;
-    colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...variant.prefs }));
-  }
-
-  private selectSwatch(color: string) {
-    this.color = color;
-    colorStore.set(color);
-    prevColorStore.set(color);
-    this.emit("color-change", color);
-    this.emit("color-change-end", color);
-  }
-
-  private renderSwatches() {
-    const colors = this.documentColors.value;
-    if (colors.length === 0) return nothing;
-
-    const activeColor = this.color.trim().toLowerCase();
-
-    return html`
-      <inkwell-panel-section data-interactive>
-        <div class="swatches-wrap">
-          <div class="swatches-grid">
-            ${repeat(
-              colors,
-              (color) => color,
-              (color) => html`
-                <button
-                  type="button"
-                  class="swatch"
-                  style="background:${color}"
-                  title=${color}
-                  ?active=${color === activeColor}
-                  @click=${() => this.selectSwatch(color)}
-                ></button>
-              `,
-            )}
-          </div>
-        </div>
-      </inkwell-panel-section>
-    `;
+  protected showPickerVariantTabs(): boolean {
+    return false;
   }
 
   render() {
-    const prefs = this.pickerPrefs.value;
-    const activeVariant = exactVariantId(prefs) || PICKER_VARIANTS[0].id;
-
-    return this.renderFloatingBlock(
-      "Color",
-      html`
-            <inkwell-panel-section data-interactive>
-              <div class="row">
-                ${PICKER_VARIANTS.map(
-                  (v) => html`
-                    <blocky-button
-                      flat
-                      ?active=${v.id === activeVariant}
-                      @click=${() => this.onVariantChange(v.id)}
-                      >${v.label}</blocky-button
-                    >
-                  `,
-                )}
-              </div>
-            </inkwell-panel-section>
-            <div class="picker-wrap">
-              <generic-color-picker
-                .color=${this.color}
-                .prevColor=${this.prevColor}
-                .prefs=${prefs}
-                @input=${(e: CustomEvent<{ value: string }>) => {
-                  this.color = e.detail.value;
-                  colorStore.set(this.color);
-                  this.emit("color-change", this.color);
-                }}
-                @change=${() => {
-                  prevColorStore.set(this.color);
-                  this.emit("color-change-end", this.color);
-                }}
-              ></generic-color-picker>
-            </div>
-            ${this.renderSwatches()}
-      `,
-    );
+    return this.renderPopupBlock(this.renderColorPickerContent());
   }
 }
 
@@ -3473,8 +3772,10 @@ export class InkwellTopBarPanel extends FloatingPanel {
     el.style.display = "";
     await el.updateComplete;
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    this.positionPanelBelowTrigger(el, triggerEl);
-    this.bringPanelToFront(el);
+    if (triggerEl) {
+      anchorPanelBelowTrigger(el, triggerEl);
+    }
+    raisePanelZIndex(el);
     this.panelVisibility = this.panelVisibility.map((p) =>
       p.id === id ? { ...p, visible: true } : p,
     );
@@ -3498,7 +3799,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
     this.panelVisibility.forEach((panel) => {
       if (!panel.visible) return;
       const el = document.getElementById(panel.id) as ToggleablePanel | null;
-      if (!el || el.pinned) return;
+      if (!el) return;
+      const isPopup = el.hasAttribute("data-popup");
+      if (el.pinned && !isPopup) return;
       el.hidePanel();
       changed = true;
     });
@@ -3514,39 +3817,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
       );
       const panelEl = document.getElementById(panel.id) as ToggleablePanel | null;
       if (!panelEl || !trigger) return;
-      this.positionPanelBelowTrigger(panelEl, trigger);
+      anchorPanelBelowTrigger(panelEl, trigger);
     });
-  }
-
-  private positionPanelBelowTrigger(panelEl: ToggleablePanel, triggerEl?: HTMLElement) {
-    if (!triggerEl) return;
-
-    const triggerRect = triggerEl.getBoundingClientRect();
-    const gap = 10;
-    const panelRect = panelEl.getBoundingClientRect();
-    const idealLeft = triggerRect.left + triggerRect.width / 2 - panelRect.width / 2;
-    const maxLeft = window.innerWidth - panelRect.width - 8;
-    const clampedLeft = Math.max(8, Math.min(idealLeft, maxLeft));
-    let top = triggerRect.bottom + gap;
-
-    if (top + panelRect.height > window.innerHeight - 8) {
-      top = Math.max(8, triggerRect.top - panelRect.height - gap);
-    }
-
-    panelEl.style.left = `${Math.round(clampedLeft)}px`;
-    panelEl.style.top = `${Math.round(top)}px`;
-    panelEl.style.right = "auto";
-    panelEl.style.bottom = "auto";
-  }
-
-  private bringPanelToFront(panelEl: HTMLElement) {
-    const allPanels = document.querySelectorAll<HTMLElement>("[data-panel]");
-    let maxZIndex = 1000;
-    allPanels.forEach((panel) => {
-      const zIndex = parseInt(window.getComputedStyle(panel).zIndex || "1000", 10);
-      if (zIndex > maxZIndex) maxZIndex = zIndex;
-    });
-    panelEl.style.zIndex = `${maxZIndex + 1}`;
   }
 
   private renderPanelTriggerContent(panelId: string) {
@@ -3923,12 +4195,192 @@ export class InkwellUniversalPanel extends FloatingPanel {
   private history = new StoreController(this, historyStateStore);
   private themeMode = new StoreController(this, themeModeStore);
   private wheelFriction = new StoreController(this, wheelFrictionStore);
+  private stage = new StoreController(this, stageStore);
 
   static styles = css`
     ${FloatingPanel.styles}
 
     :host {
       --panel-width: 280px;
+    }
+
+    .stage-color-row {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 0;
+      min-height: 28px;
+    }
+
+    .stage-color-row > span {
+      flex: 0 0 auto;
+      color: var(--inkwell-text-secondary, #333333);
+    }
+
+    .stage-color-swatch {
+      appearance: none;
+      display: block;
+      width: 28px;
+      height: 28px;
+      flex: 0 0 28px;
+      margin-left: auto;
+      padding: 0;
+      border-radius: var(--panel-control-radius, 8px);
+      border: 2px solid var(--block-border, #555555);
+      box-sizing: border-box;
+      cursor: pointer;
+    }
+
+    .stage-color-swatch:hover {
+      filter: brightness(1.05);
+    }
+
+    .stage-size-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 0;
+      min-width: 0;
+    }
+
+    .stage-size-label-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .stage-size-label-row > span:first-child {
+      flex: 0 0 auto;
+      min-width: 3.25rem;
+      color: var(--inkwell-text-secondary, #333333);
+    }
+
+    .stage-size-input-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+      margin-left: auto;
+    }
+
+    .stage-size-input {
+      box-sizing: border-box;
+      width: 4.5rem;
+      min-width: 0;
+      font: inherit;
+      font-variant-numeric: tabular-nums;
+      padding: 5px 6px;
+      margin: 0;
+      border: none;
+      border-radius: var(--panel-control-radius, 8px);
+      background-color: var(--block-depth-color, #bcbcbc);
+      color: var(--block-border, #555555);
+      text-align: right;
+      -moz-appearance: textfield;
+      appearance: textfield;
+    }
+
+    .stage-size-input::-webkit-outer-spin-button,
+    .stage-size-input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    .stage-size-input:focus {
+      outline: none;
+      box-shadow: 0 0 0 2px var(--panel-accent-muted, rgba(74, 111, 181, 0.35));
+    }
+
+    .stage-size-unit {
+      flex: 0 0 auto;
+      color: var(--inkwell-text-muted, #666);
+      font-size: 11px;
+    }
+
+    .stage-size-slider {
+      position: relative;
+      width: 100%;
+      min-width: 0;
+      height: 1.25rem;
+    }
+
+    .stage-size-track {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      top: 50%;
+      height: 6px;
+      transform: translateY(-50%);
+      border-radius: 999px;
+      background: var(--panel-track-bg, #cfcfcf);
+      pointer-events: none;
+      z-index: 1;
+      overflow: visible;
+    }
+
+    .stage-size-ticks {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .stage-size-tick {
+      position: absolute;
+      left: var(--tick-p);
+      top: 50%;
+      width: 3px;
+      height: 10px;
+      transform: translate(-50%, -50%);
+      border-radius: 1px;
+      background: var(--block-border, #555555);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--block-face-bg, #fff) 55%, transparent);
+      opacity: 0.9;
+    }
+
+    .stage-size-slider input[type="range"] {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      margin: 0;
+      z-index: 2;
+      background: transparent;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .stage-size-slider input[type="range"]::-webkit-slider-runnable-track {
+      height: 6px;
+      border-radius: 999px;
+      background: transparent;
+    }
+
+    .stage-size-slider input[type="range"]::-moz-range-track {
+      height: 6px;
+      border-radius: 999px;
+      background: transparent;
+    }
+
+    .stage-size-slider input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      margin-top: -5px;
+      border-radius: 50%;
+      background: var(--panel-accent, #4a6fb5);
+      border: 2px solid var(--inkwell-toggle-thumb, #fff);
+      box-shadow: none;
+    }
+
+    .stage-size-slider input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--panel-accent, #4a6fb5);
+      border: 2px solid var(--inkwell-toggle-thumb, #fff);
+      box-shadow: none;
     }
   `;
 
@@ -3938,10 +4390,142 @@ export class InkwellUniversalPanel extends FloatingPanel {
     );
   }
 
+  private setStageDimension(key: "width" | "height", raw: string, snap = false) {
+    const parsed = parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) return;
+    const value = snap ? snapStageDimension(parsed) : clampStageDimension(parsed);
+    if (this.stage.value[key] === value) return;
+    stageStore.update((s) => ({ ...s, [key]: value }));
+  }
+
+  private commitStageDimension(key: "width" | "height", raw: string, snap = false) {
+    const before = this.stage.value[key];
+    this.setStageDimension(key, raw, snap);
+    if (this.stage.value[key] !== before) {
+      this.emit("stage-size-change");
+    }
+  }
+
+  private onStageSizeSliderInput(key: "width" | "height", e: Event) {
+    const input = e.target as HTMLInputElement;
+    const parsed = parseInt(input.value, 10);
+    if (!Number.isFinite(parsed)) return;
+
+    const value = snapStageDimension(parsed);
+    // Keep thumb on the snapped value while dragging — don't rely on Lit re-render.
+    if (Number(input.value) !== value) {
+      input.value = String(value);
+    }
+
+    if (this.stage.value[key] !== value) {
+      stageStore.update((s) => ({ ...s, [key]: value }));
+    }
+  }
+
+  private onStageSizeSliderChange(key: "width" | "height", e: Event) {
+    const input = e.target as HTMLInputElement;
+    const parsed = parseInt(input.value, 10);
+    if (!Number.isFinite(parsed)) return;
+
+    const value = snapStageDimension(parsed);
+    input.value = String(value);
+    this.commitStageDimension(key, String(value), false);
+  }
+
+  private stageSizeTickPercent(value: number): string {
+    const span = STAGE_SIZE_MAX - STAGE_SIZE_MIN;
+    const p = span > 0 ? ((value - STAGE_SIZE_MIN) / span) * 100 : 0;
+    return `${p}%`;
+  }
+
+  private renderStageSizeSlider(
+    key: "width" | "height",
+    label: string,
+    value: number,
+    sliderValue: number,
+  ) {
+    return html`
+      <div class="stage-size-field">
+        <div class="stage-size-label-row">
+          <span>${label}</span>
+          <div class="stage-size-input-wrap">
+            <input
+              type="number"
+              class="stage-size-input"
+              min=${STAGE_SIZE_MIN}
+              max=${STAGE_SIZE_MAX}
+              step=${STAGE_SIZE_STEP}
+              .value=${String(value)}
+              data-interactive
+              aria-label=${`${label} in pixels`}
+              @change=${(e: Event) =>
+                this.commitStageDimension(key, (e.target as HTMLInputElement).value, true)}
+              @blur=${(e: Event) =>
+                this.commitStageDimension(key, (e.target as HTMLInputElement).value, true)}
+            />
+            <span class="stage-size-unit">px</span>
+          </div>
+        </div>
+        <div class="stage-size-slider">
+          <div class="stage-size-track">
+            <div class="stage-size-ticks" aria-hidden="true">
+              ${STAGE_SIZE_PRESETS.map(
+                (preset) => html`
+                  <span
+                    class="stage-size-tick"
+                    style="--tick-p: ${this.stageSizeTickPercent(preset)}"
+                    title=${`${preset}px`}
+                  ></span>
+                `,
+              )}
+            </div>
+          </div>
+          <input
+            type="range"
+            min=${STAGE_SIZE_MIN}
+            max=${STAGE_SIZE_MAX}
+            step=${STAGE_SIZE_STEP}
+            .value=${String(sliderValue)}
+            @input=${(e: Event) => this.onStageSizeSliderInput(key, e)}
+            @change=${(e: Event) => this.onStageSizeSliderChange(key, e)}
+          />
+        </div>
+      </div>
+    `;
+  }
+
+  private renderStageSettings() {
+    const { width, height, color } = this.stage.value;
+    const sliderWidth = clampStageDimension(width);
+    const sliderHeight = clampStageDimension(height);
+
+    return html`
+      <inkwell-panel-section title="Stage" data-interactive>
+        <div class="stage-color-row">
+          <span>Stage color</span>
+          <button
+            type="button"
+            class="stage-color-swatch"
+            style="background:${color}"
+            title=${color}
+            data-interactive
+            @click=${(e: Event) => {
+              this.emit("stage-color-picker-open", e.currentTarget as HTMLElement);
+            }}
+          ></button>
+        </div>
+        ${this.renderStageSizeSlider("width", "Width", width, sliderWidth)}
+        ${this.renderStageSizeSlider("height", "Height", height, sliderHeight)}
+      </inkwell-panel-section>
+    `;
+  }
+
   render() {
     return this.renderFloatingBlock(
       "Settings",
       html`
+            ${this.renderStageSettings()}
+
             <inkwell-panel-section data-interactive>
               <div class="toggle">
                 <span>Alias fix</span>
@@ -7297,6 +7881,7 @@ declare global {
     "generic-color-picker": GenericColorPicker;
     "inkwell-panel-section": InkwellPanelSection;
     "inkwell-color-panel": InkwellColorPanel;
+    "inkwell-color-popup": InkwellColorPopup;
     "inkwell-top-bar-panel": InkwellTopBarPanel;
     "inkwell-shortcuts-panel": InkwellShortcutsPanel;
     "inkwell-tools-panel": InkwellToolsPanel;

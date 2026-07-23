@@ -1,5 +1,5 @@
 /**
- * Stage canvas — world-space rectangle (1920×1080 by default) drawn below Paper.js.
+ * Stage canvas — world-space artboard rectangle drawn below Paper.js.
  * Uses the same camera matrix as Paper so pan/zoom/rotate match the vector layer.
  */
 import type { CanvasConfig } from "./types";
