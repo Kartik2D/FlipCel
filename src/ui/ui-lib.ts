@@ -776,7 +776,7 @@ export class Block extends LitElement {
     this._cleanupResize();
   }
 
-  private _isWhitespaceTarget(e: PointerEvent): boolean {
+  protected _isWhitespaceTarget(e: PointerEvent): boolean {
     const path = e.composedPath();
 
     // Compact popups: drag from a title-bar handle unless an interactive child was hit.
@@ -6951,6 +6951,16 @@ export class InkwellWheelPanel extends FloatingPanel {
     return false;
   }
 
+  protected override _isWhitespaceTarget(e: PointerEvent): boolean {
+    const path = e.composedPath();
+    for (const el of path) {
+      if (el instanceof HTMLElement && el.hasAttribute("data-drag-handle")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   updated(changedProperties: Map<string, unknown>) {
     // Keep the wheel a fixed circle — never adopt resize dimensions.
     if (this.blockWidth !== null) this.blockWidth = null;
@@ -7035,6 +7045,20 @@ export class InkwellWheelPanel extends FloatingPanel {
       border-radius: 50%;
       z-index: 3;
       background: var(--block-depth-color, var(--inkwell-panel-depth));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .grab-handle-icon {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      color: var(--block-border, #555555);
+      opacity: 0.8;
     }
 
     .wheel.dragging .wheel-grab {
@@ -7045,7 +7069,7 @@ export class InkwellWheelPanel extends FloatingPanel {
        Captures pointer events for animation scrub / jog. */
     .scrub-ring {
       position: absolute;
-      inset: calc(-1 * var(--barrel-outset));
+      inset: calc(-1 * var(--barrel-outset) - 24px);
       border-radius: 50%;
       z-index: 1;
       cursor: grab;
@@ -7426,7 +7450,7 @@ export class InkwellWheelPanel extends FloatingPanel {
     const t = this.timeline.value;
     const chambers = Array.from({ length: WHEEL_CHAMBERS }, (_, i) => i);
     return html`
-      <div class="block">
+      <div class="block" data-interactive>
         <div class="face">
           <div class="panel-form">
             <div class="wheel-wrap">
@@ -7448,7 +7472,18 @@ export class InkwellWheelPanel extends FloatingPanel {
                 </div>
                 <div
                   class="wheel-grab"
-                ></div>
+                  data-drag-handle
+                  title="Drag panel window"
+                >
+                  <svg class="grab-handle-icon" viewBox="0 0 120 120" fill="none">
+                    <path
+                      d="M 42.3 21.9 A 42 42 0 0 1 77.8 21.9"
+                      stroke="currentColor"
+                      stroke-width="7"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </div>
                 <div
                   class="scrub-ring"
                   data-interactive
