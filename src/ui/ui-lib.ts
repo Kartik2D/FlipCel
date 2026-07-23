@@ -6969,30 +6969,34 @@ export class InkwellWheelPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      /* Special case: fixed-size host where the FACE is a true circle. The
-         block is taller than it is wide by the 3D depth, so the panel shell
-         reads as a slightly elongated puck while the face stays circular. */
+      /* Reversed layout: barrel (pegs) on the outside, drag ring on the
+         inside around the play-button hub. The barrel extends past the
+         wheel circle by --barrel-outset; the grab ring fills the annular
+         gap between the hub pill and the wheel edge. */
       --wheel-size: 180px;
-      --wheel-grab-outset: 16px;
-      --panel-size: 224px;
+      --barrel-outset: 16px;
+      --grab-ring-inset: 30px;
+      --panel-size: 240px;
       --panel-width: var(--panel-size);
       --panel-min-width: 0;
       --chamber-size: 19px;
-      --chamber-inset: 9px;
+      --chamber-outer-inset: 9px;
       height: calc(var(--panel-size) + var(--block-depth));
       min-height: calc(var(--panel-size) + var(--block-depth));
       max-height: calc(var(--panel-size) + var(--block-depth));
     }
 
-    /* Stadium-shaped block: circle stretched vertically by the depth. */
+    /* Stadium-shaped block: circle stretched vertically by the depth.
+       overflow: visible so the outer barrel ring isn't clipped. */
     .block {
       border-radius: calc(var(--panel-size) / 2);
+      overflow: visible;
     }
 
     /* Fixed-size content; never show a scrollbar next to the wheel. */
     .face {
       border-radius: 50%;
-      overflow: hidden;
+      overflow: visible;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -7002,6 +7006,7 @@ export class InkwellWheelPanel extends FloatingPanel {
     .panel-form {
       align-items: center;
       justify-content: center;
+      overflow: visible;
     }
 
     .wheel-wrap {
@@ -7009,6 +7014,7 @@ export class InkwellWheelPanel extends FloatingPanel {
       flex-direction: column;
       align-items: center;
       gap: 8px;
+      overflow: visible;
     }
 
     .wheel {
@@ -7016,28 +7022,46 @@ export class InkwellWheelPanel extends FloatingPanel {
       width: var(--wheel-size);
       height: var(--wheel-size);
       border-radius: 50%;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      background: transparent;
       -webkit-tap-highlight-color: transparent;
     }
 
-    /* Hit target extends past the visual rim into the face margin (panel drag zone). */
+    /* Inner ring around the hub: this is the PANEL DRAG zone.
+       No data-interactive, no scrub events — pointer events bubble
+       up to the Block which starts a window drag. */
     .wheel-grab {
       position: absolute;
-      inset: calc(-1 * var(--wheel-grab-outset));
+      inset: var(--grab-ring-inset);
       border-radius: 50%;
-      z-index: 1;
-      cursor: grab;
-      touch-action: none;
+      z-index: 3;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
     }
 
     .wheel.dragging .wheel-grab {
       cursor: grabbing;
     }
 
+    /* Outer scrub ring: non-rotating hit target over the barrel.
+       Captures pointer events for animation scrub / jog. */
+    .scrub-ring {
+      position: absolute;
+      inset: calc(-1 * var(--barrel-outset));
+      border-radius: 50%;
+      z-index: 1;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .wheel.dragging .scrub-ring {
+      cursor: grabbing;
+    }
+
+    /* Barrel is now the OUTER ring: extends past the wheel circle. */
     .barrel {
       position: absolute;
-      inset: 0;
+      inset: calc(-1 * var(--barrel-outset));
       pointer-events: none;
+      border-radius: 50%;
       transition: transform var(--wheel-settle-duration, 350ms)
         var(--wheel-settle-easing, cubic-bezier(0.175, 0.885, 0.32, 1.6));
       will-change: transform;
@@ -7056,13 +7080,13 @@ export class InkwellWheelPanel extends FloatingPanel {
       height: var(--chamber-size);
       margin: calc(var(--chamber-size) / -2) 0 0 calc(var(--chamber-size) / -2);
       border-radius: 50%;
-      background: var(--block-face-bg, var(--inkwell-panel-surface));
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
       pointer-events: none;
     }
 
     /* Solid accent hub pill: the play button sits centered on the wheel's
-       hub and the pill runs right to the wheel's edge, ending in the
-       current frame number. */
+       hub and the pill runs right to the inner grab ring edge, ending in
+       the current frame number. */
     .hub-pill {
       --hub-pill-height: 44px;
       position: absolute;
@@ -7070,14 +7094,16 @@ export class InkwellWheelPanel extends FloatingPanel {
       /* Left edge placed so the play half is centered on the wheel hub. */
       left: calc(50% - var(--hub-pill-height) / 2);
       transform: translateY(-50%);
-      width: calc(var(--wheel-size) / 2 + var(--hub-pill-height) / 2 + 6px);
+      /* Width set so the CENTRE of the frame-number badge lands on
+         the same radius as the CENTRE of the barrel pegs. */
+      width: calc(var(--hub-pill-height) + var(--wheel-size) / 2 + var(--barrel-outset) - var(--chamber-size) / 2 - var(--chamber-outer-inset));
       height: var(--hub-pill-height);
       border-radius: 999px;
       overflow: hidden;
       display: flex;
       align-items: stretch;
       background: var(--inkwell-accent, #4a6fb5);
-      z-index: 2;
+      z-index: 4;
       pointer-events: none;
     }
 
@@ -7310,10 +7336,10 @@ export class InkwellWheelPanel extends FloatingPanel {
     this.playbackRaf = requestAnimationFrame(this.playbackTick);
   };
 
-  /** Visual wheel radius in screen pixels. */
+  /** Outer scrub-ring radius in screen pixels (used for lever sensitivity). */
   private wheelRimRadius(): number {
-    const wheel = this.renderRoot.querySelector<HTMLElement>(".wheel");
-    return wheel ? wheel.getBoundingClientRect().width / 2 : 90;
+    const ring = this.renderRoot.querySelector<HTMLElement>(".scrub-ring");
+    return ring ? ring.getBoundingClientRect().width / 2 : 106;
   }
 
   /** Finger offset from wheel center (screen plane). */
@@ -7415,13 +7441,16 @@ export class InkwellWheelPanel extends FloatingPanel {
                       <div
                         class="chamber"
                         style="transform: rotate(${i * WHEEL_DEG_PER_FRAME}deg)
-                          translateY(calc(var(--wheel-size) / -2 + var(--chamber-size) / 2 + var(--chamber-inset)))"
+                          translateY(calc((var(--wheel-size) / 2 + var(--barrel-outset)) * -1 + var(--chamber-size) / 2 + var(--chamber-outer-inset)))"
                       ></div>
                     `,
                   )}
                 </div>
                 <div
                   class="wheel-grab"
+                ></div>
+                <div
+                  class="scrub-ring"
                   data-interactive
                   title="Drag to spin or scrub the playhead"
                   @pointerdown=${this.onWheelDown}
