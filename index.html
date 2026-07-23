@@ -3,7 +3,7 @@
 
   Defines five canvas elements stacked with z-index layering:
   - Chrome Canvas (z-index: 4): Selection chrome (outline, bbox, handles, vertex nodes, marquee). No blend mode, pointer-events: none.
-  - UI Canvas (z-index: 3): Receives ALL input events; grid + brush ring under mix-blend-mode: difference.
+  - UI Canvas (z-index: 3): Receives ALL input events; grid + brush ring with dual-tone strokes for visibility on any backdrop.
   - Pixel Canvas (z-index: 2): Low-resolution pixel drawing (temporary, cleared after tracing)
   - Paper Canvas (z-index: 1): Final vector paths rendered with Paper.js
   - Stage Canvas (z-index: 0): World-space stage background rectangle (camera-aligned)
@@ -33,58 +33,66 @@
         <style>
             :root {
                 --inkwell-font: "Inter", system-ui, sans-serif;
+            }
 
-                --inkwell-app-bg: #f3efe8;
-                --inkwell-canvas-bg: #fffdf9;
-                --inkwell-panel-surface: #fffdf9;
-                --inkwell-panel-depth: #d8d0c7;
-                --inkwell-panel-border: #5f584f;
-                --inkwell-topbar-surface: #fffdf9;
-                --inkwell-text-primary: #29241e;
-                --inkwell-text-secondary: #5f584f;
-                --inkwell-text-muted: #80786d;
+            /* Light: neutral grey hierarchy — canvas is brightest, UI chrome is distinct, surround recedes. */
+            :root,
+            html[data-theme="light"] {
+                --inkwell-app-bg: #bdbdbd;
+                --inkwell-canvas-bg: #fafafa;
+                --inkwell-panel-surface: #e6e6e6;
+                --inkwell-panel-depth: #a3a3a3;
+                --inkwell-panel-inset-bg: #d4d4d4;
+                --inkwell-panel-border: #484848;
+                --inkwell-topbar-surface: #e6e6e6;
+                --inkwell-text-primary: #1a1a1a;
+                --inkwell-text-secondary: #333333;
+                --inkwell-text-muted: #555555;
                 --inkwell-accent: #4d73d7;
                 --inkwell-accent-hover: #3e61bf;
                 --inkwell-accent-muted: rgba(77, 115, 215, 0.28);
-                --inkwell-track-bg: #d6cec4;
-                --inkwell-toggle-track: #d8d0c7;
-                --inkwell-toggle-border: #b3a99d;
-                --inkwell-toggle-thumb: #fffdf9;
+                --inkwell-track-bg: #c8c8c8;
+                --inkwell-toggle-track: #c8c8c8;
+                --inkwell-toggle-border: #999999;
+                --inkwell-toggle-thumb: #fafafa;
                 --inkwell-danger: #af5b5b;
                 --inkwell-danger-hover: #924747;
                 --inkwell-danger-contrast: #ffffff;
-                --inkwell-shadow-panel: 0 16px 34px rgba(34, 24, 10, 0.18);
-                --inkwell-shadow-soft: 0 6px 18px rgba(34, 24, 10, 0.14);
+                --inkwell-shadow-panel: 0 16px 34px rgba(0, 0, 0, 0.16);
+                --inkwell-shadow-soft: 0 6px 18px rgba(0, 0, 0, 0.12);
+                --inkwell-dock-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
                 --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.22);
                 --inkwell-panel-active-danger: rgba(255, 122, 122, 0.58);
-                --inkwell-scrollbar-thumb: rgba(95, 88, 79, 0.36);
+                --inkwell-scrollbar-thumb: rgba(0, 0, 0, 0.34);
             }
 
             html[data-theme="dark"] {
-                --inkwell-app-bg: #2a313b;
-                --inkwell-canvas-bg: #1a1e25;
-                --inkwell-panel-surface: #21262f;
-                --inkwell-panel-depth: #434c5c;
-                --inkwell-panel-border: #798498;
-                --inkwell-topbar-surface: #21262f;
-                --inkwell-text-primary: #f5f7fb;
-                --inkwell-text-secondary: #d2d8e4;
-                --inkwell-text-muted: #9ea8bc;
+                --inkwell-app-bg: #121212;
+                --inkwell-canvas-bg: #1a1a1a;
+                --inkwell-panel-surface: #383838;
+                --inkwell-panel-depth: #070707;
+                --inkwell-panel-inset-bg: #2a2a2a;
+                --inkwell-panel-border: #8a8a8a;
+                --inkwell-topbar-surface: #383838;
+                --inkwell-text-primary: #f0f0f0;
+                --inkwell-text-secondary: #c8c8c8;
+                --inkwell-text-muted: #999999;
                 --inkwell-accent: #7c9eff;
                 --inkwell-accent-hover: #97b2ff;
                 --inkwell-accent-muted: rgba(124, 158, 255, 0.35);
-                --inkwell-track-bg: #4b5567;
-                --inkwell-toggle-track: #3f4859;
-                --inkwell-toggle-border: #697386;
-                --inkwell-toggle-thumb: #f7f9ff;
+                --inkwell-track-bg: #3a3a3a;
+                --inkwell-toggle-track: #333333;
+                --inkwell-toggle-border: #5a5a5a;
+                --inkwell-toggle-thumb: #f0f0f0;
                 --inkwell-danger: #c66d6d;
                 --inkwell-danger-hover: #df8080;
                 --inkwell-danger-contrast: #ffffff;
                 --inkwell-shadow-panel: 0 18px 42px rgba(0, 0, 0, 0.38);
                 --inkwell-shadow-soft: 0 10px 24px rgba(0, 0, 0, 0.32);
+                --inkwell-dock-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
                 --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.15);
                 --inkwell-panel-active-danger: rgba(255, 124, 124, 0.42);
-                --inkwell-scrollbar-thumb: rgba(245, 247, 251, 0.32);
+                --inkwell-scrollbar-thumb: rgba(255, 255, 255, 0.28);
             }
 
             *,
@@ -124,6 +132,8 @@
                 width: 100%;
                 height: 100%;
                 touch-action: none;
+                background: var(--inkwell-canvas-bg);
+                transition: background-color 180ms ease;
             }
 
             canvas {
@@ -153,7 +163,6 @@
             #ui-canvas {
                 z-index: 3;
                 pointer-events: auto;
-                mix-blend-mode: difference;
             }
 
             #chrome-canvas {
@@ -162,7 +171,7 @@
             }
 
         </style>
-      <script type="module" crossorigin src="/inkwell/assets/index-BQktqTDr.js"></script>
+      <script type="module" crossorigin src="/inkwell/assets/index-Z95zQDg-.js"></script>
     </head>
     <body>
         <div id="canvas-container">
