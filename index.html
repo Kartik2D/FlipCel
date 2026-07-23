@@ -38,8 +38,8 @@
             /* Light: neutral grey hierarchy — canvas is brightest, UI chrome is distinct, surround recedes. */
             :root,
             html[data-theme="light"] {
-                --inkwell-app-bg: #bdbdbd;
-                --inkwell-canvas-bg: #fafafa;
+                --inkwell-app-bg: #9a9a9a;
+                --inkwell-canvas-bg: #cfcfcf;
                 --inkwell-panel-surface: #e6e6e6;
                 --inkwell-panel-depth: #a3a3a3;
                 --inkwell-panel-inset-bg: #d4d4d4;
@@ -64,6 +64,32 @@
                 --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.22);
                 --inkwell-panel-active-danger: rgba(255, 122, 122, 0.58);
                 --inkwell-scrollbar-thumb: rgba(0, 0, 0, 0.34);
+                --inkwell-playhead: #c9a227;
+                --inkwell-timeline-cell-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-panel-depth) 72%,
+                    #000000
+                );
+                --inkwell-timeline-active-row-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-accent) 42%,
+                    var(--inkwell-panel-surface)
+                );
+                --inkwell-timeline-playhead-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-playhead) 34%,
+                    var(--inkwell-panel-surface)
+                );
+                --inkwell-timeline-active-playhead-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-timeline-active-row-bg) 58%,
+                    var(--inkwell-timeline-playhead-bg)
+                );
+                --inkwell-timeline-selection-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-accent) 48%,
+                    var(--inkwell-panel-surface)
+                );
             }
 
             html[data-theme="dark"] {
@@ -93,6 +119,32 @@
                 --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.15);
                 --inkwell-panel-active-danger: rgba(255, 124, 124, 0.42);
                 --inkwell-scrollbar-thumb: rgba(255, 255, 255, 0.28);
+                --inkwell-playhead: #f2c14e;
+                --inkwell-timeline-cell-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-panel-surface) 38%,
+                    var(--inkwell-panel-depth)
+                );
+                --inkwell-timeline-active-row-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-accent) 42%,
+                    var(--inkwell-panel-surface)
+                );
+                --inkwell-timeline-playhead-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-playhead) 26%,
+                    var(--inkwell-panel-surface)
+                );
+                --inkwell-timeline-active-playhead-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-timeline-active-row-bg) 52%,
+                    var(--inkwell-timeline-playhead-bg)
+                );
+                --inkwell-timeline-selection-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-accent) 48%,
+                    var(--inkwell-panel-surface)
+                );
             }
 
             *,
@@ -117,6 +169,7 @@
                 width: 100%;
                 height: 100%;
                 overflow: hidden;
+                overscroll-behavior: none;
                 background: var(--inkwell-app-bg);
                 touch-action: none;
                 -webkit-touch-callout: none;
@@ -171,7 +224,7 @@
             }
 
         </style>
-      <script type="module" crossorigin src="/inkwell/assets/index-Z95zQDg-.js"></script>
+      <script type="module" crossorigin src="/inkwell/assets/index-DSAvYnQD.js"></script>
     </head>
     <body>
         <div id="canvas-container">
