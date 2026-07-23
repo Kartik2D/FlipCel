@@ -3153,7 +3153,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
               <div class="resize-right"></div>
             `:``}
       </div>
-    `}};$([Di()],da.prototype,`editingLayerId`,void 0),$([Di()],da.prototype,`editingName`,void 0),$([Di()],da.prototype,`frameSelection`,void 0),$([Di()],da.prototype,`reverseAnimation`,void 0),$([Di()],da.prototype,`moveDelta`,void 0),$([Di()],da.prototype,`frameActionsAnchor`,void 0),da=$([wi(`inkwell-layers-panel`)],da);var fa=12,pa=360/fa,ma=.02,ha=180/Math.PI,ga=14,_a=1.25,va=class extends Hi{constructor(...e){super(...e),this.timeline=new At(this,Fn),this.wheelFriction=new At(this,Qt),this.rotationDeg=0,this.dragging=!1,this.coasting=!1,this.lastClientX=0,this.lastClientY=0,this.lastNotch=0,this.lastFrame=Fn.get().currentFrame,this.unsubscribeTimeline=null,this.notchStepRaf=null,this.playbackRaf=null,this.playbackLastTs=0,this.coastRaf=null,this.lastCoastTs=0,this.angularVelocity=0,this.lastMoveTs=0,this.suppressSync=!1,this.coastTick=e=>{let t=e-this.lastCoastTs;if(this.lastCoastTs=e,this.setBarrelRotationLive(this.rotationDeg+this.angularVelocity*t),this.emitNotchSteps(),this.angularVelocity*=Math.exp(-t/Zt(this.wheelFriction.value)),Math.abs(this.angularVelocity)<ma){this.stopCoasting(),this.settleToChamber();return}this.coastRaf=requestAnimationFrame(this.coastTick)},this.playbackTick=e=>{let t=Fn.get();if(!t.playing||this.dragging){this.stopPlaybackRotation();return}let n=e-this.playbackLastTs;this.playbackLastTs=e;let r=t.frameRate*pa/1e3;this.setBarrelRotationLive(this.rotationDeg+r*n),this.lastNotch=Math.round(this.rotationDeg/pa),this.playbackRaf=requestAnimationFrame(this.playbackTick)},this.onWheelDown=e=>{if(!(e.pointerType===`mouse`&&e.button!==0)){this.dragging=!0,this.timeline.value.playing&&this.dispatchEvent(new CustomEvent(`play-toggle`,{bubbles:!0,composed:!0})),this.stopPlaybackRotation(),this.stopCoasting(),this.cancelNotchStepSchedule();try{e.currentTarget.setPointerCapture(e.pointerId)}catch{}this.lastClientX=e.clientX,this.lastClientY=e.clientY,this.angularVelocity=0,this.lastMoveTs=e.timeStamp,e.preventDefault()}},this.onWheelMove=e=>{if(!this.dragging)return;let t=e.clientX-this.lastClientX,n=e.clientY-this.lastClientY;this.lastClientX=e.clientX,this.lastClientY=e.clientY;let{px:r,py:i}=this.wheelOffset(e),a=this.wheelScrubDeg(r-t,i-n,t,n,this.wheelRimRadius());this.setBarrelRotationLive(this.rotationDeg+a);let o=e.timeStamp-this.lastMoveTs;o>0&&o<200&&(this.angularVelocity=this.angularVelocity*.5+a/o*.5),this.lastMoveTs=e.timeStamp,this.scheduleNotchSteps()},this.onWheelUp=e=>{this.dragging&&(e.currentTarget.releasePointerCapture?.(e.pointerId),this.flushNotchSteps(),Math.abs(this.angularVelocity)>=ma&&this.startCoasting(this.angularVelocity),this.dragging=!1,this.updatePlaybackRotation(Fn.get()))}}usesFaceScrollbar(){return!1}updated(e){this.blockWidth!==null&&(this.blockWidth=null),this.blockHeight!==null&&(this.blockHeight=null),this.syncWheelFrictionMotion(),super.updated(e)}syncWheelFrictionMotion(){let e=Xt(this.wheelFriction.value);this.style.setProperty(`--wheel-settle-duration`,`${e.settleDurationMs}ms`),this.style.setProperty(`--wheel-settle-easing`,e.settleEasing)}static#e=this.styles=ir`
+    `}};$([Di()],da.prototype,`editingLayerId`,void 0),$([Di()],da.prototype,`editingName`,void 0),$([Di()],da.prototype,`frameSelection`,void 0),$([Di()],da.prototype,`reverseAnimation`,void 0),$([Di()],da.prototype,`moveDelta`,void 0),$([Di()],da.prototype,`frameActionsAnchor`,void 0),da=$([wi(`inkwell-layers-panel`)],da);var fa=12,pa=360/fa,ma=.02,ha=180/Math.PI,ga=14,_a=1.25,va=class extends Hi{constructor(...e){super(...e),this.timeline=new At(this,Fn),this.wheelFriction=new At(this,Qt),this.rotationDeg=0,this.dragging=!1,this.coasting=!1,this.lastClientX=0,this.lastClientY=0,this.lastNotch=0,this.lastFrame=Fn.get().currentFrame,this.unsubscribeTimeline=null,this.notchStepRaf=null,this.playbackRaf=null,this.playbackLastTs=0,this.coastRaf=null,this.lastCoastTs=0,this.angularVelocity=0,this.lastMoveTs=0,this.suppressSync=!1,this.coastTick=e=>{let t=e-this.lastCoastTs;if(this.lastCoastTs=e,this.setBarrelRotationLive(this.rotationDeg+this.angularVelocity*t),this.emitNotchSteps(),this.angularVelocity*=Math.exp(-t/Zt(this.wheelFriction.value)),Math.abs(this.angularVelocity)<ma){this.stopCoasting(),this.settleToChamber();return}this.coastRaf=requestAnimationFrame(this.coastTick)},this.playbackTick=e=>{let t=Fn.get();if(!t.playing||this.dragging){this.stopPlaybackRotation();return}let n=e-this.playbackLastTs;this.playbackLastTs=e;let r=t.frameRate*pa/1e3;this.setBarrelRotationLive(this.rotationDeg+r*n),this.lastNotch=Math.round(this.rotationDeg/pa),this.playbackRaf=requestAnimationFrame(this.playbackTick)},this.onWheelDown=e=>{if(!(e.pointerType===`mouse`&&e.button!==0)){this.dragging=!0,this.timeline.value.playing&&this.dispatchEvent(new CustomEvent(`play-toggle`,{bubbles:!0,composed:!0})),this.stopPlaybackRotation(),this.stopCoasting(),this.cancelNotchStepSchedule();try{e.currentTarget.setPointerCapture(e.pointerId)}catch{}this.lastClientX=e.clientX,this.lastClientY=e.clientY,this.angularVelocity=0,this.lastMoveTs=e.timeStamp,e.preventDefault()}},this.onWheelMove=e=>{if(!this.dragging)return;let t=e.clientX-this.lastClientX,n=e.clientY-this.lastClientY;this.lastClientX=e.clientX,this.lastClientY=e.clientY;let{px:r,py:i}=this.wheelOffset(e),a=this.wheelScrubDeg(r-t,i-n,t,n,this.wheelRimRadius());this.setBarrelRotationLive(this.rotationDeg+a);let o=e.timeStamp-this.lastMoveTs;o>0&&o<200&&(this.angularVelocity=this.angularVelocity*.5+a/o*.5),this.lastMoveTs=e.timeStamp,this.scheduleNotchSteps()},this.onWheelUp=e=>{this.dragging&&(e.currentTarget.releasePointerCapture?.(e.pointerId),this.flushNotchSteps(),Math.abs(this.angularVelocity)>=ma&&this.startCoasting(this.angularVelocity),this.dragging=!1,this.updatePlaybackRotation(Fn.get()))}}usesFaceScrollbar(){return!1}_isWhitespaceTarget(e){let t=e.composedPath();for(let e of t)if(e instanceof HTMLElement&&e.hasAttribute(`data-drag-handle`))return!0;return!1}updated(e){this.blockWidth!==null&&(this.blockWidth=null),this.blockHeight!==null&&(this.blockHeight=null),this.syncWheelFrictionMotion(),super.updated(e)}syncWheelFrictionMotion(){let e=Xt(this.wheelFriction.value);this.style.setProperty(`--wheel-settle-duration`,`${e.settleDurationMs}ms`),this.style.setProperty(`--wheel-settle-easing`,e.settleEasing)}static#e=this.styles=ir`
     ${Hi.styles}
 
     :host {
@@ -3223,6 +3223,20 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       border-radius: 50%;
       z-index: 3;
       background: var(--block-depth-color, var(--inkwell-panel-depth));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .grab-handle-icon {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      color: var(--block-border, #555555);
+      opacity: 0.8;
     }
 
     .wheel.dragging .wheel-grab {
@@ -3233,7 +3247,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
        Captures pointer events for animation scrub / jog. */
     .scrub-ring {
       position: absolute;
-      inset: calc(-1 * var(--barrel-outset));
+      inset: calc(-1 * var(--barrel-outset) - 24px);
       border-radius: 50%;
       z-index: 1;
       cursor: grab;
@@ -3338,7 +3352,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       -webkit-user-select: none;
     }
   `;connectedCallback(){super.connectedCallback(),this.resizable=!1,this.blockWidth=null,this.blockHeight=null,this.syncWheelFrictionMotion();let e=Fn.get().currentFrame;this.lastFrame=e,this.lastNotch=e,this.rotationDeg=this.lastNotch*pa,this.unsubscribeTimeline=Fn.subscribe(e=>{this.syncRotationToFrame(e.currentFrame,e.duration),this.updatePlaybackRotation(e)})}disconnectedCallback(){this.unsubscribeTimeline?.(),this.unsubscribeTimeline=null,this.cancelNotchStepSchedule(),this.stopPlaybackRotation(),this.stopCoasting(),super.disconnectedCallback()}setBarrelRotationLive(e){this.rotationDeg=e;let t=this.renderRoot.querySelector(`.barrel`);t&&(t.style.transform=`rotate(${e}deg)`)}isBarrelLive(){return this.dragging||this.coasting||this.timeline.value.playing}chamberDegForNotch(e,t){let n=e*pa;return n+Math.round((t-n)/360)*360}settleToChamber(){if(this.isBarrelLive())return;let e=this.chamberDegForNotch(this.lastNotch,this.rotationDeg);if(Math.abs(this.rotationDeg-e)<.05){this.rotationDeg=e,this.setBarrelRotationLive(e);return}this.renderRoot.querySelector(`.wheel`)?.classList.remove(`live`),this.rotationDeg=e,this.setBarrelRotationLive(e)}cancelNotchStepSchedule(){this.notchStepRaf!==null&&(cancelAnimationFrame(this.notchStepRaf),this.notchStepRaf=null)}scheduleNotchSteps(){this.notchStepRaf===null&&(this.notchStepRaf=requestAnimationFrame(()=>{this.notchStepRaf=null,this.emitNotchSteps()}))}flushNotchSteps(){this.cancelNotchStepSchedule(),this.emitNotchSteps()}emitStep(e){this.suppressSync=!0;try{this.dispatchEvent(new CustomEvent(`frame-step`,{detail:e,bubbles:!0,composed:!0}))}finally{this.suppressSync=!1}}emitNotchSteps(){let e=Math.round(this.rotationDeg/pa);if(e!==this.lastNotch){let t=e-this.lastNotch;this.lastNotch=e,this.emitStep(t)}}syncRotationToFrame(e,t){if(e===this.lastFrame)return;let n=e-this.lastFrame;if(t>1&&Math.abs(n)>t/2&&(n-=Math.sign(n)*t),this.lastFrame=e,!(this.suppressSync||this.dragging||this.coasting)){if(Fn.get().playing){this.lastNotch+=n;return}this.lastNotch+=n,this.settleToChamber()}}updatePlaybackRotation(e){e.playing&&!this.dragging&&!this.coasting?this.playbackRaf===null&&(this.playbackLastTs=performance.now(),this.playbackRaf=requestAnimationFrame(this.playbackTick)):this.stopPlaybackRotation()}stopPlaybackRotation(){let e=this.playbackRaf!==null;this.playbackRaf!==null&&(cancelAnimationFrame(this.playbackRaf),this.playbackRaf=null),e&&!this.isBarrelLive()&&this.settleToChamber()}stopCoasting(){this.coastRaf!==null&&(cancelAnimationFrame(this.coastRaf),this.coastRaf=null),this.coasting=!1}startCoasting(e){this.stopCoasting(),this.angularVelocity=e,this.coasting=!0,this.lastCoastTs=performance.now(),this.coastRaf=requestAnimationFrame(this.coastTick)}wheelRimRadius(){let e=this.renderRoot.querySelector(`.scrub-ring`);return e?e.getBoundingClientRect().width/2:106}wheelOffset(e){let t=e.currentTarget.getBoundingClientRect(),n=t.left+t.width/2,r=t.top+t.height/2;return{px:e.clientX-n,py:e.clientY-r}}wheelScrubDeg(e,t,n,r,i){let a=Math.max(Math.hypot(e,t),ga)**+_a*i**(2-_a);return(e*r-t*n)/a*ha}render(){let e=this.timeline.value,t=Array.from({length:fa},(e,t)=>t);return X`
-      <div class="block">
+      <div class="block" data-interactive>
         <div class="face">
           <div class="panel-form">
             <div class="wheel-wrap">
@@ -3356,7 +3370,18 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
                 </div>
                 <div
                   class="wheel-grab"
-                ></div>
+                  data-drag-handle
+                  title="Drag panel window"
+                >
+                  <svg class="grab-handle-icon" viewBox="0 0 120 120" fill="none">
+                    <path
+                      d="M 42.3 21.9 A 42 42 0 0 1 77.8 21.9"
+                      stroke="currentColor"
+                      stroke-width="7"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                </div>
                 <div
                   class="scrub-ring"
                   data-interactive
