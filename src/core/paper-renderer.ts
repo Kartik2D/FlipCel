@@ -48,6 +48,8 @@ export class PaperRenderer {
   // frames. Deliberately NOT in layerMap, so layer restore/reorder/flatten
   // logic never treats them as document content.
   private onionLayers: paper.Layer[] = [];
+  /** Minimum world-space stroke width for outline-mode onion-skin ghosts. */
+  private readonly onionSkinOutlineWidth = 3;
 
   // Layer management: maps logical layer IDs to Paper.js layers.
   // The active layer is the single source of truth for hit-testable shapes;
@@ -611,7 +613,9 @@ export class PaperRenderer {
             const hadStroke = !!item.strokeColor;
             item.fillColor = null;
             item.strokeColor = tint.clone();
-            if (!hadStroke) item.strokeWidth = 1.5;
+            item.strokeWidth = hadStroke
+              ? Math.max(item.strokeWidth, this.onionSkinOutlineWidth)
+              : this.onionSkinOutlineWidth;
           } else {
             item.fillColor = tint.clone();
             item.strokeColor = null;

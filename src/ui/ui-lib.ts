@@ -33,6 +33,10 @@ import {
   viewOverlayStore,
   normalizeViewOverlaySettings,
   themeModeStore,
+  wheelFrictionStore,
+  wheelFrictionMotion,
+  wheelFrictionTauMs,
+  WHEEL_FRICTION_OPTIONS,
   StoreController,
   type ColorPanelPrefs,
   type ViewOverlaySettings,
@@ -1168,7 +1172,7 @@ export class Block extends LitElement {
     this.ensureFaceScrollbar();
   }
 
-  private _faceScrollbar: InkwellScrollbar | null = null;
+  protected faceScrollbar: InkwellScrollbar | null = null;
 
   /**
    * Every Block subclass renders a .block > .face pair with its own
@@ -1180,24 +1184,32 @@ export class Block extends LitElement {
     return true;
   }
 
-  private ensureFaceScrollbar() {
+  protected getFaceScrollbarMount(): HTMLElement | null {
+    return this.renderRoot.querySelector<HTMLElement>(".block");
+  }
+
+  protected getFaceScrollTarget(): HTMLElement | null {
+    return this.renderRoot.querySelector<HTMLElement>(".face");
+  }
+
+  protected ensureFaceScrollbar() {
     if (!this.usesFaceScrollbar()) {
-      this._faceScrollbar?.remove();
-      this._faceScrollbar = null;
+      this.faceScrollbar?.remove();
+      this.faceScrollbar = null;
       return;
     }
-    const block = this.renderRoot.querySelector<HTMLElement>(".block");
-    const face = this.renderRoot.querySelector<HTMLElement>(".face");
-    if (!block || !face) return;
-    if (!this._faceScrollbar || this._faceScrollbar.parentElement !== block) {
+    const mount = this.getFaceScrollbarMount();
+    const face = this.getFaceScrollTarget();
+    if (!mount || !face) return;
+    if (!this.faceScrollbar || this.faceScrollbar.parentElement !== mount) {
       const bar = document.createElement("inkwell-scrollbar") as InkwellScrollbar;
       bar.orientation = "vertical";
       bar.classList.add("face-scrollbar");
       bar.setAttribute("data-interactive", "");
-      block.appendChild(bar);
-      this._faceScrollbar = bar;
+      mount.appendChild(bar);
+      this.faceScrollbar = bar;
     }
-    this._faceScrollbar.target = face;
+    this.faceScrollbar.target = face;
   }
 
   render() {
@@ -1334,6 +1346,7 @@ export class BlockyButton extends Block {
     :host(:active:not([flat])) .block,
     :host([active]:not([flat])) .block {
       padding-bottom: 0;
+      border-color: var(--inkwell-accent, #4a6fb5);
     }
 
     :host([flat]) {
@@ -1951,6 +1964,27 @@ export class FloatingPanel extends Block {
       overscroll-behavior: none;
     }
 
+    /* Fixed title bar; only .panel-body scrolls beneath it. */
+    .panel-body {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .panel-body > .face {
+      flex: 1 1 auto;
+      min-height: 0;
+      border-radius: 0 0 calc(var(--block-radius) - 2px) calc(var(--block-radius) - 2px);
+    }
+
+    .panel-body > .face-scrollbar {
+      top: 8px;
+      bottom: 8px;
+    }
+
     /* Form stack: use inside .face for sliders, fields, toggles */
     .panel-form {
       display: flex;
@@ -1992,22 +2026,67 @@ export class FloatingPanel extends Block {
       display: flex;
       align-items: center;
       justify-content: flex-start;
+      margin: 0;
+      min-width: 0;
+      line-height: 1;
     }
 
-    /* Sticky drag affordance stays visible while panel content scrolls. */
-    .panel-drag-pill-wrap {
-      position: sticky;
-      top: calc(-1 * var(--block-face-padding));
+    .panel-title span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Title bar row: title (left), drag pill (center), close (right). */
+    .panel-header {
+      position: relative;
       z-index: 20;
-      display: flex;
-      justify-content: center;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(18px, 1fr);
       align-items: center;
-      width: calc(100% + (var(--block-face-padding) * 2));
+      column-gap: 8px;
+      width: 100%;
       min-width: 0;
       flex-shrink: 0;
-      margin: calc(-1 * var(--block-face-padding)) calc(-1 * var(--block-face-padding)) 0;
-      padding: var(--block-face-padding) var(--block-face-padding) 6px;
+      box-sizing: border-box;
+      margin: 0;
+      padding: 8px var(--block-face-padding);
       background: var(--block-face-bg);
+      border-radius: calc(var(--block-radius) - 2px) calc(var(--block-radius) - 2px) 0 0;
+    }
+
+    .panel-header-slot {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .panel-header-start {
+      justify-self: start;
+    }
+
+    .panel-header-center {
+      justify-self: center;
+    }
+
+    .panel-header-end {
+      justify-self: end;
+      width: 18px;
+      min-width: 18px;
+      height: 18px;
+    }
+
+    .panel-header-close-spacer {
+      display: block;
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+    }
+
+    .panel-header.has-close .panel-title {
+      max-width: 100%;
+      padding-right: 0;
     }
 
     /* Horizontal grab pill — flat, no shadow */
@@ -2026,19 +2105,7 @@ export class FloatingPanel extends Block {
       cursor: grabbing;
     }
 
-    /* Inline title variant: title sits on the left of the pill row while
-       the pill itself stays centered on the panel. */
-    .panel-drag-pill-wrap.has-title {
-      justify-content: flex-start;
-    }
-
-    .panel-drag-pill-wrap.has-title .panel-drag-pill {
-      position: absolute;
-      left: 50%;
-      transform: translateX(-50%);
-    }
-
-    @keyframes floating-close-bounce-in {
+    @keyframes panel-header-close-bounce-in {
       0% {
         transform: scale(0.55);
       }
@@ -2053,14 +2120,11 @@ export class FloatingPanel extends Block {
       }
     }
 
-    .floating-close {
-      position: absolute;
-      top: -11px;
-      right: -11px;
-      width: 26px;
-      height: 26px;
+    .panel-header-close {
+      width: 18px;
+      height: 18px;
       box-sizing: border-box;
-      border: 2px solid var(--block-border, #555555);
+      border: none;
       border-radius: 50%;
       background: var(--block-depth-color, #bcbcbc);
       color: var(--block-border, #555555);
@@ -2068,30 +2132,25 @@ export class FloatingPanel extends Block {
       display: grid;
       place-items: center;
       cursor: pointer;
-      z-index: 1300;
-      box-shadow: none;
       padding: 0;
-      -webkit-tap-highlight-color: transparent;
-      transform: scale(1);
+      margin: 0;
       transform-origin: center center;
-      animation: floating-close-bounce-in var(--inkwell-motion-bounce-duration, 380ms)
+      animation: panel-header-close-bounce-in var(--inkwell-motion-bounce-duration, 380ms)
         var(--inkwell-motion-bounce-easing, cubic-bezier(0.34, 1.25, 0.64, 1)) both;
+      -webkit-tap-highlight-color: transparent;
     }
 
-    .floating-close svg {
+    .panel-header-close svg {
       display: block;
+      flex-shrink: 0;
     }
 
-    .floating-close:hover {
+    .panel-header-close:hover {
       filter: brightness(0.96);
     }
 
-    .floating-close:focus {
+    .panel-header-close:focus {
       outline: none;
-    }
-
-    .floating-close:focus-visible {
-      box-shadow: 0 0 0 2px var(--panel-accent-muted, rgba(74, 111, 181, 0.35));
     }
 
     .grid {
@@ -2335,16 +2394,65 @@ export class FloatingPanel extends Block {
     );
   }
 
+  protected override getFaceScrollbarMount(): HTMLElement | null {
+    return (
+      this.renderRoot.querySelector<HTMLElement>(".panel-body") ??
+      super.getFaceScrollbarMount()
+    );
+  }
+
+  protected override getFaceScrollTarget(): HTMLElement | null {
+    return (
+      this.renderRoot.querySelector<HTMLElement>(".panel-body > .face") ??
+      super.getFaceScrollTarget()
+    );
+  }
+
+  /** Standard floating-panel shell: chrome header + scrollable body. */
+  protected renderFloatingBlock(title: string | undefined, content: TemplateResult) {
+    return html`
+      <div class="block">
+        ${this.renderDragHandlePill(title)}
+        <div class="panel-body">
+          <div class="face">
+            <div class="panel-form">${content}</div>
+          </div>
+        </div>
+        ${this.resizable
+          ? html`<div class="resize-left"></div><div class="resize-right"></div>`
+          : nothing}
+      </div>
+    `;
+  }
+
   /**
-   * Sticky drag-pill row. Pass a title to render it inline on the same
-   * row (title left, pill centered).
+   * Title bar row: title (left), drag pill (center), close (right).
    */
   protected renderDragHandlePill(title?: string) {
-    if (!this.draggable) return title ? this.renderPanelTitle(title) : html``;
+    const showClose = this.pinned && this.showPinnedClose;
+    const showPill = this.draggable;
+    const reserveCloseSlot = this.showPinnedClose;
+    if (!showPill && !title && !showClose && !reserveCloseSlot) return html``;
+
     return html`
-      <div class="panel-drag-pill-wrap ${title ? "has-title" : ""}">
-        ${title ? this.renderPanelTitle(title) : nothing}
-        <div class="panel-drag-pill" title="Drag to move panel" aria-hidden="true"></div>
+      <div
+        class="panel-header ${title ? "has-title" : ""} ${showClose ? "has-close" : ""}"
+      >
+        <div class="panel-header-slot panel-header-start">
+          ${title ? this.renderPanelTitle(title) : nothing}
+        </div>
+        <div class="panel-header-slot panel-header-center">
+          ${showPill
+            ? html`<div class="panel-drag-pill" title="Drag to move panel" aria-hidden="true"></div>`
+            : nothing}
+        </div>
+        <div class="panel-header-slot panel-header-end">
+          ${showClose
+            ? this.renderPanelClose()
+            : reserveCloseSlot
+              ? html`<span class="panel-header-close-spacer" aria-hidden="true"></span>`
+              : nothing}
+        </div>
       </div>
     `;
   }
@@ -2353,20 +2461,20 @@ export class FloatingPanel extends Block {
     return html`<h3 class="panel-title"><span>${title}</span></h3>`;
   }
 
-  protected renderPinnedClose() {
-    if (!this.pinned || !this.showPinnedClose) return html``;
+  protected renderPanelClose() {
     return html`
       <button
         type="button"
-        class="floating-close"
+        class="panel-header-close"
         title="Hide panel"
+        aria-label="Hide panel"
         data-interactive
         @click=${(e: Event) => {
           e.stopPropagation();
           this.hidePanel();
         }}
       >
-        ${phosphorIcon("x", 12)}
+        ${phosphorIcon("x", 11)}
       </button>
     `;
   }
@@ -2427,18 +2535,17 @@ export class InkwellColorPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      --block-face-padding: 10px;
       --panel-width: 288px;
       --picker-border-width: 2px;
       --picker-border-color: var(--block-border, #9f9f9f);
       --picker-slider-width: 20px;
     }
 
-    .face {
+    .panel-body > .face {
       overflow: hidden;
     }
 
-    .panel-form {
+    .panel-body .panel-form {
       height: 100%;
       min-height: 0;
     }
@@ -2561,24 +2668,23 @@ export class InkwellColorPanel extends FloatingPanel {
     const prefs = this.pickerPrefs.value;
     const activeVariant = exactVariantId(prefs) || PICKER_VARIANTS[0].id;
 
-    return html`
-      ${this.renderPinnedClose()}
-      <div class="block">
-        <div class="face">
-          <div class="panel-form">
-            ${this.renderDragHandlePill()}
-            <div class="row" data-interactive>
-              ${PICKER_VARIANTS.map(
-                (v) => html`
-                  <blocky-button
-                    flat
-                    ?active=${v.id === activeVariant}
-                    @click=${() => this.onVariantChange(v.id)}
-                    >${v.label}</blocky-button
-                  >
-                `,
-              )}
-            </div>
+    return this.renderFloatingBlock(
+      "Color",
+      html`
+            <inkwell-panel-section data-interactive>
+              <div class="row">
+                ${PICKER_VARIANTS.map(
+                  (v) => html`
+                    <blocky-button
+                      flat
+                      ?active=${v.id === activeVariant}
+                      @click=${() => this.onVariantChange(v.id)}
+                      >${v.label}</blocky-button
+                    >
+                  `,
+                )}
+              </div>
+            </inkwell-panel-section>
             <div class="picker-wrap">
               <generic-color-picker
                 .color=${this.color}
@@ -2596,11 +2702,8 @@ export class InkwellColorPanel extends FloatingPanel {
               ></generic-color-picker>
             </div>
             ${this.renderSwatches()}
-          </div>
-        </div>
-        ${this.resizable ? html`<div class="resize-left"></div><div class="resize-right"></div>` : ""}
-      </div>
-    `;
+      `,
+    );
   }
 }
 
@@ -2825,20 +2928,15 @@ export class InkwellToolsPanel extends FloatingPanel {
   }
 
   render() {
-    return html`
-      ${this.renderPinnedClose()}
-      <div class="block">
-        <div class="face">
-          <div class="panel-form">
-            ${this.renderDragHandlePill("Tools")}
+    return this.renderFloatingBlock(
+      "Tools",
+      html`
             ${this.renderToolGroups()}
             <inkwell-panel-section title="Tool Settings" data-interactive>
               ${this.renderToolSettings()}
             </inkwell-panel-section>
-          </div>
-        </div>
-      </div>
-    `;
+      `,
+    );
   }
 }
 
@@ -3035,17 +3133,7 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
   }
 
   render() {
-    return html`
-      ${this.renderPinnedClose()}
-      <div class="block">
-        <div class="face">
-          <div class="panel-form">
-            ${this.renderDragHandlePill("Tool Settings")}
-            ${this.renderToolSettings()}
-          </div>
-        </div>
-      </div>
-    `;
+    return this.renderFloatingBlock("Tool Settings", this.renderToolSettings());
   }
 }
 
@@ -3480,7 +3568,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
     const currentToolName = getTool(this.tool.value).name;
     const panelTriggers = this.visiblePanelTriggers();
     return html`
-      ${this.renderPinnedClose()}
       <div class="block">
         <div class="face">
           <div class="bar">
@@ -3771,12 +3858,9 @@ export class InkwellViewPanel extends FloatingPanel {
     const gridOn = this.viewOverlay.value.gridEnabled;
     const onionOn = this.timeline.value.onionSkin;
     const onionOutline = this.viewOverlay.value.onionSkinOutline;
-    return html`
-      ${this.renderPinnedClose()}
-      <div class="block">
-        <div class="face">
-          <div class="panel-form">
-            ${this.renderDragHandlePill("View")}
+    return this.renderFloatingBlock(
+      "View",
+      html`
             <inkwell-panel-section data-interactive>
               <div class="toggle">
                 <span>Onion skin</span>
@@ -3827,10 +3911,8 @@ export class InkwellViewPanel extends FloatingPanel {
                 />
               </div>
             </inkwell-panel-section>
-          </div>
-        </div>
-      </div>
-    `;
+      `,
+    );
   }
 }
 
@@ -3840,6 +3922,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
 
   private history = new StoreController(this, historyStateStore);
   private themeMode = new StoreController(this, themeModeStore);
+  private wheelFriction = new StoreController(this, wheelFrictionStore);
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -3856,12 +3939,9 @@ export class InkwellUniversalPanel extends FloatingPanel {
   }
 
   render() {
-    return html`
-      ${this.renderPinnedClose()}
-      <div class="block">
-        <div class="face">
-          <div class="panel-form">
-            ${this.renderDragHandlePill("Settings")}
+    return this.renderFloatingBlock(
+      "Settings",
+      html`
             <inkwell-panel-section data-interactive>
               <div class="toggle">
                 <span>Alias fix</span>
@@ -3886,6 +3966,22 @@ export class InkwellUniversalPanel extends FloatingPanel {
                   }}
                 />
               </div>
+
+              <label>
+                <span>Animation wheel friction</span>
+                <div class="row">
+                  ${WHEEL_FRICTION_OPTIONS.map(
+                    (level) => html`
+                      <blocky-button
+                        flat
+                        ?active=${this.wheelFriction.value === level}
+                        @click=${() => this.wheelFriction.set(level)}
+                        >${level.charAt(0).toUpperCase() + level.slice(1)}</blocky-button
+                      >
+                    `,
+                  )}
+                </div>
+              </label>
             </inkwell-panel-section>
 
             <inkwell-panel-section data-interactive>
@@ -3936,10 +4032,8 @@ export class InkwellUniversalPanel extends FloatingPanel {
                 >
               </div>
             </inkwell-panel-section>
-          </div>
-        </div>
-      </div>
-    `;
+      `,
+    );
   }
 }
 
@@ -3982,6 +4076,10 @@ export class InkwellLayersPanel extends FloatingPanel {
   /** Swallows the row click that fires right after a completed drag. */
   private suppressRowClick = false;
 
+  protected override usesFaceScrollbar(): boolean {
+    return false;
+  }
+
   static styles = css`
     ${FloatingPanel.styles}
 
@@ -3998,7 +4096,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-height: 0;
     }
 
-    .face {
+    .panel-body > .face {
       display: flex;
       flex-direction: column;
       height: 100%;
@@ -6026,11 +6124,11 @@ export class InkwellLayersPanel extends FloatingPanel {
     );
 
     return html`
-      ${this.renderPinnedClose()}
       <div class="block">
-        <div class="face">
-          <div class="panel-form">
-            ${this.renderDragHandlePill("Layers")}
+        ${this.renderDragHandlePill("Layers")}
+        <div class="panel-body">
+          <div class="face">
+            <div class="panel-form">
             <inkwell-panel-section data-interactive>
               <div class="layers-header">
                 ${this.renderPlaybackActions()}
@@ -6199,6 +6297,7 @@ export class InkwellLayersPanel extends FloatingPanel {
             </div>
           </div>
         </div>
+        </div>
         ${this.frameSelection && this.showFrameActionsForSelection()
           ? this.renderFrameActionsPopover(this.frameSelection)
           : nothing}
@@ -6221,8 +6320,6 @@ export class InkwellLayersPanel extends FloatingPanel {
 /** Visual chamber count on the barrel; rolling past one steps one frame. */
 const WHEEL_CHAMBERS = 12;
 const WHEEL_DEG_PER_FRAME = 360 / WHEEL_CHAMBERS;
-/** Exponential friction while coasting (ms); lower = more drag. */
-const WHEEL_FRICTION_TAU_MS = 90;
 /** Coasting ends below this angular velocity (deg/ms). */
 const WHEEL_COAST_STOP_VELOCITY = 0.02;
 const WHEEL_RAD2DEG = 180 / Math.PI;
@@ -6234,6 +6331,7 @@ const WHEEL_LEVER_EXPONENT = 1.25;
 @customElement("inkwell-wheel-panel")
 export class InkwellWheelPanel extends FloatingPanel {
   private timeline = new StoreController(this, timelineStore);
+  private wheelFriction = new StoreController(this, wheelFrictionStore);
   /** Cumulative barrel rotation in degrees; grows clockwise without bound. */
   private rotationDeg = 0;
   @state() private dragging = false;
@@ -6273,7 +6371,14 @@ export class InkwellWheelPanel extends FloatingPanel {
     // Keep the wheel a fixed circle — never adopt resize dimensions.
     if (this.blockWidth !== null) this.blockWidth = null;
     if (this.blockHeight !== null) this.blockHeight = null;
+    this.syncWheelFrictionMotion();
     super.updated(changedProperties);
+  }
+
+  private syncWheelFrictionMotion() {
+    const motion = wheelFrictionMotion(this.wheelFriction.value);
+    this.style.setProperty("--wheel-settle-duration", `${motion.settleDurationMs}ms`);
+    this.style.setProperty("--wheel-settle-easing", motion.settleEasing);
   }
 
   static styles = css`
@@ -6349,7 +6454,8 @@ export class InkwellWheelPanel extends FloatingPanel {
       position: absolute;
       inset: 0;
       pointer-events: none;
-      transition: transform 350ms cubic-bezier(0.175, 0.885, 0.32, 1.6);
+      transition: transform var(--wheel-settle-duration, 350ms)
+        var(--wheel-settle-easing, cubic-bezier(0.175, 0.885, 0.32, 1.6));
       will-change: transform;
     }
 
@@ -6440,6 +6546,7 @@ export class InkwellWheelPanel extends FloatingPanel {
     this.resizable = false;
     this.blockWidth = null;
     this.blockHeight = null;
+    this.syncWheelFrictionMotion();
     const frame = timelineStore.get().currentFrame;
     this.lastFrame = frame;
     this.lastNotch = frame;
@@ -6595,7 +6702,7 @@ export class InkwellWheelPanel extends FloatingPanel {
     this.lastCoastTs = now;
     this.setBarrelRotationLive(this.rotationDeg + this.angularVelocity * dt);
     this.emitNotchSteps();
-    this.angularVelocity *= Math.exp(-dt / WHEEL_FRICTION_TAU_MS);
+    this.angularVelocity *= Math.exp(-dt / wheelFrictionTauMs(this.wheelFriction.value));
     if (Math.abs(this.angularVelocity) < WHEEL_COAST_STOP_VELOCITY) {
       this.stopCoasting();
       this.settleToChamber();

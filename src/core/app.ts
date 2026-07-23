@@ -1734,14 +1734,36 @@ class App {
    * Move the playhead (optionally also activating a layer, when the click
    * landed on another row). Selections are placed first so pending edits
    * commit to the frame they were made on.
+   *
+   * Frame-cell clicks (with `layerId`) mirror the layers panel: switch to the
+   * select tool and select every item on the active layer. Playhead scrub /
+   * jog (no `layerId`) only moves the playhead and clears selection.
    */
   private onTimelineFrameSelect(frame: number, layerId?: string) {
+    if (layerId) {
+      if (layerId === STAGE_LAYER_ID) return;
+
+      const state = layerStore.get();
+      const isAlreadyActive = state.activeLayerId === layerId;
+      const isSameFrame = this.documentManager.getCurrentFrame() === frame;
+
+      if (
+        isAlreadyActive &&
+        isSameFrame &&
+        (this.selectionController.hasSelection() || this.directSelectController.hasSelection())
+      ) {
+        this.selectionController.clearSelection();
+        this.directSelectController.clearSelection();
+        this.functionsPanel.close("hidden");
+        return;
+      }
+    }
+
     this.selectionController.clearSelection();
     this.directSelectController.clearSelection();
     this.functionsPanel.close("hidden");
 
     if (layerId && layerId !== layerStore.get().activeLayerId) {
-      // Quiet activation: no tool switch / select-all like the layers panel.
       if (this.paperRenderer.setActiveLayer(layerId)) {
         stageSelectedStore.set(false);
         layerStore.update((s) => ({ ...s, activeLayerId: layerId }));
@@ -1749,6 +1771,15 @@ class App {
     }
 
     this.documentManager.gotoFrame(frame);
+
+    if (layerId) {
+      if (toolStore.get() !== "select") {
+        this.switchTool("select");
+      }
+      const allItems = this.paperRenderer.getAllPaths();
+      this.selectionController.setSelectedItems(allItems);
+    }
+
     this.requestRedraw();
   }
 

@@ -92,7 +92,7 @@ export const timelineStore = new Store<TimelineState>({
   duration: DEFAULT_DURATION,
   frameRate: DEFAULT_FRAME_RATE,
   playing: false,
-  onionSkin: false,
+  onionSkin: true,
   autoHold: true,
 });
 
@@ -138,7 +138,7 @@ export class DocumentManager {
   private frameRate = DEFAULT_FRAME_RATE;
   private playing = false;
   /** View preference: show dimmed neighbor frames. Not persisted, not in history. */
-  private onionSkinEnabled = false;
+  private onionSkinEnabled = true;
   /**
    * When enabled, inserting a keyframe/blank keyframe extends the previous
    * keyframe's hold up to the new keyframe. Not persisted, not in history.

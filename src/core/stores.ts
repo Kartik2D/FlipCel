@@ -271,6 +271,57 @@ export type ThemeMode = "light" | "dark";
 
 export const themeModeStore = new Store<ThemeMode>("dark");
 
+// ============================================================
+// Animation wheel
+// ============================================================
+
+/** Jog-wheel coast friction preset (Settings panel). */
+export type WheelFriction = "low" | "medium" | "high";
+
+export const WHEEL_FRICTION_OPTIONS: readonly WheelFriction[] = [
+  "low",
+  "medium",
+  "high",
+];
+
+/** Per-preset coast + snap-settle motion for the jog wheel. */
+export interface WheelFrictionMotion {
+  /** Exponential friction tau (ms) while coasting; higher = longer coast. */
+  tauMs: number;
+  /** Barrel overshoot settle duration when pegging to a chamber. */
+  settleDurationMs: number;
+  /** Barrel overshoot settle easing. */
+  settleEasing: string;
+}
+
+export const WHEEL_FRICTION_MOTION: Record<WheelFriction, WheelFrictionMotion> = {
+  low: {
+    tauMs: 300,
+    settleDurationMs: 520,
+    settleEasing: "cubic-bezier(0.175, 0.885, 0.32, 1.85)",
+  },
+  medium: {
+    tauMs: 90,
+    settleDurationMs: 350,
+    settleEasing: "cubic-bezier(0.175, 0.885, 0.32, 1.6)",
+  },
+  high: {
+    tauMs: 25,
+    settleDurationMs: 220,
+    settleEasing: "cubic-bezier(0.25, 0.9, 0.35, 1.25)",
+  },
+};
+
+export function wheelFrictionMotion(level: WheelFriction): WheelFrictionMotion {
+  return WHEEL_FRICTION_MOTION[level];
+}
+
+export function wheelFrictionTauMs(level: WheelFriction): number {
+  return WHEEL_FRICTION_MOTION[level].tauMs;
+}
+
+export const wheelFrictionStore = new Store<WheelFriction>("medium");
+
 /**
  * Canvas configuration (dimensions)
  * Initialized with placeholder values - App.ts sets real values on init
