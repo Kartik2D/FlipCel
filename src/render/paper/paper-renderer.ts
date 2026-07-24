@@ -577,9 +577,8 @@ export class PaperRenderer {
 
   /**
    * Replace the onion-skin ghosts. Each ghost is one neighbor frame: its
-   * visible layers' content JSONs (bottom→top), rendered as tinted outlines
-   * (no fill) at the given opacity. Ghost layers are locked and sit above
-   * all artwork.
+   * visible layers' content JSONs (bottom→top), tinted at the given opacity.
+   * Outline mode sits above artwork; filled mode sits under the active layer.
    */
   setOnionSkin(
     ghosts: Array<{ jsons: string[]; opacity: number; color: string }>,
@@ -640,9 +639,6 @@ export class PaperRenderer {
       layer.bringToFront();
     }
 
-    // Onion-skin ghosts live above all artwork; keep them there.
-    this.onionSkin.bringToFront();
-
     // bringToFront() re-inserts layers via remove+insert; when the active
     // layer is removed, Paper silently moves project._activeLayer to a
     // sibling and it stays there after reinsertion. Re-activate the layer we
@@ -652,6 +648,9 @@ export class PaperRenderer {
       ? this.layerMap.get(this.activeLayerId)
       : null;
     active?.activate();
+
+    // Outline ghosts above artwork; filled ghosts under the active layer.
+    this.onionSkin.reposition(active);
 
     paper.view.update();
     return true;

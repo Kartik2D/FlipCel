@@ -13,8 +13,10 @@ export type OnionGhost = {
  */
 export class OnionSkin {
   private layers: paper.Layer[] = [];
+  /** When true, ghosts are stroked outlines above artwork; when false, filled under the active layer. */
+  private outline = true;
   /** Minimum world-space stroke width for outline-mode onion-skin ghosts. */
-  private readonly outlineWidth = 3;
+  private readonly outlineWidth = 6;
 
   /** Read-only view of ghost layers (z-order / export / flatten skips). */
   getLayers(): readonly paper.Layer[] {
@@ -35,9 +37,9 @@ export class OnionSkin {
 
   /**
    * Replace the onion-skin ghosts. Each ghost is one neighbor frame: its
-   * visible layers' content JSONs (bottom→top), rendered as tinted outlines
-   * (no fill) at the given opacity. Ghost layers are locked and sit above
-   * all artwork.
+   * visible layers' content JSONs (bottom→top), tinted with per-path opacity.
+   * Outline mode sits above all artwork; filled mode sits under `restoreActive`
+   * so current-layer paint covers the ghosts.
    *
    * Creating `paper.Layer` activates it; pass `restoreActive` so the real
    * document active layer is restored afterward.
@@ -49,6 +51,7 @@ export class OnionSkin {
   ): void {
     for (const layer of this.layers) layer.remove();
     this.layers = [];
+    this.outline = outline;
 
     for (const ghost of ghosts) {
       const ghostLayer = new paper.Layer();
@@ -66,10 +69,17 @@ export class OnionSkin {
 
       // Outline-only ghosts: every shape becomes an unfilled tinted contour,
       // so ghosts never obscure the current frame's artwork.
+      // Fade via path.opacity (not layer.opacity) — Paper can composite a
+      // single fill-or-stroke path with ctx.globalAlpha; layer opacity forces
+      // a full view-bounds offscreen canvas every redraw.
       const tint = new paper.Color(ghost.color);
       const outlineWidth = this.outlineWidth;
+      const ghostOpacity = ghost.opacity;
       const styleGhost = (item: paper.Item) => {
         if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
+          // Path can use ctx.globalAlpha directly; CompoundPath still
+          // offscreens, but only for that item's bounds — never the layer.
+          item.opacity = ghostOpacity;
           if (outline) {
             const hadStroke = !!item.strokeColor;
             item.fillColor = null;
@@ -82,27 +92,35 @@ export class OnionSkin {
             item.strokeColor = null;
             item.strokeWidth = 0;
           }
+          // CompoundPath children are geometry only; don't restyle / re-fade.
+          if (item instanceof paper.CompoundPath) return;
         }
         for (const child of item.children ?? []) styleGhost(child);
       };
       for (const child of [...ghostLayer.children]) styleGhost(child);
-      ghostLayer.opacity = ghost.opacity;
       this.layers.push(ghostLayer);
     }
 
-    // Ghosts render above all artwork so they stay readable; being unfilled
-    // outlines, they don't obscure the frame underneath. Walk in order so
-    // later ghosts (next-keyframe) end up topmost.
-    this.bringToFront();
+    this.reposition(restoreActive);
 
     restoreActive?.activate();
     paper.view.update();
   }
 
-  /** Keep ghosts above all artwork after document layers are reordered. */
-  bringToFront(): void {
+  /**
+   * Re-apply ghost z-order after document layers are reordered.
+   * Outline → above all artwork; filled → immediately under `belowLayer`.
+   */
+  reposition(belowLayer?: paper.Layer | null): void {
+    if (this.layers.length === 0) return;
+    if (this.outline || !belowLayer) {
+      for (const layer of this.layers) layer.bringToFront();
+      return;
+    }
+    // Insert in order so later ghosts (e.g. next-keyframe) sit above earlier
+    // ones while remaining under the active layer.
     for (const layer of this.layers) {
-      layer.bringToFront();
+      layer.insertBelow(belowLayer);
     }
   }
 
