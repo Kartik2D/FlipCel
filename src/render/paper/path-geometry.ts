@@ -235,24 +235,32 @@ export function tryBooleanOp(
   return null;
 }
 
-export function tryUnite(a: paper.PathItem, b: paper.PathItem): paper.PathItem | null {
-  if (!pathsCollide(a, b)) return null;
+export type BooleanGateOptions = { skipCollide?: boolean };
+
+export function tryUnite(
+  a: paper.PathItem,
+  b: paper.PathItem,
+  opts?: BooleanGateOptions,
+): paper.PathItem | null {
+  if (!opts?.skipCollide && !pathsCollide(a, b)) return null;
   return tryBooleanOp(a, b, "unite");
 }
 
 export function trySubtract(
   target: paper.PathItem,
   cutter: paper.PathItem,
+  opts?: BooleanGateOptions,
 ): paper.PathItem | null {
-  if (!pathsCollide(target, cutter)) return null;
+  if (!opts?.skipCollide && !pathsCollide(target, cutter)) return null;
   return tryBooleanOp(target, cutter, "subtract");
 }
 
 export function tryIntersect(
   target: paper.PathItem,
   clip: paper.PathItem,
+  opts?: BooleanGateOptions,
 ): paper.PathItem | null {
-  if (!pathsCollide(target, clip)) return null;
+  if (!opts?.skipCollide && !pathsCollide(target, clip)) return null;
   const intersected = tryBooleanOp(target, clip, "intersect");
   if (intersected) return intersected;
 

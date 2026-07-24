@@ -760,6 +760,46 @@ export class PaperRenderer {
     return true;
   }
 
+  /**
+   * Fold same-color neighbors into `current` via unite. Neighbors that fail to
+   * unite are left in place for a later pass (or for other-color handling).
+   * Callers that already AABB-filtered must pass skipCollide at the tryUnite site.
+   */
+  private foldSameColorUnites(
+    layer: paper.Layer,
+    current: paper.PathItem,
+    neighbors: paper.PathItem[],
+    changedItems: paper.PathItem[],
+    consumedIds: Set<number>,
+  ): { current: paper.PathItem; unitedAny: boolean } {
+    let unitedAny = false;
+    const currentColor = current.fillColor?.toCSS(true) ?? "none";
+
+    for (const neighbor of neighbors) {
+      if (!current.parent || !neighbor.parent) continue;
+      if (current === neighbor || consumedIds.has(neighbor.id)) continue;
+      const neighborColor = neighbor.fillColor?.toCSS(true) ?? "none";
+      if (neighborColor !== currentColor) continue;
+
+      const united = tryUnite(current, neighbor, { skipCollide: true });
+      if (!united) continue;
+
+      this.applyPathStyle(united, current.fillColor);
+      this.copySelectionMarkerFromMany([current, neighbor], united);
+      this.clearSelectionMarker(current);
+      this.clearSelectionMarker(neighbor);
+      consumedIds.add(neighbor.id);
+      current.remove();
+      neighbor.remove();
+      if (!united.parent) layer.addChild(united);
+      changedItems.push(united);
+      current = united;
+      unitedAny = true;
+    }
+
+    return { current, unitedAny };
+  }
+
   private mergeAddInto(
     layer: paper.Layer,
     additions: paper.PathItem[],
@@ -770,48 +810,74 @@ export class PaperRenderer {
     for (const addition of additions) {
       if (!addition.parent) continue;
       let current = addition;
+      const consumedIds = new Set<number>();
 
-      // Re-query neighbors on every iteration. After a same-color union the
-      // unified shape has different (usually larger) bounds, and additions
-      // processed later need to see the freshly-merged result, not a stale
-      // snapshot taken at the top of the call.
-      let progressed = true;
-      let safety = 0;
-      while (progressed && current.parent && safety++ < 64) {
-        progressed = false;
-        const neighbors = this.getOrderedNeighbors([current]);
+      // One AABB neighbor query, then same-color unites, then other-color cuts.
+      // After a successful unite pass, re-query once for newly overlapping
+      // same-color neighbors whose bounds were outside the pre-unite AABB.
+      const neighbors = this.getOrderedNeighbors([current]);
+      const currentColor = current.fillColor?.toCSS(true) ?? "none";
 
-        for (const neighbor of neighbors) {
-          if (!current.parent || !neighbor.parent) continue;
-          if (current === neighbor || !pathsCollide(current, neighbor)) continue;
+      const sameColor: paper.PathItem[] = [];
+      let otherColor: paper.PathItem[] = [];
+      for (const neighbor of neighbors) {
+        if (!neighbor.parent || neighbor === current) continue;
+        const neighborColor = neighbor.fillColor?.toCSS(true) ?? "none";
+        if (neighborColor === currentColor) sameColor.push(neighbor);
+        else otherColor.push(neighbor);
+      }
 
-          const currentColor = current.fillColor?.toCSS(true) ?? "none";
+      let fold = this.foldSameColorUnites(
+        layer,
+        current,
+        sameColor,
+        changedItems,
+        consumedIds,
+      );
+      current = fold.current;
+
+      if (fold.unitedAny && current.parent) {
+        const expandedNeighbors = this.getOrderedNeighbors([current]);
+        const fillColor = current.fillColor?.toCSS(true) ?? "none";
+        const newSameColor: paper.PathItem[] = [];
+        otherColor = [];
+        for (const neighbor of expandedNeighbors) {
+          if (!neighbor.parent || neighbor === current) continue;
+          if (consumedIds.has(neighbor.id)) continue;
           const neighborColor = neighbor.fillColor?.toCSS(true) ?? "none";
-
-          if (currentColor === neighborColor) {
-            const united = tryUnite(current, neighbor);
-            if (!united) continue;
-            this.applyPathStyle(united, current.fillColor);
-            this.copySelectionMarkerFromMany([current, neighbor], united);
-            this.clearSelectionMarker(current);
-            this.clearSelectionMarker(neighbor);
-            current.remove();
-            neighbor.remove();
-            if (!united.parent) layer.addChild(united);
-            changedItems.push(united);
-            current = united;
-            progressed = true;
-            break; // re-query neighbors using the unified bounds
-          }
-
-          const cutNeighbor = trySubtract(neighbor, current);
-          if (cutNeighbor) {
-            this.applyPathStyle(cutNeighbor, neighbor.fillColor);
-            this.swapIn(neighbor, cutNeighbor, changedItems);
-            continue;
-          }
-          this.removeIfFullyCovered(current, neighbor);
+          if (neighborColor === fillColor) newSameColor.push(neighbor);
+          else otherColor.push(neighbor);
         }
+        fold = this.foldSameColorUnites(
+          layer,
+          current,
+          newSameColor,
+          changedItems,
+          consumedIds,
+        );
+        current = fold.current;
+      }
+
+      if (!current.parent) continue;
+
+      for (const neighbor of otherColor) {
+        if (!current.parent || !neighbor.parent) continue;
+        if (consumedIds.has(neighbor.id)) continue;
+
+        if (
+          current.bounds.contains(neighbor.bounds) &&
+          this.removeIfFullyCovered(current, neighbor)
+        ) {
+          continue;
+        }
+
+        const cutNeighbor = trySubtract(neighbor, current, { skipCollide: true });
+        if (cutNeighbor) {
+          this.applyPathStyle(cutNeighbor, neighbor.fillColor);
+          this.swapIn(neighbor, cutNeighbor, changedItems);
+          continue;
+        }
+        this.removeIfFullyCovered(current, neighbor);
       }
 
       if (current.parent) survivors.push(current);
@@ -826,7 +892,13 @@ export class PaperRenderer {
       const neighbors = this.getOrderedNeighbors([cutter]);
       for (const neighbor of neighbors) {
         if (!neighbor.parent) continue;
-        const cutNeighbor = trySubtract(neighbor, cutter);
+        if (
+          cutter.bounds.contains(neighbor.bounds) &&
+          this.removeIfFullyCovered(cutter, neighbor)
+        ) {
+          continue;
+        }
+        const cutNeighbor = trySubtract(neighbor, cutter, { skipCollide: true });
         if (cutNeighbor) {
           this.applyPathStyle(cutNeighbor, neighbor.fillColor);
           this.swapIn(neighbor, cutNeighbor, changedItems);
