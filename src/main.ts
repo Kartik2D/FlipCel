@@ -1,9 +1,5 @@
 /**
- * Inkwell - Main Entry Point
- *
- * This is the application entry point that initializes
- * all components and starts the drawing application.
+ * Inkwell — application entry.
  */
-import "./ui/inkwell-motion";
-import "./core/app";
-
+import "./ui/motion";
+import "./app/bootstrap";

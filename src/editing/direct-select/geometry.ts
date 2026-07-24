@@ -1,0 +1,121 @@
+import type { Point } from "../../geometry/types";
+
+/** Ray-cast point-in-polygon test for lasso marquee hits. */
+export function pointInPolygon(point: Point, polygon: Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x,
+      yi = polygon[i].y;
+    const xj = polygon[j].x,
+      yj = polygon[j].y;
+    const intersects =
+      yi > point.y !== yj > point.y &&
+      point.x < ((xj - xi) * (point.y - yi)) / (yj - yi || 1e-6) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+export function getAdjacentSegments(
+  path: paper.Path,
+  segmentIndex: number,
+): { prev: paper.Segment | null; next: paper.Segment | null } {
+  const segments = path.segments;
+  const lastIndex = segments.length - 1;
+  const prev = path.closed
+    ? segments[(segmentIndex - 1 + segments.length) % segments.length] ?? null
+    : segmentIndex > 0
+      ? segments[segmentIndex - 1]
+      : null;
+  const next = path.closed
+    ? segments[(segmentIndex + 1) % segments.length] ?? null
+    : segmentIndex < lastIndex
+      ? segments[segmentIndex + 1]
+      : null;
+  return { prev, next };
+}
+
+export function getSegmentTangentDirection(
+  seg: paper.Segment,
+  prev: paper.Segment | null,
+  next: paper.Segment | null,
+): paper.Point | null {
+  const epsilon = 1e-6;
+
+  if (!seg.handleOut.isZero() && seg.handleOut.length > epsilon) {
+    return seg.handleOut.normalize();
+  }
+  if (!seg.handleIn.isZero() && seg.handleIn.length > epsilon) {
+    return seg.handleIn.multiply(-1).normalize();
+  }
+  if (prev && next) {
+    const across = next.point.subtract(prev.point);
+    if (across.length > epsilon) return across.normalize();
+  }
+  if (next) {
+    const forward = next.point.subtract(seg.point);
+    if (forward.length > epsilon) return forward.normalize();
+  }
+  if (prev) {
+    const backward = seg.point.subtract(prev.point);
+    if (backward.length > epsilon) return backward.normalize();
+  }
+  return null;
+}
+
+export function getDefaultHandleLength(
+  seg: paper.Segment,
+  prev: paper.Segment | null,
+  next: paper.Segment | null,
+): number {
+  const neighborDistances = [
+    prev ? seg.point.getDistance(prev.point) : Infinity,
+    next ? seg.point.getDistance(next.point) : Infinity,
+  ].filter((distance) => Number.isFinite(distance) && distance > 0);
+
+  if (neighborDistances.length === 0) return 0;
+  return Math.min(...neighborDistances) * 0.35;
+}
+
+export function applyHandleModeToSegment(
+  path: paper.Path,
+  segmentIndex: number,
+  seg: paper.Segment,
+  mode: "corner" | "mirrored" | "asymmetric",
+): void {
+  const { prev, next } = getAdjacentSegments(path, segmentIndex);
+  const hasPrev = prev !== null;
+  const hasNext = next !== null;
+
+  if (mode === "corner") {
+    seg.handleIn = new paper.Point(0, 0);
+    seg.handleOut = new paper.Point(0, 0);
+    return;
+  }
+
+  const tangent = getSegmentTangentDirection(seg, prev, next);
+  if (!tangent) return;
+
+  const defaultLength = getDefaultHandleLength(seg, prev, next);
+  const currentInLength = seg.handleIn.length;
+  const currentOutLength = seg.handleOut.length;
+
+  if (mode === "mirrored") {
+    const mirroredLength = Math.max(
+      (currentInLength + currentOutLength) / 2,
+      defaultLength,
+    );
+    seg.handleIn = hasPrev
+      ? tangent.multiply(-mirroredLength)
+      : new paper.Point(0, 0);
+    seg.handleOut = hasNext
+      ? tangent.multiply(mirroredLength)
+      : new paper.Point(0, 0);
+    return;
+  }
+
+  const inLength = Math.max(currentInLength, defaultLength);
+  const outLength = Math.max(currentOutLength, defaultLength);
+  seg.handleIn = hasPrev ? tangent.multiply(-inLength) : new paper.Point(0, 0);
+  seg.handleOut = hasNext ? tangent.multiply(outLength) : new paper.Point(0, 0);
+}

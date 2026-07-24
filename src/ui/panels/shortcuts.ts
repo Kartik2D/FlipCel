@@ -1,0 +1,165 @@
+import { html, css } from "lit";
+import { customElement, property } from "lit/decorators.js";
+import { getTool } from "../../tools/registry";
+import {
+  toolStore,
+  toolSettingsStore,
+  modifiersStore,
+  StoreController,
+} from "../../state";
+import { timelineStore } from "../../document/document";
+import { FloatingPanel } from "../primitives/floating-panel";
+import { dockChipStyles, TOP_BAR_SHORTCUT_CHIPS, type DockInfoChip } from "./dock-chrome";
+
+// ============================================================
+// Shortcuts Panel (mode / frame / zoom quick actions)
+// ============================================================
+
+@customElement("inkwell-shortcuts-panel")
+export class InkwellShortcutsPanel extends FloatingPanel {
+  @property({ type: Number }) zoomLevel = 100;
+
+  private tool = new StoreController(this, toolStore);
+  private settings = new StoreController(this, toolSettingsStore);
+  private modifiers = new StoreController(this, modifiersStore);
+  private timeline = new StoreController(this, timelineStore);
+
+  protected override usesFaceScrollbar(): boolean {
+    return false;
+  }
+
+  static styles = css`
+    ${FloatingPanel.styles}
+    ${dockChipStyles}
+
+    :host {
+      --panel-top: max(8px, calc(env(safe-area-inset-top, 0px) + 2px));
+      --panel-left: auto;
+      --panel-right: max(8px, env(safe-area-inset-right, 0px));
+      --panel-width: auto;
+      --panel-min-width: 0;
+      --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-panel-surface, #ffffff));
+      z-index: 1200;
+      width: auto;
+      --inkwell-shadow-panel: var(--inkwell-dock-shadow);
+      --inkwell-dock-row-h: 44px;
+      --inkwell-dock-control: 44px;
+      --inkwell-dock-face-pt: 6px;
+      --inkwell-dock-face-pb: 8px;
+    }
+
+    .face {
+      overflow: hidden;
+      padding: var(--inkwell-dock-face-pt) 12px var(--inkwell-dock-face-pb);
+      min-height: calc(
+        var(--inkwell-dock-row-h) + var(--inkwell-dock-face-pt) + var(--inkwell-dock-face-pb)
+      );
+    }
+
+    .dock-status {
+      min-height: var(--inkwell-dock-row-h);
+      align-items: center;
+    }
+  `;
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.pinned = true;
+    this.showPinnedClose = false;
+  }
+
+  private emitDock(name: string) {
+    this.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true }));
+  }
+
+  private effectivePaintModeLabel(): string {
+    const tool = getTool(this.tool.value);
+    const key = tool.dockModeSetting;
+    if (!key) return "—";
+    const def = tool.settings[key];
+    if (!def || def.type !== "toggle") return "—";
+    const options = def.options as readonly string[];
+    const raw = String(
+      (this.settings.value[tool.id] as Record<string, unknown>)?.[key] ?? def.default,
+    );
+    const effective =
+      this.modifiers.value.shift
+        ? options[(options.indexOf(raw) + 1) % options.length]
+        : raw;
+    return effective.charAt(0).toUpperCase() + effective.slice(1);
+  }
+
+  private renderDockWidget(opts: {
+    label: string;
+    value: string;
+    title: string;
+    onClick?: () => void;
+  }) {
+    const inner = html`
+      <span class="dock-prefix">${opts.label}</span>
+      <span class="dock-value">${opts.value}</span>
+    `;
+    return html`
+      <div class="dock-cell">
+        ${opts.onClick
+          ? html`
+              <button
+                type="button"
+                class="dock-chip dock-chip-stacked dock-chip-reset"
+                title=${opts.title}
+                aria-label=${opts.title}
+                data-interactive
+                @click=${opts.onClick}
+              >${inner}</button>
+            `
+          : html`
+              <span class="dock-chip dock-chip-stacked" title=${opts.title}
+                >${inner}</span
+              >
+            `}
+      </div>
+    `;
+  }
+
+  private buildInfoChip(kind: DockInfoChip) {
+    switch (kind) {
+      case "mode":
+        return {
+          label: "mode",
+          value: this.effectivePaintModeLabel(),
+          title: "Click to cycle paint mode",
+          onClick: () => this.emitDock("mode-cycle"),
+        };
+      case "frame": {
+        const t = this.timeline.value;
+        return {
+          label: "frame",
+          value: String(t.currentFrame + 1),
+          title: t.playing ? "Pause" : "Play",
+          onClick: () => this.emitDock("play-toggle"),
+        };
+      }
+      case "zoom":
+        return {
+          label: "zoom",
+          value: `${this.zoomLevel}%`,
+          title: "Fit stage in view",
+          onClick: () => this.emitDock("zoom-reset"),
+        };
+    }
+  }
+
+  render() {
+    return html`
+      <div class="block">
+        <div class="face">
+          <div class="dock-status">
+            ${TOP_BAR_SHORTCUT_CHIPS.map((kind) =>
+              this.renderDockWidget(this.buildInfoChip(kind)),
+            )}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+}
