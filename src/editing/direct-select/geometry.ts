@@ -78,6 +78,26 @@ export function getDefaultHandleLength(
   return Math.min(...neighborDistances) * 0.35;
 }
 
+/** Length-weighted average of handleIn/handleOut, as a unit "out" tangent. */
+function getAveragedHandleTangent(seg: paper.Segment): paper.Point | null {
+  const epsilon = 1e-6;
+  const hasIn = !seg.handleIn.isZero() && seg.handleIn.length > epsilon;
+  const hasOut = !seg.handleOut.isZero() && seg.handleOut.length > epsilon;
+  if (!hasIn && !hasOut) return null;
+  if (hasIn && hasOut) {
+    // Flip handleIn into out-space, then average the vectors so longer
+    // handles pull the mirrored axis more strongly.
+    const avg = seg.handleOut.add(seg.handleIn.multiply(-1));
+    if (avg.length > epsilon) return avg.normalize();
+    // Handles cancel (e.g. nearly opposite corner); fall back to the longer one.
+    return seg.handleIn.length > seg.handleOut.length
+      ? seg.handleIn.multiply(-1).normalize()
+      : seg.handleOut.normalize();
+  }
+  if (hasOut) return seg.handleOut.normalize();
+  return seg.handleIn.multiply(-1).normalize();
+}
+
 export function applyHandleModeToSegment(
   path: paper.Path,
   segmentIndex: number,
@@ -94,14 +114,16 @@ export function applyHandleModeToSegment(
     return;
   }
 
-  const tangent = getSegmentTangentDirection(seg, prev, next);
-  if (!tangent) return;
-
   const defaultLength = getDefaultHandleLength(seg, prev, next);
   const currentInLength = seg.handleIn.length;
   const currentOutLength = seg.handleOut.length;
 
   if (mode === "mirrored") {
+    const tangent =
+      getAveragedHandleTangent(seg) ??
+      getSegmentTangentDirection(seg, prev, next);
+    if (!tangent) return;
+
     const mirroredLength = Math.max(
       (currentInLength + currentOutLength) / 2,
       defaultLength,
@@ -114,6 +136,9 @@ export function applyHandleModeToSegment(
       : new paper.Point(0, 0);
     return;
   }
+
+  const tangent = getSegmentTangentDirection(seg, prev, next);
+  if (!tangent) return;
 
   const inLength = Math.max(currentInLength, defaultLength);
   const outLength = Math.max(currentOutLength, defaultLength);

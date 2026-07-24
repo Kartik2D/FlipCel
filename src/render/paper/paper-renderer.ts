@@ -762,8 +762,7 @@ export class PaperRenderer {
 
   /**
    * Fold same-color neighbors into `current` via unite. Neighbors that fail to
-   * unite are left in place for a later pass (or for other-color handling).
-   * Callers that already AABB-filtered must pass skipCollide at the tryUnite site.
+   * unite (including pathsCollide reject) are left in place.
    */
   private foldSameColorUnites(
     layer: paper.Layer,
@@ -781,7 +780,8 @@ export class PaperRenderer {
       const neighborColor = neighbor.fillColor?.toCSS(true) ?? "none";
       if (neighborColor !== currentColor) continue;
 
-      const united = tryUnite(current, neighbor, { skipCollide: true });
+      // tryUnite gates on pathsCollide once — AABB-only near-misses skip boolean.
+      const united = tryUnite(current, neighbor);
       if (!united) continue;
 
       this.applyPathStyle(united, current.fillColor);
@@ -864,19 +864,14 @@ export class PaperRenderer {
         if (!current.parent || !neighbor.parent) continue;
         if (consumedIds.has(neighbor.id)) continue;
 
-        if (
-          current.bounds.contains(neighbor.bounds) &&
-          this.removeIfFullyCovered(current, neighbor)
-        ) {
-          continue;
-        }
-
-        const cutNeighbor = trySubtract(neighbor, current, { skipCollide: true });
+        // pathsCollide inside trySubtract skips non-touching AABB overlaps.
+        const cutNeighbor = trySubtract(neighbor, current);
         if (cutNeighbor) {
           this.applyPathStyle(cutNeighbor, neighbor.fillColor);
           this.swapIn(neighbor, cutNeighbor, changedItems);
           continue;
         }
+        // Only delete when subtract returned empty and coverage heuristic agrees.
         this.removeIfFullyCovered(current, neighbor);
       }
 
@@ -892,13 +887,7 @@ export class PaperRenderer {
       const neighbors = this.getOrderedNeighbors([cutter]);
       for (const neighbor of neighbors) {
         if (!neighbor.parent) continue;
-        if (
-          cutter.bounds.contains(neighbor.bounds) &&
-          this.removeIfFullyCovered(cutter, neighbor)
-        ) {
-          continue;
-        }
-        const cutNeighbor = trySubtract(neighbor, cutter, { skipCollide: true });
+        const cutNeighbor = trySubtract(neighbor, cutter);
         if (cutNeighbor) {
           this.applyPathStyle(cutNeighbor, neighbor.fillColor);
           this.swapIn(neighbor, cutNeighbor, changedItems);
