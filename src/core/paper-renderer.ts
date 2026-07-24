@@ -15,7 +15,12 @@
 import paper from "paper";
 import type { CanvasConfig } from "./types";
 import type { Camera } from "./camera";
-import { STAGE_LAYER_ID } from "./stores";
+import { STAGE_LAYER_ID, symmetryStore } from "./stores";
+import {
+  buildMirrorTransforms,
+  buildSourceClipRegion,
+  getSymmetryGestureSource,
+} from "./symmetry";
 
 export type SelectionHandleId =
   | "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "rotate";
@@ -1301,6 +1306,69 @@ export class PaperRenderer {
   }
 
   /**
+   * Cut each incoming path to the gesture's source symmetry region and append
+   * mirrored copies. Tools stay unaware — call this immediately before merge.
+   * When symmetry is off or no gesture side is set, returns `items` unchanged.
+   */
+  expandIncomingWithSymmetry(items: paper.PathItem[]): paper.PathItem[] {
+    const settings = symmetryStore.get();
+    const sourceSide = getSymmetryGestureSource();
+    if (!settings.enabled || sourceSide === null || items.length === 0) {
+      return items;
+    }
+
+    const layer = paper.project.activeLayer;
+    const transforms = buildMirrorTransforms(settings);
+    const expanded: paper.PathItem[] = [];
+
+    for (const item of items) {
+      if (!item || item.isEmpty()) {
+        item?.remove();
+        continue;
+      }
+
+      const fill = item.fillColor;
+      const marker = this.getSelectionMarker(item);
+      const clipRegion = buildSourceClipRegion(settings, sourceSide);
+
+      let clipped: paper.PathItem | null = null;
+      try {
+        clipped = this.tryIntersect(item, clipRegion);
+        if (!clipped && this.likelyFullyCovered(clipRegion, item)) {
+          clipped = item.clone({ insert: false }) as paper.PathItem;
+          this.normalizeBooleanResult(clipped);
+          this.forceEvenOdd(clipped);
+        }
+      } finally {
+        clipRegion.remove();
+      }
+
+      this.clearSelectionMarker(item);
+      item.remove();
+
+      if (!clipped || clipped.isEmpty()) {
+        clipped?.remove();
+        continue;
+      }
+
+      this.applyPathStyle(clipped, fill);
+      if (clipped.parent !== layer) layer.addChild(clipped);
+      if (marker) this.setSelectionMarker(clipped, marker);
+      expanded.push(clipped);
+
+      for (const matrix of transforms) {
+        const mirror = clipped.clone({ insert: false }) as paper.PathItem;
+        mirror.transform(matrix);
+        this.applyPathStyle(mirror, fill);
+        layer.addChild(mirror);
+        expanded.push(mirror);
+      }
+    }
+
+    return expanded;
+  }
+
+  /**
    * Add a pre-built shape (given in viewport/screen coordinates) into the
    * active layer, mirroring the add-path merge pipeline used by traced
    * strokes.
@@ -1313,7 +1381,12 @@ export class PaperRenderer {
     this.applyPathStyle(shape, paperColor);
     if (shape.parent !== layer) layer.addChild(shape);
 
-    const merged = this.mergeAddInto(layer, [shape]);
+    const additions = this.expandIncomingWithSymmetry([shape]);
+    if (additions.length === 0) {
+      paper.view.update();
+      return;
+    }
+    const merged = this.mergeAddInto(layer, additions);
     this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
     this.flattenGroups();
     paper.view.update();
@@ -1325,8 +1398,14 @@ export class PaperRenderer {
    */
   subtractShape(shape: paper.PathItem): void {
     this.transformScreenToWorld(shape);
+    if (!shape.parent) paper.project.activeLayer.addChild(shape);
 
-    const merged = this.mergeSubtractInto([shape]);
+    const cutters = this.expandIncomingWithSymmetry([shape]);
+    if (cutters.length === 0) {
+      paper.view.update();
+      return;
+    }
+    const merged = this.mergeSubtractInto(cutters);
     this.normalizeAfterLocalEdit(merged.changedItems);
     this.flattenGroups();
     paper.view.update();
@@ -1396,7 +1475,12 @@ export class PaperRenderer {
       return;
     }
 
-    const merged = this.mergeAddInto(layer, clippedPaths);
+    const additions = this.expandIncomingWithSymmetry(clippedPaths);
+    if (additions.length === 0) {
+      paper.view.update();
+      return;
+    }
+    const merged = this.mergeAddInto(layer, additions);
     this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
     this.flattenGroups();
     paper.view.update();
@@ -1414,7 +1498,12 @@ export class PaperRenderer {
       layer.addChild(p);
     }
 
-    const merged = this.mergeAddInto(layer, newPaths);
+    const additions = this.expandIncomingWithSymmetry(newPaths);
+    if (additions.length === 0) {
+      paper.view.update();
+      return;
+    }
+    const merged = this.mergeAddInto(layer, additions);
     this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
     this.flattenGroups();
     paper.view.update();
@@ -1512,7 +1601,12 @@ export class PaperRenderer {
       return;
     }
 
-    const merged = this.mergeAddInto(layer, clippedPaths);
+    const additions = this.expandIncomingWithSymmetry(clippedPaths);
+    if (additions.length === 0) {
+      paper.view.update();
+      return;
+    }
+    const merged = this.mergeAddInto(layer, additions);
     this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
     this.flattenGroups();
     paper.view.update();
@@ -1522,7 +1616,12 @@ export class PaperRenderer {
     const eraserPaths = this.importSVG(svg);
     if (eraserPaths.length === 0) return;
 
-    const merged = this.mergeSubtractInto(eraserPaths);
+    const cutters = this.expandIncomingWithSymmetry(eraserPaths);
+    if (cutters.length === 0) {
+      paper.view.update();
+      return;
+    }
+    const merged = this.mergeSubtractInto(cutters);
     this.normalizeAfterLocalEdit(merged.changedItems);
     this.flattenGroups();
     paper.view.update();
@@ -1959,7 +2058,12 @@ export class PaperRenderer {
    */
   placeSelection(item: paper.PathItem): void {
     const layer = paper.project.activeLayer;
-    const merged = this.mergeAddInto(layer, [item]);
+    const additions = this.expandIncomingWithSymmetry([item]);
+    if (additions.length === 0) {
+      paper.view.update();
+      return;
+    }
+    const merged = this.mergeAddInto(layer, additions);
     this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
     this.flattenGroups();
     paper.view.update();

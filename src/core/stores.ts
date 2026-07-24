@@ -280,6 +280,53 @@ export const stageStore = new Store<StageSettings>({
   color: "#ffffff",
 });
 
+// ============================================================
+// Symmetry mode (world-space axis / radial center)
+// ============================================================
+
+export type SymmetryMode = "vertical" | "horizontal" | "radial";
+
+export interface SymmetrySettings {
+  enabled: boolean;
+  /** vertical = left↔right, horizontal = top↔bottom, radial = N-fold around origin */
+  mode: SymmetryMode;
+  /** Used when mode is radial (2–12). */
+  radialCount: number;
+  /** Axis / center position in world space. */
+  originX: number;
+  originY: number;
+}
+
+export function normalizeSymmetrySettings(
+  prefs: SymmetrySettings,
+): SymmetrySettings {
+  const mode: SymmetryMode =
+    prefs.mode === "horizontal" || prefs.mode === "radial"
+      ? prefs.mode
+      : "vertical";
+  return {
+    enabled: !!prefs.enabled,
+    mode,
+    radialCount: Math.max(2, Math.min(12, Math.round(prefs.radialCount || 6))),
+    originX: Number.isFinite(prefs.originX)
+      ? prefs.originX
+      : DEFAULT_STAGE_WIDTH / 2,
+    originY: Number.isFinite(prefs.originY)
+      ? prefs.originY
+      : DEFAULT_STAGE_HEIGHT / 2,
+  };
+}
+
+export const symmetryStore = new Store<SymmetrySettings>(
+  normalizeSymmetrySettings({
+    enabled: false,
+    mode: "vertical",
+    radialCount: 6,
+    originX: DEFAULT_STAGE_WIDTH / 2,
+    originY: DEFAULT_STAGE_HEIGHT / 2,
+  }),
+);
+
 /**
  * Unique colors used across the document (stage fill + all keyframe artwork).
  */

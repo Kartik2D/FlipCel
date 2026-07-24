@@ -32,6 +32,10 @@ import {
   toolSettingsStore,
   viewOverlayStore,
   normalizeViewOverlaySettings,
+  symmetryStore,
+  normalizeSymmetrySettings,
+  type SymmetryMode,
+  type SymmetrySettings,
   themeModeStore,
   wheelFrictionStore,
   stageStore,
@@ -4024,6 +4028,7 @@ export class InkwellViewPanel extends FloatingPanel {
   @property({ type: Boolean }) brushSizeIndicatorEnabled = true;
 
   private viewOverlay = new StoreController(this, viewOverlayStore);
+  private symmetry = new StoreController(this, symmetryStore);
   private timeline = new StoreController(this, timelineStore);
 
   static styles = css`
@@ -4032,11 +4037,29 @@ export class InkwellViewPanel extends FloatingPanel {
     :host {
       --panel-width: 280px;
     }
+
+    .symmetry-modes {
+      display: flex;
+      flex-direction: row;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .symmetry-modes blocky-button {
+      flex: 1 1 0;
+      min-width: 0;
+    }
   `;
 
   private updateViewOverlay(patch: Partial<ViewOverlaySettings>) {
     this.viewOverlay.update((v) =>
       normalizeViewOverlaySettings({ ...v, ...patch }),
+    );
+  }
+
+  private updateSymmetry(patch: Partial<SymmetrySettings>) {
+    this.symmetry.update((v) =>
+      normalizeSymmetrySettings({ ...v, ...patch }),
     );
   }
 
@@ -4126,10 +4149,61 @@ export class InkwellViewPanel extends FloatingPanel {
     );
   }
 
+  private renderSymmetrySettings(sym: SymmetrySettings) {
+    const modes: { id: SymmetryMode; label: string }[] = [
+      { id: "vertical", label: "Vertical" },
+      { id: "horizontal", label: "Horizontal" },
+      { id: "radial", label: "Radial" },
+    ];
+    return html`
+      <div class="symmetry-modes">
+        ${modes.map(
+          (m) => html`
+            <blocky-button
+              flat
+              stretch
+              ?active=${sym.mode === m.id}
+              ?disabled=${!sym.enabled}
+              @click=${() => this.updateSymmetry({ mode: m.id })}
+              >${m.label}</blocky-button
+            >
+          `,
+        )}
+      </div>
+      ${sym.mode === "radial"
+        ? html`
+            <label>
+              <span>Count: ${sym.radialCount}</span>
+              <input
+                type="range"
+                min="2"
+                max="12"
+                step="1"
+                .value=${String(sym.radialCount)}
+                ?disabled=${!sym.enabled}
+                @input=${(e: Event) => {
+                  this.updateSymmetry({
+                    radialCount: parseInt(
+                      (e.target as HTMLInputElement).value,
+                      10,
+                    ),
+                  });
+                }}
+              />
+            </label>
+          `
+        : nothing}
+      <p style="margin: 4px 0 0; font-size: 12px; opacity: 0.7;">
+        Drag the handle on the canvas to move the axis.
+      </p>
+    `;
+  }
+
   render() {
     const gridOn = this.viewOverlay.value.gridEnabled;
     const onionOn = this.timeline.value.onionSkin;
     const onionOutline = this.viewOverlay.value.onionSkinOutline;
+    const sym = this.symmetry.value;
     return this.renderFloatingBlock(
       "View",
       html`
@@ -4169,6 +4243,21 @@ export class InkwellViewPanel extends FloatingPanel {
                 />
               </div>
               ${this.renderGridSettings(gridOn)}
+            </inkwell-panel-section>
+            <inkwell-panel-section data-interactive>
+              <div class="toggle">
+                <span>Symmetry</span>
+                <input
+                  type="checkbox"
+                  .checked=${sym.enabled}
+                  @change=${(e: Event) => {
+                    this.updateSymmetry({
+                      enabled: (e.target as HTMLInputElement).checked,
+                    });
+                  }}
+                />
+              </div>
+              ${this.renderSymmetrySettings(sym)}
             </inkwell-panel-section>
             <inkwell-panel-section data-interactive>
               <div class="toggle">

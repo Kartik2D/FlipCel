@@ -10,7 +10,7 @@
  */
 import type { Point, CanvasConfig } from "./types";
 import type { Camera } from "./camera";
-import type { ViewOverlaySettings } from "./stores";
+import type { SymmetrySettings, ViewOverlaySettings } from "./stores";
 import type { ToolId } from "./tools";
 
 export class UIOverlay {
@@ -25,6 +25,8 @@ export class UIOverlay {
   private gridMajorEvery = 5;
   private gridMinorOpacity = 0.06;
   private gridMajorOpacity = 0.14;
+  private symmetry: SymmetrySettings | null = null;
+  private playbackActive = false;
   private isDrawing = false;
   private isMobile = false;
   private maxBrushSize = 4; // Default max brush size in pixel canvas units
@@ -90,6 +92,17 @@ export class UIOverlay {
     this.gridMajorEvery = prefs.gridMajorEvery;
     this.gridMinorOpacity = prefs.gridMinorOpacity;
     this.gridMajorOpacity = prefs.gridMajorOpacity;
+    this.draw();
+  }
+
+  setSymmetryPrefs(prefs: SymmetrySettings) {
+    this.symmetry = prefs;
+    this.draw();
+  }
+
+  setPlaybackActive(playing: boolean) {
+    if (this.playbackActive === playing) return;
+    this.playbackActive = playing;
     this.draw();
   }
 
@@ -208,6 +221,73 @@ export class UIOverlay {
     ctx.restore();
   }
 
+  private drawSymmetryGuide() {
+    if (!this.symmetry?.enabled || !this.camera || this.playbackActive) return;
+
+    const ctx = this.ctx;
+    const { originX, originY, mode, radialCount } = this.symmetry;
+    const bounds = this.camera.getWorldBounds();
+    const pad = Math.max(bounds.width, bounds.height);
+    const center = this.worldToScreen(originX, originY);
+
+    const strokeAxis = (
+      x0: number,
+      y0: number,
+      x1: number,
+      y1: number,
+    ) => {
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+
+    if (mode === "vertical") {
+      const p0 = this.worldToScreen(originX, bounds.y - pad);
+      const p1 = this.worldToScreen(originX, bounds.y + bounds.height + pad);
+      strokeAxis(p0.x, p0.y, p1.x, p1.y);
+    } else if (mode === "horizontal") {
+      const p0 = this.worldToScreen(bounds.x - pad, originY);
+      const p1 = this.worldToScreen(bounds.x + bounds.width + pad, originY);
+      strokeAxis(p0.x, p0.y, p1.x, p1.y);
+    } else {
+      const count = Math.max(2, radialCount);
+      const reach = pad * 2;
+      for (let i = 0; i < count; i++) {
+        const angle = (i / count) * Math.PI * 2;
+        const p1 = this.worldToScreen(
+          originX + Math.cos(angle) * reach,
+          originY + Math.sin(angle) * reach,
+        );
+        strokeAxis(center.x, center.y, p1.x, p1.y);
+      }
+    }
+
+    // Draggable origin handle
+    const r = 6;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, 2, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
+    ctx.fill();
+  }
+
   private draw() {
     // Clear overlay
     this.ctx.clearRect(
@@ -218,6 +298,7 @@ export class UIOverlay {
     );
 
     this.drawGrid();
+    this.drawSymmetryGuide();
 
     // Brush size ring (brush tool only; crosshair is the CSS cursor)
     if (this.currentCursor && this.shouldShowBrushSizeRing()) {

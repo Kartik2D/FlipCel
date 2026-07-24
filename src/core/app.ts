@@ -77,6 +77,8 @@ import {
   layerStore,
   selectionStore,
   viewOverlayStore,
+  symmetryStore,
+  normalizeSymmetrySettings,
   themeModeStore,
   stageStore,
   stageSelectedStore,
@@ -86,6 +88,10 @@ import {
   DEFAULT_STAGE_HEIGHT,
   type ThemeMode,
 } from "./stores";
+import {
+  hitTestSymmetryHandle,
+  setSymmetryGestureSource,
+} from "./symmetry";
 import { getStageFitViewportInsets } from "./stage-fit-insets";
 
 /**
@@ -156,6 +162,8 @@ class App {
   private lastFunctionsPanelKey = "";
   private stageColorPickerSession = false;
   private selectionGestureActive = false;
+  /** True while dragging the symmetry-axis origin handle. */
+  private symmetryHandleDragging = false;
   private duplicateDragSession:
     | {
         items: paper.PathItem[];
@@ -243,13 +251,15 @@ class App {
     this.historyManager.setOnChange(() => this.scheduleAutosave());
     this.selectionController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.directSelectController.setSnapshotCallback(() => this.historyManager.snapshot());
-    this.directSelectController.setReconcileCallback((items) =>
-      this.paperRenderer.reconcileItemsToFixpoint(items),
-    );
+    this.directSelectController.setReconcileCallback((items) => {
+      const expanded = this.paperRenderer.expandIncomingWithSymmetry(items);
+      return this.paperRenderer.reconcileItemsToFixpoint(expanded);
+    });
     this.magnetController.setSnapshotCallback(() => this.historyManager.snapshot());
-    this.magnetController.setReconcileCallback((items) =>
-      this.paperRenderer.reconcileItemsToFixpoint(items),
-    );
+    this.magnetController.setReconcileCallback((items) => {
+      const expanded = this.paperRenderer.expandIncomingWithSymmetry(items);
+      return this.paperRenderer.reconcileItemsToFixpoint(expanded);
+    });
 
     // Get panel Lit elements
     this.colorPanel = document.getElementById("color-panel") as InkwellColorPanel;
@@ -269,6 +279,15 @@ class App {
     viewOverlayStore.subscribeImmediate((prefs) => {
       this.uiOverlay.setViewOverlayPrefs(prefs);
       this.redrawActiveSelectionUI();
+    });
+
+    symmetryStore.subscribeImmediate((prefs) => {
+      this.uiOverlay.setSymmetryPrefs(prefs);
+      this.requestRedraw();
+    });
+
+    timelineStore.subscribeImmediate((timeline) => {
+      this.uiOverlay.setPlaybackActive(timeline.playing);
     });
 
     // Keep the layer panel's active row honest: the Stage row can only be
@@ -883,6 +902,28 @@ class App {
   private onToolStart(point: Point, tool: ToolId) {
     if (tool === "pan") return;
 
+    const viewportPoint = pixelToViewport(point, this.config);
+    const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
+    const symmetry = symmetryStore.get();
+
+    // Symmetry origin handle takes priority over tools when enabled.
+    if (
+      !this.documentManager.isPlaying() &&
+      hitTestSymmetryHandle(
+        viewportPoint.x,
+        viewportPoint.y,
+        symmetry,
+        (x, y) => this.camera.worldToScreen(x, y),
+      )
+    ) {
+      this.symmetryHandleDragging = true;
+      return;
+    }
+
+    if (symmetry.enabled) {
+      setSymmetryGestureSource(worldPoint.x, worldPoint.y, symmetry);
+    }
+
     // Select/magnet manipulate live Paper items, which the frame loader
     // replaces on every playhead move — those still stop playback. Pixel
     // tools (brush/lasso/shapes) draw on their own canvas and commit
@@ -942,7 +983,6 @@ class App {
       tool === "circle"
     ) {
       if (this.getEffectiveMode(tool) === "inside") {
-        const viewportPoint = pixelToViewport(point, this.config);
         const hit = this.paperRenderer.hitTest(viewportPoint);
         this.insideClipForStroke = this.paperRenderer.hitToClipPathItem(hit);
       } else {
@@ -961,6 +1001,20 @@ class App {
 
   private onToolMove(point: Point, tool: ToolId) {
     if (tool === "pan") return;
+
+    if (this.symmetryHandleDragging) {
+      const viewportPoint = pixelToViewport(point, this.config);
+      const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
+      symmetryStore.update((s) =>
+        normalizeSymmetrySettings({
+          ...s,
+          originX: worldPoint.x,
+          originY: worldPoint.y,
+        }),
+      );
+      this.uiOverlay.updateCursor(point);
+      return;
+    }
 
     if (tool === "select") {
       this.selectionController.handleMove(point);
@@ -991,6 +1045,11 @@ class App {
 
   private async onToolEnd(tool: ToolId) {
     if (tool === "pan") return;
+
+    if (this.symmetryHandleDragging) {
+      this.symmetryHandleDragging = false;
+      return;
+    }
 
     if (tool === "select") {
       this.selectionController.handleEnd();
@@ -1158,6 +1217,11 @@ class App {
 
   private onToolCancel(tool: ToolId) {
     if (tool === "pan") return;
+
+    if (this.symmetryHandleDragging) {
+      this.symmetryHandleDragging = false;
+      return;
+    }
 
     if (tool === "select") {
       this.selectionController.handleCancel();
