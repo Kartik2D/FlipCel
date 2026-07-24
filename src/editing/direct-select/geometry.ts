@@ -1,3 +1,4 @@
+import paper from "paper";
 import type { Point } from "../../geometry/types";
 
 /** Ray-cast point-in-polygon test for lasso marquee hits. */

@@ -1,3 +1,4 @@
+import paper from "paper";
 import type { SelectionHandle } from "./types";
 
 export type WorldToScreen = (x: number, y: number) => { x: number; y: number };
