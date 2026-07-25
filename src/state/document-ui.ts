@@ -30,12 +30,18 @@ export function normalizeStageDimensionInput(value: number): number {
 
 export function snapStageDimension(value: number): number {
   const clamped = clampStageDimension(value);
+  // Prefer nearest preset within threshold so close presets (1024/1080)
+  // don't steal each other via first-match order.
+  let nearest: number | null = null;
+  let nearestDist = Infinity;
   for (const preset of STAGE_SIZE_PRESETS) {
-    if (Math.abs(clamped - preset) <= STAGE_SIZE_SNAP_THRESHOLD) {
-      return preset;
+    const dist = Math.abs(clamped - preset);
+    if (dist <= STAGE_SIZE_SNAP_THRESHOLD && dist < nearestDist) {
+      nearest = preset;
+      nearestDist = dist;
     }
   }
-  return clamped;
+  return nearest ?? clamped;
 }
 
 export const stageStore = new Store<StageSettings>({
