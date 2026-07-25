@@ -18,7 +18,7 @@ const DOCK_TOP_EXTRA_PX = 10;
 /** Bottom margin so the stage does not sit flush against the window edge. */
 const FIT_BOTTOM_MARGIN_PX = 16;
 
-/** Horizontal reserve on the right for the shortcuts dock (3 chips + padding). */
+/** Horizontal reserve per side so the stage stays centered (corner docks / breathing room). */
 const DOCK_SIDE_RESERVE_PX = 160;
 
 /** Do not use more than this fraction of viewport height for the top inset (safety on short windows). */
@@ -46,6 +46,6 @@ export function getStageFitViewportInsets(viewportWidth: number, viewportHeight:
     top,
     right: side,
     bottom: FIT_BOTTOM_MARGIN_PX,
-    left: 0,
+    left: side,
   };
 }

@@ -11,6 +11,7 @@ export class BlockyButton extends Block {
   /** Flat chrome for use inside panels; keep 3D depth for dock / shell toggles only. */
   @property({ type: Boolean, reflect: true }) flat = false;
   @property({ type: Boolean, reflect: true }) danger = false;
+  @property({ type: Boolean, reflect: true }) accent = false;
   @property({ type: Boolean, reflect: true }) disabled = false;
   /** Fill flex row width (e.g. equal-width dock toggles). */
   @property({ type: Boolean, reflect: true }) stretch = false;
@@ -176,6 +177,26 @@ export class BlockyButton extends Block {
 
     :host([flat][danger][active]) .face {
       background: var(--inkwell-danger-hover, #7a3535);
+      color: var(--inkwell-danger-contrast, #ffffff);
+      --block-font-color: var(--inkwell-danger-contrast, #ffffff);
+    }
+
+    :host([accent]) {
+      --block-face-bg: var(--inkwell-accent, #4a6fb5);
+      --block-font-color: var(--inkwell-danger-contrast, #ffffff);
+    }
+
+    :host([flat][accent]) {
+      --block-face-bg: var(--inkwell-accent, #4a6fb5);
+      --block-font-color: var(--inkwell-danger-contrast, #ffffff);
+    }
+
+    :host([flat][accent]:not([active]):hover) .face {
+      filter: brightness(0.95);
+    }
+
+    :host([flat][accent][active]) .face {
+      background: var(--inkwell-accent-hover, #3d5e9a);
       color: var(--inkwell-danger-contrast, #ffffff);
       --block-font-color: var(--inkwell-danger-contrast, #ffffff);
     }

@@ -352,6 +352,30 @@ export class InkwellUniversalPanel extends FloatingPanel {
     return this.renderFloatingBlock(
       "Settings",
       html`
+            <inkwell-panel-section title="File" data-interactive>
+              <div class="row">
+                <blocky-button flat accent stretch @click=${() => this.emit("doc-new")}
+                  >New File</blocky-button
+                >
+              </div>
+              <div class="row">
+                <blocky-button flat @click=${() => this.emit("doc-save")}
+                  >Save</blocky-button
+                >
+                <blocky-button flat @click=${() => this.emit("doc-open")}
+                  >Open</blocky-button
+                >
+                <blocky-button
+                  flat
+                  @click=${() =>
+                    this.dispatchEvent(
+                      new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
+                    )}
+                  >Export</blocky-button
+                >
+              </div>
+            </inkwell-panel-section>
+
             ${this.renderStageSettings()}
 
             <inkwell-panel-section data-interactive>
@@ -418,29 +442,6 @@ export class InkwellUniversalPanel extends FloatingPanel {
                 >
                 <blocky-button flat danger @click=${() => this.emit("clear")}
                   >Clear</blocky-button
-                >
-              </div>
-
-              <div class="row">
-                <blocky-button
-                  flat
-                  @click=${() =>
-                    this.dispatchEvent(
-                      new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
-                    )}
-                  >Export view to SVG</blocky-button
-                >
-              </div>
-
-              <div class="row">
-                <blocky-button flat @click=${() => this.emit("doc-save")}
-                  >Save</blocky-button
-                >
-                <blocky-button flat @click=${() => this.emit("doc-open")}
-                  >Open</blocky-button
-                >
-                <blocky-button flat danger @click=${() => this.emit("doc-new")}
-                  >New</blocky-button
                 >
               </div>
             </inkwell-panel-section>

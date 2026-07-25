@@ -36,6 +36,7 @@ import {
   type SerializedDocument,
 } from "../document/document";
 import { saveAutosave, loadAutosave, debounce } from "../document/persistence";
+import { STARTUP_DOCUMENT } from "../document/startup-document";
 import { bus, Events } from "../input/event-bus";
 import type { CanvasConfig, Point, Modifiers } from "../geometry/types";
 import { cycleDockMode, type ToolId, type AllToolSettings } from "../tools/registry";
@@ -532,15 +533,20 @@ class App {
       this.requestRedraw();
     });
 
-    // Restore the autosaved document (if any) before the first snapshot.
+    // Restore autosave when present; otherwise load the bundled startup demo.
+    // "New" still creates a blank document (see TimelineSession.onDocNew).
     try {
       const saved = await loadAutosave();
       if (saved) {
         this.applyLoadedDocument(saved);
         console.log("Restored autosaved document");
+      } else {
+        this.applyLoadedDocument(STARTUP_DOCUMENT);
+        console.log("Loaded startup document");
       }
     } catch (error) {
-      console.error("Autosave restore failed (starting fresh):", error);
+      console.error("Document restore failed (loading startup demo):", error);
+      this.applyLoadedDocument(STARTUP_DOCUMENT);
     }
 
     // Take initial history snapshot (baseline for undo)
