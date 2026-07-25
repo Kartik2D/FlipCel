@@ -14,12 +14,18 @@ export const STAGE_SIZE_MAX = 1920;
 export const STAGE_SIZE_STEP = 8;
 export const DEFAULT_STAGE_WIDTH = 1280;
 export const DEFAULT_STAGE_HEIGHT = 720;
-export const STAGE_SIZE_PRESETS = [512, 720, 1024, 1280, 1920] as const;
+export const STAGE_SIZE_PRESETS = [512, 720, 1024, 1080, 1280, 1920] as const;
 export const STAGE_SIZE_SNAP_THRESHOLD = 64;
 
 export function clampStageDimension(value: number): number {
   const clamped = Math.max(STAGE_SIZE_MIN, Math.min(STAGE_SIZE_MAX, value));
   return Math.round(clamped / STAGE_SIZE_STEP) * STAGE_SIZE_STEP;
+}
+
+/** Typed stage size: any positive integer px (no slider min/max or step grid). */
+export function normalizeStageDimensionInput(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.round(value));
 }
 
 export function snapStageDimension(value: number): number {

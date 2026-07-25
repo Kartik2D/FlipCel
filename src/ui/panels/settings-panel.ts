@@ -5,6 +5,7 @@ import {
   wheelFrictionStore,
   stageStore,
   clampStageDimension,
+  normalizeStageDimensionInput,
   snapStageDimension,
   STAGE_SIZE_MIN,
   STAGE_SIZE_MAX,
@@ -218,17 +219,17 @@ export class InkwellUniversalPanel extends FloatingPanel {
     );
   }
 
-  private setStageDimension(key: "width" | "height", raw: string, snap = false) {
+  private setStageDimension(key: "width" | "height", raw: string) {
     const parsed = parseInt(raw, 10);
     if (!Number.isFinite(parsed)) return;
-    const value = snap ? snapStageDimension(parsed) : clampStageDimension(parsed);
+    const value = normalizeStageDimensionInput(parsed);
     if (this.stage.value[key] === value) return;
     stageStore.update((s) => ({ ...s, [key]: value }));
   }
 
-  private commitStageDimension(key: "width" | "height", raw: string, snap = false) {
+  private commitStageDimension(key: "width" | "height", raw: string) {
     const before = this.stage.value[key];
-    this.setStageDimension(key, raw, snap);
+    this.setStageDimension(key, raw);
     if (this.stage.value[key] !== before) {
       this.emit("stage-size-change");
     }
@@ -257,7 +258,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
 
     const value = snapStageDimension(parsed);
     input.value = String(value);
-    this.commitStageDimension(key, String(value), false);
+    this.commitStageDimension(key, String(value));
   }
 
   private stageSizeTickPercent(value: number): string {
@@ -280,16 +281,15 @@ export class InkwellUniversalPanel extends FloatingPanel {
             <input
               type="number"
               class="stage-size-input"
-              min=${STAGE_SIZE_MIN}
-              max=${STAGE_SIZE_MAX}
-              step=${STAGE_SIZE_STEP}
+              min="1"
+              step="1"
               .value=${String(value)}
               data-interactive
               aria-label=${`${label} in pixels`}
               @change=${(e: Event) =>
-                this.commitStageDimension(key, (e.target as HTMLInputElement).value, true)}
+                this.commitStageDimension(key, (e.target as HTMLInputElement).value)}
               @blur=${(e: Event) =>
-                this.commitStageDimension(key, (e.target as HTMLInputElement).value, true)}
+                this.commitStageDimension(key, (e.target as HTMLInputElement).value)}
             />
             <span class="stage-size-unit">px</span>
           </div>
