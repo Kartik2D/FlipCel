@@ -1,4 +1,5 @@
 import { html, css, nothing, type TemplateResult } from "lit";
+import { property } from "lit/decorators.js";
 import { FloatingPanel } from "./floating-panel";
 import { anchorPanelBelowTrigger, raisePanelZIndex } from "./panel-anchor";
 
@@ -11,6 +12,9 @@ import { anchorPanelBelowTrigger, raisePanelZIndex } from "./panel-anchor";
  * No title bar — content only, anchored near a trigger, dismisses on outside click.
  */
 export class PopupWindow extends FloatingPanel {
+  /** Compact anchored popups stay single-column. */
+  @property({ type: Boolean, reflect: true }) override masonry = false;
+
   private anchorEl: HTMLElement | null = null;
   private anchorSnapshot: {
     left: number;

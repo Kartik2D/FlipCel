@@ -1,5 +1,5 @@
 import { html, css } from "lit";
-import { customElement, state } from "lit/decorators.js";
+import { customElement, property, state } from "lit/decorators.js";
 import {
   wheelFrictionStore,
   wheelFrictionMotion,
@@ -27,6 +27,8 @@ const WHEEL_LEVER_EXPONENT = 1.25;
 
 @customElement("inkwell-wheel-panel")
 export class InkwellWheelPanel extends FloatingPanel {
+  @property({ type: Boolean, reflect: true }) override masonry = false;
+
   private timeline = new StoreController(this, timelineStore);
   private wheelFriction = new StoreController(this, wheelFrictionStore);
   /** Cumulative barrel rotation in degrees; grows clockwise without bound. */
@@ -171,7 +173,6 @@ export class InkwellWheelPanel extends FloatingPanel {
       height: 100%;
       pointer-events: none;
       color: var(--block-border, #555555);
-      opacity: 0.8;
     }
 
     .wheel.dragging .wheel-grab {

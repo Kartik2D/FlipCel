@@ -1,5 +1,5 @@
 import { html, css, nothing } from "lit";
-import { customElement, state } from "lit/decorators.js";
+import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
 import {
   layerStore,
@@ -29,6 +29,8 @@ import {
 
 @customElement("inkwell-layers-panel")
 export class InkwellLayersPanel extends FloatingPanel {
+  @property({ type: Boolean, reflect: true }) override masonry = false;
+
   private layers = new StoreController(this, layerStore);
   private timeline = new StoreController(this, timelineStore);
   @state() private editingLayerId: string | null = null;

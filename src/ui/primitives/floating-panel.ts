@@ -10,6 +10,11 @@ import { phosphorIcon } from "../icons/phosphor";
 export class FloatingPanel extends Block {
   @property({ type: Boolean, reflect: true }) pinned = false;
   @property({ type: Boolean }) showPinnedClose = true;
+  /**
+   * Arrange `inkwell-panel-section` groups in a responsive masonry (multi-column)
+   * layout when the panel is wide enough. Layers/tools opt out.
+   */
+  @property({ type: Boolean, reflect: true }) masonry = true;
 
   static styles = css`
     ${Block.styles}
@@ -90,6 +95,29 @@ export class FloatingPanel extends Block {
       min-width: 0;
     }
 
+    /* Responsive masonry: sections pack into columns as the panel widens. */
+    :host([masonry]) .panel-form {
+      display: block;
+      columns: var(--panel-masonry-column-width, 200px);
+      column-gap: 12px;
+    }
+
+    :host([masonry]) .panel-form > * {
+      break-inside: avoid;
+      page-break-inside: avoid;
+      -webkit-column-break-inside: avoid;
+      display: inline-block;
+      width: 100%;
+      max-width: 100%;
+      margin: 0 0 12px;
+      vertical-align: top;
+      box-sizing: border-box;
+    }
+
+    :host([masonry]) .panel-form > *:last-child {
+      margin-bottom: 0;
+    }
+
     .panel-form section {
       display: flex;
       flex-direction: column;
@@ -114,6 +142,7 @@ export class FloatingPanel extends Block {
 
     h3 {
       margin: 0;
+      font: inherit;
       font-weight: 600;
       color: var(--inkwell-text-primary, #1a1a1a);
     }
@@ -124,7 +153,11 @@ export class FloatingPanel extends Block {
       justify-content: flex-start;
       margin: 0;
       min-width: 0;
-      line-height: 1;
+      min-height: 1.25em;
+      font: inherit;
+      font-size: 16px;
+      font-weight: 600;
+      line-height: 1.25;
     }
 
     .panel-title span {
@@ -132,14 +165,20 @@ export class FloatingPanel extends Block {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      line-height: inherit;
     }
 
-    /* Title bar row: title (left), drag pill (center), close (right). */
+    /* Title bar row: title (left), drag pill (center), close (right).
+       Sized from the close control, not the title — untitled panels match. */
     .panel-header {
+      --panel-header-control-size: 18px;
       position: relative;
       z-index: 20;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto minmax(18px, 1fr);
+      grid-template-columns: minmax(0, 1fr) auto minmax(
+          var(--panel-header-control-size),
+          1fr
+        );
       align-items: center;
       column-gap: 8px;
       width: 100%;
@@ -147,7 +186,9 @@ export class FloatingPanel extends Block {
       flex-shrink: 0;
       box-sizing: border-box;
       margin: 0;
-      padding: 8px var(--block-face-padding);
+      /* Stable chrome: do not derive from --block-face-padding (may be multi-value). */
+      min-height: calc(var(--panel-header-control-size) + 16px);
+      padding: 8px 10px;
       background: var(--block-face-bg);
       border-radius: calc(var(--block-radius) - 2px) calc(var(--block-radius) - 2px) 0 0;
     }
@@ -168,15 +209,15 @@ export class FloatingPanel extends Block {
 
     .panel-header-end {
       justify-self: end;
-      width: 18px;
-      min-width: 18px;
-      height: 18px;
+      width: var(--panel-header-control-size, 18px);
+      min-width: var(--panel-header-control-size, 18px);
+      height: var(--panel-header-control-size, 18px);
     }
 
     .panel-header-close-spacer {
       display: block;
-      width: 18px;
-      height: 18px;
+      width: var(--panel-header-control-size, 18px);
+      height: var(--panel-header-control-size, 18px);
       flex-shrink: 0;
     }
 
@@ -217,8 +258,8 @@ export class FloatingPanel extends Block {
     }
 
     .panel-header-close {
-      width: 18px;
-      height: 18px;
+      width: var(--panel-header-control-size, 18px);
+      height: var(--panel-header-control-size, 18px);
       box-sizing: border-box;
       border: none;
       border-radius: 50%;
@@ -468,6 +509,11 @@ export class FloatingPanel extends Block {
     this.setAttribute('data-panel', '');
   }
 
+  /** Scrollable panel bodies use the shared face scrollbar gutter. */
+  protected override usesFaceScrollbar(): boolean {
+    return true;
+  }
+
   protected dragUsesMinimumMovementThreshold(): boolean {
     return !this.pinned;
   }
@@ -478,8 +524,7 @@ export class FloatingPanel extends Block {
 
   hidePanel() {
     this.pinned = false;
-    this.blockWidth = null;
-    this.blockHeight = null;
+    // Keep blockWidth/blockHeight so a resized panel restores its size on reopen.
     this.style.display = "none";
     this.dispatchEvent(
       new CustomEvent("panel-visibility-change", {

@@ -86,8 +86,172 @@ export const viewOverlayStore = new Store<ViewOverlaySettings>(
   }),
 );
 
-export type ThemeMode = "light" | "dark";
-export const themeModeStore = new Store<ThemeMode>("dark");
+export type ThemeMode =
+  | "light"
+  | "dark"
+  | "bubblegum"
+  | "neon"
+  | "notebook"
+  | "ocean"
+  | "matcha"
+  | "twilight"
+  | "berry";
+
+export const THEME_STORAGE_KEY = "inkwell.theme";
+
+export const THEME_OPTIONS: readonly ThemeMode[] = [
+  "dark",
+  "light",
+  "notebook",
+  "ocean",
+  "matcha",
+  "twilight",
+  "berry",
+  "bubblegum",
+  "neon",
+];
+
+/** Compact palette used by the settings theme preview glyph. */
+export interface ThemePreviewColors {
+  app: string;
+  panel: string;
+  border: string;
+  accent: string;
+}
+
+export interface ThemeInfo {
+  id: ThemeMode;
+  label: string;
+  /** Native UI color-scheme hint for form controls / scrollbars. */
+  colorScheme: "light" | "dark";
+  preview: ThemePreviewColors;
+}
+
+export const THEMES: Record<ThemeMode, ThemeInfo> = {
+  light: {
+    id: "light",
+    label: "Light",
+    colorScheme: "light",
+    preview: {
+      app: "#9a9a9a",
+      panel: "#e6e6e6",
+      border: "#484848",
+      accent: "#4d73d7",
+    },
+  },
+  dark: {
+    id: "dark",
+    label: "Dark",
+    colorScheme: "dark",
+    preview: {
+      app: "#121212",
+      panel: "#383838",
+      border: "#8a8a8a",
+      accent: "#7c9eff",
+    },
+  },
+  bubblegum: {
+    id: "bubblegum",
+    label: "Bubblegum",
+    colorScheme: "light",
+    preview: {
+      app: "#e8a0c0",
+      panel: "#fff0f6",
+      border: "#8a3d62",
+      accent: "#e23d8b",
+    },
+  },
+  neon: {
+    id: "neon",
+    label: "Neon",
+    colorScheme: "dark",
+    preview: {
+      app: "#05060c",
+      panel: "#14182a",
+      border: "#3dffe0",
+      accent: "#39ff9a",
+    },
+  },
+  notebook: {
+    id: "notebook",
+    label: "Notebook",
+    colorScheme: "light",
+    preview: {
+      app: "#c9bfb0",
+      panel: "#f4efe6",
+      border: "#6e6458",
+      accent: "#7a8f6b",
+    },
+  },
+  ocean: {
+    id: "ocean",
+    label: "Ocean",
+    colorScheme: "light",
+    preview: {
+      app: "#8fb4c4",
+      panel: "#e8f2f6",
+      border: "#3d5f70",
+      accent: "#3d8ea0",
+    },
+  },
+  matcha: {
+    id: "matcha",
+    label: "Matcha",
+    colorScheme: "light",
+    preview: {
+      app: "#9bb58a",
+      panel: "#eef5e8",
+      border: "#4a5e3f",
+      accent: "#6a8f5a",
+    },
+  },
+  twilight: {
+    id: "twilight",
+    label: "Twilight",
+    colorScheme: "dark",
+    preview: {
+      app: "#1a1630",
+      panel: "#2a2550",
+      border: "#f0b060",
+      accent: "#7b8cff",
+    },
+  },
+  berry: {
+    id: "berry",
+    label: "Berry",
+    colorScheme: "dark",
+    preview: {
+      app: "#1c1218",
+      panel: "#3a2834",
+      border: "#7dffc8",
+      accent: "#ff6b9d",
+    },
+  },
+};
+
+export function isThemeMode(value: unknown): value is ThemeMode {
+  return typeof value === "string" && (THEME_OPTIONS as readonly string[]).includes(value);
+}
+
+export function readStoredTheme(): ThemeMode {
+  try {
+    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    if (isThemeMode(stored)) return stored;
+  } catch {
+    // ignore quota / privacy mode
+  }
+  return "dark";
+}
+
+export function persistTheme(mode: ThemeMode) {
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, mode);
+  } catch {
+    // ignore quota / privacy mode
+  }
+}
+
+export const themeModeStore = new Store<ThemeMode>(readStoredTheme());
 
 export type WheelFriction = "low" | "medium" | "high";
 

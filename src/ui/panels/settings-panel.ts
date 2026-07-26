@@ -1,4 +1,4 @@
-import { html, css } from "lit";
+import { html, css, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import {
   themeModeStore,
@@ -11,11 +11,15 @@ import {
   STAGE_SIZE_MAX,
   STAGE_SIZE_STEP,
   STAGE_SIZE_PRESETS,
+  THEME_OPTIONS,
+  THEMES,
   WHEEL_FRICTION_OPTIONS,
   StoreController,
+  type ThemeMode,
 } from "../../state";
 import { historyStateStore } from "../../document/history";
 import { FloatingPanel } from "../primitives/floating-panel";
+import { renderThemePreview } from "../theme-preview";
 
 @customElement("inkwell-universal-panel")
 export class InkwellUniversalPanel extends FloatingPanel {
@@ -211,6 +215,38 @@ export class InkwellUniversalPanel extends FloatingPanel {
       border: 2px solid var(--inkwell-toggle-thumb, #fff);
       box-shadow: none;
     }
+
+    .theme-chip-btn {
+      width: 76px;
+    }
+
+    .theme-option {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      min-width: 0;
+      padding: 2px 0;
+      box-sizing: border-box;
+    }
+
+    .theme-preview {
+      display: block;
+      width: 36px;
+      height: 28px;
+      flex: 0 0 auto;
+      border-radius: 6px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+    }
+
+    .theme-label {
+      font-size: 12px;
+      line-height: 1.1;
+      font-weight: 600;
+    }
   `;
 
   private emit(name: string, detail?: unknown) {
@@ -352,6 +388,32 @@ export class InkwellUniversalPanel extends FloatingPanel {
     return this.renderFloatingBlock(
       "Settings",
       html`
+            <inkwell-panel-section data-interactive>
+              <div class="row">
+                <blocky-button
+                  flat
+                  ?disabled=${!this.history.value.canUndo}
+                  @click=${() => this.emit("undo")}
+                  >Undo</blocky-button
+                >
+                <blocky-button
+                  flat
+                  ?disabled=${!this.history.value.canRedo}
+                  @click=${() => this.emit("redo")}
+                  >Redo</blocky-button
+                >
+              </div>
+
+              <div class="row">
+                <blocky-button flat @click=${() => this.emit("flatten")}
+                  >Flatten</blocky-button
+                >
+                <blocky-button flat danger @click=${() => this.emit("clear")}
+                  >Clear</blocky-button
+                >
+              </div>
+            </inkwell-panel-section>
+
             <inkwell-panel-section title="File" data-interactive>
               <div class="row">
                 <blocky-button flat accent stretch @click=${() => this.emit("doc-new")}
@@ -376,35 +438,9 @@ export class InkwellUniversalPanel extends FloatingPanel {
               </div>
             </inkwell-panel-section>
 
-            ${this.renderStageSettings()}
-
-            <inkwell-panel-section data-interactive>
-              <div class="toggle">
-                <span>Alias fix</span>
-                <input
-                  type="checkbox"
-                  .checked=${this.aliasFixEnabled}
-                  @change=${(e: Event) => {
-                    this.aliasFixEnabled = (e.target as HTMLInputElement).checked;
-                    this.emit("alias-fix-toggle", this.aliasFixEnabled);
-                  }}
-                />
-              </div>
-
-              <div class="toggle">
-                <span>Dark mode</span>
-                <input
-                  type="checkbox"
-                  .checked=${this.themeMode.value === "dark"}
-                  @change=${(e: Event) => {
-                    const checked = (e.target as HTMLInputElement).checked;
-                    this.themeMode.set(checked ? "dark" : "light");
-                  }}
-                />
-              </div>
-
+            <inkwell-panel-section title="Animation Wheel" data-interactive>
               <label>
-                <span>Animation wheel friction</span>
+                <span>Friction</span>
                 <div class="row">
                   ${WHEEL_FRICTION_OPTIONS.map(
                     (level) => html`
@@ -420,29 +456,39 @@ export class InkwellUniversalPanel extends FloatingPanel {
               </label>
             </inkwell-panel-section>
 
-            <inkwell-panel-section data-interactive>
-              <div class="row">
-                <blocky-button
-                  flat
-                  ?disabled=${!this.history.value.canUndo}
-                  @click=${() => this.emit("undo")}
-                  >Undo</blocky-button
-                >
-                <blocky-button
-                  flat
-                  ?disabled=${!this.history.value.canRedo}
-                  @click=${() => this.emit("redo")}
-                  >Redo</blocky-button
-                >
-              </div>
+            ${this.renderStageSettings()}
 
-              <div class="row">
-                <blocky-button flat @click=${() => this.emit("flatten")}
-                  >Flatten</blocky-button
-                >
-                <blocky-button flat danger @click=${() => this.emit("clear")}
-                  >Clear</blocky-button
-                >
+            <inkwell-panel-section data-interactive>
+              <inkwell-scroll-strip label="Theme" flush rows="2">
+                ${THEME_OPTIONS.map(
+                  (mode) => html`
+                    <blocky-button
+                      class="theme-chip-btn"
+                      flat
+                      ?active=${this.themeMode.value === mode}
+                      @click=${() => this.themeMode.set(mode)}
+                    >
+                      <span class="theme-option">
+                        ${renderThemePreview(mode)}
+                        <span class="theme-label">${THEMES[mode].label}</span>
+                      </span>
+                    </blocky-button>
+                  `,
+                )}
+              </inkwell-scroll-strip>
+            </inkwell-panel-section>
+
+            <inkwell-panel-section title="Alias Fix" data-interactive>
+              <div class="toggle">
+                <span>Alias fix</span>
+                <input
+                  type="checkbox"
+                  .checked=${this.aliasFixEnabled}
+                  @change=${(e: Event) => {
+                    this.aliasFixEnabled = (e.target as HTMLInputElement).checked;
+                    this.emit("alias-fix-toggle", this.aliasFixEnabled);
+                  }}
+                />
               </div>
             </inkwell-panel-section>
       `,

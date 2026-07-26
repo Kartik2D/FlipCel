@@ -44,6 +44,10 @@ export const PHOSPHOR_ICONS: Record<string, string> = {
     '<circle cx="92" cy="128" r="56" opacity="0.35"/><circle cx="160" cy="128" r="56" stroke="currentColor" stroke-width="16" fill="none"/>',
   "dots-six-vertical":
     '<circle cx="100" cy="64" r="14"/><circle cx="156" cy="64" r="14"/><circle cx="100" cy="128" r="14"/><circle cx="156" cy="128" r="14"/><circle cx="100" cy="192" r="14"/><circle cx="156" cy="192" r="14"/>',
+  "caret-left":
+    '<path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/>',
+  "caret-right":
+    '<path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/>',
 };
 
 export const PANEL_ICON_MAP: Record<string, string> = {

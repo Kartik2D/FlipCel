@@ -255,6 +255,9 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
 
 @customElement("inkwell-color-panel")
 export class InkwellColorPanel extends ColorPickerFeatures(FloatingPanel) {
+  /** Picker flex-fills the panel; keep a single-column stack. */
+  @property({ type: Boolean, reflect: true }) override masonry = false;
+
   static styles = css`
     ${FloatingPanel.styles}
     ${colorPickerSharedStyles}

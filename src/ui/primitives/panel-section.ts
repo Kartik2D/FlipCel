@@ -8,6 +8,8 @@ import { customElement, property } from "lit/decorators.js";
 @customElement("inkwell-panel-section")
 export class InkwellPanelSection extends LitElement {
   @property({ type: String }) title = "";
+  /** Center the section title (e.g. startup theme picker). */
+  @property({ type: Boolean, reflect: true, attribute: "center-title" }) centerTitle = false;
   /** Fill remaining vertical space inside a flex `.panel-form` stack. */
   @property({ type: Boolean, reflect: true }) grow = false;
 
@@ -42,6 +44,10 @@ export class InkwellPanelSection extends LitElement {
       font: inherit;
       font-weight: 600;
       color: var(--inkwell-text-primary, #1a1a1a);
+    }
+
+    :host([center-title]) .section-title {
+      text-align: center;
     }
 
     .section-body {

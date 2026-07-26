@@ -127,8 +127,10 @@ export class Block extends LitElement {
       border-radius: calc(var(--block-radius) - 2px);
       padding: var(--block-face-padding);
       height: 100%;
-      overflow: auto;
-      overscroll-behavior: none;
+      /* Clip to radius only — do NOT use overflow:auto here. That makes every
+         Block (including blocky-button) a wheel scrollport and breaks scroll
+         chaining to real parents. Panels opt into scrolling in FloatingPanel. */
+      overflow: hidden;
     }
 
     /* Resize corner zones in the depth area */
@@ -609,13 +611,11 @@ export class Block extends LitElement {
   protected faceScrollbar: InkwellScrollbar | null = null;
 
   /**
-   * Every Block subclass renders a .block > .face pair with its own
-   * template, so the shared gutter scrollbar is appended imperatively
-   * (Lit leaves foreign children of .block alone). It auto-hides while
-   * the face content fits. Fixed-size panels (e.g. the jog wheel) opt out.
+   * Opt-in face scrollbar. Default off so compact Blocks (buttons) are not
+   * scroll containers. FloatingPanel turns this on for scrollable panels.
    */
   protected usesFaceScrollbar(): boolean {
-    return true;
+    return false;
   }
 
   protected getFaceScrollbarMount(): HTMLElement | null {

@@ -35,8 +35,7 @@ import {
   timelineStore,
   type SerializedDocument,
 } from "../document/document";
-import { saveAutosave, loadAutosave, debounce } from "../document/persistence";
-import { STARTUP_DOCUMENT } from "../document/startup-document";
+import { saveAutosave, debounce } from "../document/persistence";
 import { bus, Events } from "../input/event-bus";
 import type { CanvasConfig, Point, Modifiers } from "../geometry/types";
 import { cycleDockMode, type ToolId, type AllToolSettings } from "../tools/registry";
@@ -51,6 +50,7 @@ import type {
   InkwellColorPopup,
   InkwellToolsPanel,
   InkwellUniversalPanel,
+  InkwellStartupPanel,
   InkwellViewPanel,
   InkwellShortcutsPanel,
   InkwellLayersPanel,
@@ -74,12 +74,14 @@ import {
   stageStore,
   stageSelectedStore,
   STAGE_LAYER_ID,
+  THEMES,
+  persistTheme,
   type ThemeMode,
 } from "../state/index";
 import { getStageFitViewportInsets } from "../render/stage-fit-insets";
 import { bindPanelEvents } from "./panel-bridge";
 import { ToolSession } from "./tool-session";
-import { TimelineSession } from "./timeline-session";
+import { TimelineSession, createBlankSerializedDocument } from "./timeline-session";
 
 /**
  * Snap to 0° when |view rotation| is strictly inside this bound (degrees), i.e. |θ| < 15°.
@@ -125,6 +127,7 @@ class App {
   private colorPopup: InkwellColorPopup;
   private toolsPanel: InkwellToolsPanel;
   private universalPanel: InkwellUniversalPanel;
+  private startupPanel: InkwellStartupPanel;
   private viewPanel: InkwellViewPanel;
   private shortcutsPanel: InkwellShortcutsPanel;
   private layersPanel: InkwellLayersPanel;
@@ -248,6 +251,7 @@ class App {
     this.colorPopup = document.getElementById("color-popup") as InkwellColorPopup;
     this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
+    this.startupPanel = document.getElementById("startup-panel") as InkwellStartupPanel;
     this.viewPanel = document.getElementById("view-panel") as InkwellViewPanel;
     this.shortcutsPanel = document.getElementById("shortcuts-panel") as InkwellShortcutsPanel;
     this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
@@ -533,28 +537,37 @@ class App {
       this.requestRedraw();
     });
 
-    // Restore autosave when present; otherwise load the bundled startup demo.
-    // "New" still creates a blank document (see TimelineSession.onDocNew).
-    try {
-      const saved = await loadAutosave();
-      if (saved) {
-        this.applyLoadedDocument(saved);
-        console.log("Restored autosaved document");
-      } else {
-        this.applyLoadedDocument(STARTUP_DOCUMENT);
-        console.log("Loaded startup document");
-      }
-    } catch (error) {
-      console.error("Document restore failed (loading startup demo):", error);
-      this.applyLoadedDocument(STARTUP_DOCUMENT);
-    }
+    // Always start on a blank document; startup can restore autosave from before launch.
+    await this.timelineSession.captureSessionAutosaveCandidate();
+    this.startupPanel.canRestoreAutosave = this.timelineSession.hasSessionAutosaveCandidate();
+    this.applyLoadedDocument(createBlankSerializedDocument());
 
     // Take initial history snapshot (baseline for undo)
     this.historyManager.snapshot();
 
     this.startCameraFrameLoop();
+    this.setupStartupPanel();
+    this.startupPanel.show();
 
     console.log("App initialized with Lit UI components and stores");
+  }
+
+  private setupStartupPanel() {
+    this.startupPanel.addEventListener("startup-load-file", async () => {
+      const opened = await this.timelineSession.onDocOpen();
+      if (opened) this.startupPanel.hidePanel();
+    });
+    this.startupPanel.addEventListener("startup-restore-autosave", async () => {
+      const restored = await this.timelineSession.restoreAutosaveDocument();
+      if (restored) {
+        this.startupPanel.hidePanel();
+      } else {
+        alert("No previous file was found to restore.");
+      }
+    });
+    this.startupPanel.addEventListener("startup-load-example", () => {
+      this.timelineSession.loadExampleDocument();
+    });
   }
 
   /**
@@ -638,8 +651,10 @@ class App {
   }
 
   private applyTheme(mode: ThemeMode) {
+    const { colorScheme } = THEMES[mode];
     document.documentElement.dataset.theme = mode;
-    document.documentElement.style.colorScheme = mode;
+    document.documentElement.style.colorScheme = colorScheme;
+    persistTheme(mode);
     this.feedbackLayer.redraw();
     this.redrawActiveSelectionUI();
     this.requestRedraw();

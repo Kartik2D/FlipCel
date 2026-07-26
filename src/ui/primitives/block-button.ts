@@ -10,8 +10,12 @@ import { Block } from "./block";
 export class BlockyButton extends Block {
   /** Flat chrome for use inside panels; keep 3D depth for dock / shell toggles only. */
   @property({ type: Boolean, reflect: true }) flat = false;
+  /** Larger flat control for primary chooser actions (e.g. startup window). */
+  @property({ type: Boolean, reflect: true }) large = false;
   @property({ type: Boolean, reflect: true }) danger = false;
   @property({ type: Boolean, reflect: true }) accent = false;
+  /** Flat face uses timeline playhead color (theme token). */
+  @property({ type: Boolean, reflect: true }) playhead = false;
   @property({ type: Boolean, reflect: true }) disabled = false;
   /** Fill flex row width (e.g. equal-width dock toggles). */
   @property({ type: Boolean, reflect: true }) stretch = false;
@@ -151,6 +155,16 @@ export class BlockyButton extends Block {
       padding: 6px 5px;
     }
 
+    :host([flat][large]) {
+      --block-font-size: 14px;
+      --block-radius: 12px;
+    }
+
+    :host([flat][large]) .face {
+      padding: 14px 16px;
+      border-radius: calc(var(--block-radius) - 2px);
+    }
+
     :host([flat]:hover) .face {
       filter: brightness(0.97);
     }
@@ -200,7 +214,26 @@ export class BlockyButton extends Block {
       color: var(--inkwell-danger-contrast, #ffffff);
       --block-font-color: var(--inkwell-danger-contrast, #ffffff);
     }
+
+    :host([playhead]) {
+      --block-face-bg: var(--inkwell-playhead, #f2c14e);
+      --block-font-color: var(--inkwell-text-primary, #1a1a1a);
+    }
+
+    :host([flat][playhead]) {
+      --block-face-bg: var(--inkwell-playhead, #f2c14e);
+      --block-font-color: var(--inkwell-text-primary, #1a1a1a);
+      color: var(--inkwell-text-primary, #1a1a1a);
+    }
+
+    :host([flat][playhead]:not([active]):hover) .face {
+      filter: brightness(0.96);
+    }
+
+    :host([flat][playhead][active]) .face {
+      background: color-mix(in srgb, var(--inkwell-playhead, #f2c14e) 88%, #000000);
+      color: var(--inkwell-text-primary, #1a1a1a);
+      --block-font-color: var(--inkwell-text-primary, #1a1a1a);
+    }
   `;
 }
-
-

@@ -10,7 +10,8 @@ import {
   DEFAULT_FRAME_RATE,
   DEFAULT_DURATION,
 } from "../document/document";
-import { downloadDocument, pickDocumentFile } from "../document/persistence";
+import { STARTUP_DOCUMENT } from "../document/startup-document";
+import { downloadDocument, pickDocumentFile, loadAutosave } from "../document/persistence";
 import type { HistoryManager } from "../document/history";
 import type { SelectionController } from "../editing/object-select";
 import type { DirectSelectController } from "../editing/direct-select";
@@ -29,6 +30,30 @@ import {
   DEFAULT_STAGE_HEIGHT,
 } from "../state/index";
 
+/** Fresh empty document used for New File and app launch. */
+export function createBlankSerializedDocument(): SerializedDocument {
+  const layerId = generateLayerId();
+  return {
+    version: 1,
+    stage: {
+      width: DEFAULT_STAGE_WIDTH,
+      height: DEFAULT_STAGE_HEIGHT,
+      color: "#ffffff",
+    },
+    frameRate: DEFAULT_FRAME_RATE,
+    duration: DEFAULT_DURATION,
+    tracks: [
+      {
+        id: layerId,
+        name: "Layer 1",
+        visible: true,
+        keyframes: [{ frameIndex: 0, contentId: EMPTY_CONTENT_ID, holdUntil: 0 }],
+      },
+    ],
+    content: { [EMPTY_CONTENT_ID]: "" },
+  };
+}
+
 export interface TimelineSessionDeps {
   documentManager: DocumentManager;
   historyManager: HistoryManager;
@@ -44,11 +69,27 @@ export interface TimelineSessionDeps {
 
 export class TimelineSession {
   private readonly deps: TimelineSessionDeps;
+  /** Autosave captured at session start (before the blank launch doc overwrites IDB). */
+  private sessionAutosaveCandidate: SerializedDocument | null = null;
   /** Accumulates wall-clock time between animation frame advances during playback. */
   private playbackAccumulatorMs = 0;
 
   constructor(deps: TimelineSessionDeps) {
     this.deps = deps;
+  }
+
+  /** Read IndexedDB autosave once at launch for "Restore previous file". */
+  async captureSessionAutosaveCandidate(): Promise<void> {
+    try {
+      this.sessionAutosaveCandidate = await loadAutosave();
+    } catch (error) {
+      console.error("Failed to read autosave for restore:", error);
+      this.sessionAutosaveCandidate = null;
+    }
+  }
+
+  hasSessionAutosaveCandidate(): boolean {
+    return this.sessionAutosaveCandidate !== null;
   }
 
   /** Advance the animation playhead during playback (driven by the frame loop). */
@@ -385,40 +426,57 @@ export class TimelineSession {
     downloadDocument(this.serializeDocument());
   }
 
-  async onDocOpen(): Promise<void> {
+  async onDocOpen(): Promise<boolean> {
     const { historyManager, requestRedraw } = this.deps;
     try {
       const doc = await pickDocumentFile();
-      if (!doc) return;
+      if (!doc) return false;
       this.applyLoadedDocument(doc);
       historyManager.clear();
       historyManager.snapshot();
       requestRedraw();
+      return true;
     } catch (error) {
       console.error("Failed to open document:", error);
       alert(`Could not open file: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  /** Restore the autosave snapshot from before this session's blank launch doc. */
+  async restoreAutosaveDocument(): Promise<boolean> {
+    const { historyManager, requestRedraw } = this.deps;
+    const doc = this.sessionAutosaveCandidate;
+    if (!doc) return false;
+    try {
+      this.applyLoadedDocument(doc);
+      this.sessionAutosaveCandidate = null;
+      historyManager.clear();
+      historyManager.snapshot();
+      requestRedraw();
+      return true;
+    } catch (error) {
+      console.error("Failed to restore autosave:", error);
+      alert(
+        `Could not restore previous file: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
     }
   }
 
   onDocNew(): void {
     const { historyManager, requestRedraw } = this.deps;
     if (!confirm("Start a new document? Unsaved changes will be lost.")) return;
-    const layerId = generateLayerId();
-    this.applyLoadedDocument({
-      version: 1,
-      stage: { width: DEFAULT_STAGE_WIDTH, height: DEFAULT_STAGE_HEIGHT, color: "#ffffff" },
-      frameRate: DEFAULT_FRAME_RATE,
-      duration: DEFAULT_DURATION,
-      tracks: [
-        {
-          id: layerId,
-          name: "Layer 1",
-          visible: true,
-          keyframes: [{ frameIndex: 0, contentId: EMPTY_CONTENT_ID, holdUntil: 0 }],
-        },
-      ],
-      content: { [EMPTY_CONTENT_ID]: "" },
-    });
+    this.applyLoadedDocument(createBlankSerializedDocument());
+    historyManager.clear();
+    historyManager.snapshot();
+    requestRedraw();
+  }
+
+  /** Load the bundled demo document (startup example). */
+  loadExampleDocument(): void {
+    const { historyManager, requestRedraw } = this.deps;
+    this.applyLoadedDocument(STARTUP_DOCUMENT);
     historyManager.clear();
     historyManager.snapshot();
     requestRedraw();
