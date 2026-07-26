@@ -1,4 +1,4 @@
-import { html, css, type TemplateResult } from "lit";
+import { html, css } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import {
   themeModeStore,
@@ -15,7 +15,6 @@ import {
   THEMES,
   WHEEL_FRICTION_OPTIONS,
   StoreController,
-  type ThemeMode,
 } from "../../state";
 import { historyStateStore } from "../../document/history";
 import { FloatingPanel } from "../primitives/floating-panel";
