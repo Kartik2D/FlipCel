@@ -62,7 +62,11 @@ export type PanelBridgeDeps = {
   onDocSave: () => void;
   onDocOpen: () => void | Promise<void>;
   onDocNew: () => void;
-  onTimelineFrameSelect: (frame: number, layerId?: string) => void;
+  onTimelineFrameSelect: (
+    frame: number,
+    layerId?: string,
+    options?: { navigateOnly?: boolean },
+  ) => void;
   onKeyframeAdd: (blank: boolean) => void;
   onKeyframeRemove: (range?: FrameRangeDetail) => void;
   onFramesMove: (
@@ -92,6 +96,13 @@ export type PanelBridgeDeps = {
     delta: number,
   ) => void;
   onFramesReverse: (
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+  ) => void;
+  onEditMultipleFramesToggle: (
+    enabled: boolean,
     layerIds: string[] | undefined,
     layerId: string | undefined,
     start: number,
@@ -186,8 +197,10 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
 
   // Timeline events (frames grid merged into the layers panel)
   layersPanel.addEventListener("frame-select", (e: Event) => {
-    const { frame, layerId } = (e as CustomEvent<{ frame: number; layerId?: string }>).detail;
-    deps.onTimelineFrameSelect(frame, layerId);
+    const { frame, layerId, navigateOnly } = (
+      e as CustomEvent<{ frame: number; layerId?: string; navigateOnly?: boolean }>
+    ).detail;
+    deps.onTimelineFrameSelect(frame, layerId, { navigateOnly });
   });
   // Jog wheel: signed frame steps, wrapping around the timeline ends.
   wheelPanel.addEventListener("frame-step", (e: Event) => {
@@ -236,6 +249,12 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
       e as CustomEvent<FrameRangeDetail>
     ).detail;
     deps.onFramesReverse(layerIds, layerId, start, end);
+  });
+  layersPanel.addEventListener("frames-edit-multiple", (e: Event) => {
+    const { enabled, layerId, layerIds, start, end } = (
+      e as CustomEvent<FrameRangeDetail & { enabled: boolean }>
+    ).detail;
+    deps.onEditMultipleFramesToggle(enabled, layerIds, layerId, start, end);
   });
   layersPanel.addEventListener("keyframe-hold-toggle", (e: Event) => {
     const { frame, layerId } = (e as CustomEvent<{ frame: number; layerId: string }>).detail;

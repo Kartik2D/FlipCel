@@ -347,6 +347,7 @@ export const timelinePanelStyles = css`
       transparent
     );
     box-shadow: inset 0 0 0 2px var(--inkwell-accent, #4a6fb5);
+    /* Clicks pass through to cells; tapping inside the range reopens the popup. */
     pointer-events: none;
   }
 
@@ -428,6 +429,28 @@ export const timelinePanelStyles = css`
     opacity: 0.35;
     cursor: not-allowed;
     pointer-events: none;
+  }
+
+  .frame-action-btn.active {
+    background: var(--inkwell-accent, #4a6fb5);
+    color: #fff;
+  }
+
+  .frame-action-btn.active:hover {
+    background: color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 88%, #000);
+    color: #fff;
+  }
+
+  /* Edit Multiple Frames: keep the range tint unmistakably accented while on. */
+  .frame-selection.emf-on {
+    background: color-mix(
+      in srgb,
+      var(--inkwell-accent, #4a6fb5) 55%,
+      transparent
+    );
+    box-shadow:
+      inset 0 0 0 2px var(--inkwell-accent, #4a6fb5),
+      0 0 0 1px color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 70%, transparent);
   }
 
   /* Move preview: the departing artwork fades in place while a ghost of

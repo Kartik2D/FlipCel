@@ -68,9 +68,117 @@ export class PaperRenderer {
   // of index-drift bugs.
   private layerMap = new Map<string, paper.Layer>();
   private activeLayerId: string | null = null;
+  /**
+   * While Edit Multiple Frames is on, new strokes are tagged with this
+   * keyframe frame (the playhead). Null when EMF is off.
+   */
+  private emfPlayheadFrame: number | null = null;
 
   constructor(_canvas: HTMLCanvasElement, config: CanvasConfig) {
     this.config = config;
+  }
+
+  /** Playhead frame bucket for new strokes during Edit Multiple Frames. */
+  setEmfPlayheadFrame(frame: number | null): void {
+    this.emfPlayheadFrame = frame;
+  }
+
+  getEmfKeyframeFrame(item: paper.Item): number | null {
+    const frame = (item.data as { emfKeyframeFrame?: unknown } | null)?.emfKeyframeFrame;
+    return typeof frame === "number" && Number.isFinite(frame) ? frame : null;
+  }
+
+  setEmfKeyframeFrame(item: paper.Item, frame: number): void {
+    const data = (item.data as Record<string, unknown> | null) ?? {};
+    data.emfKeyframeFrame = frame;
+    item.data = data;
+  }
+
+  private copyEmfKeyframeFrame(source: paper.Item, target: paper.Item): void {
+    const frame = this.getEmfKeyframeFrame(source);
+    if (frame !== null) this.setEmfKeyframeFrame(target, frame);
+  }
+
+  /** Resolve an item's EMF keyframe bucket; untagged items belong to the playhead. */
+  private resolveEmfKeyframeFrame(item: paper.Item): number | null {
+    return this.getEmfKeyframeFrame(item) ?? this.emfPlayheadFrame;
+  }
+
+  /**
+   * Same-color unite / add-merge may only fold items that belong to the same
+   * EMF keyframe bucket (or any items when EMF is off).
+   */
+  private emfContentCompatible(a: paper.Item, b: paper.Item): boolean {
+    if (this.emfPlayheadFrame === null) {
+      return this.getEmfKeyframeFrame(a) === null && this.getEmfKeyframeFrame(b) === null;
+    }
+    return this.resolveEmfKeyframeFrame(a) === this.resolveEmfKeyframeFrame(b);
+  }
+
+  /**
+   * Replace a layer with one imported copy per keyframe in the EMF range.
+   * Each copy is tagged with its keyframe frame so select edits write back
+   * independently (Flash-style), even when content ids were shared.
+   */
+  setLayerContentsByKeyframe(
+    layerId: string,
+    contents: Array<{ keyframeFrame: number; json: string }>,
+  ): void {
+    const layer = this.layerMap.get(layerId);
+    if (!layer) return;
+    layer.removeChildren();
+    for (const { keyframeFrame, json } of contents) {
+      if (!json) continue;
+      const scratch = new paper.Layer();
+      scratch.importJSON(json);
+      for (const child of [...scratch.children]) {
+        this.setEmfKeyframeFrame(child, keyframeFrame);
+        layer.addChild(child);
+      }
+      scratch.remove();
+    }
+    this.markerByItemId.clear();
+    paper.view.update();
+  }
+
+  /**
+   * Export each EMF keyframe bucket on a layer as its own JSON string.
+   * Untagged children join `playheadFrame`.
+   */
+  exportLayerContentsByKeyframe(
+    layerId: string,
+    playheadFrame: number,
+  ): Map<number, string> {
+    const layer = this.layerMap.get(layerId);
+    const out = new Map<number, string>();
+    if (!layer) return out;
+
+    const buckets = new Map<number, paper.Item[]>();
+    for (const child of layer.children) {
+      const tag = this.getEmfKeyframeFrame(child) ?? playheadFrame;
+      let list = buckets.get(tag);
+      if (!list) {
+        list = [];
+        buckets.set(tag, list);
+      }
+      list.push(child);
+    }
+
+    const allChildren = [...layer.children];
+    for (const [frame, items] of buckets) {
+      const keep = new Set(items);
+      for (const child of allChildren) {
+        if (!keep.has(child)) child.remove();
+      }
+      out.set(
+        frame,
+        layer.children.length === 0 ? "" : ((layer.exportJSON() as string) ?? ""),
+      );
+      layer.removeChildren();
+      for (const child of allChildren) layer.addChild(child);
+    }
+
+    return out;
   }
 
   updateConfig(config: CanvasConfig) {
@@ -122,6 +230,7 @@ export class PaperRenderer {
     changedItems?: paper.PathItem[],
   ): paper.PathItem {
     this.copySelectionMarker(oldItem, newItem);
+    this.copyEmfKeyframeFrame(oldItem, newItem);
     oldItem.replaceWith(newItem);
     this.clearSelectionMarker(oldItem);
     changedItems?.push(newItem);
@@ -269,6 +378,7 @@ export class PaperRenderer {
       // Replace original compound with one item per filled region, attaching its holes.
       const idx = layer.children.indexOf(item);
       let insertAt = idx;
+      const emfKeyframeFrame = this.getEmfKeyframeFrame(item);
 
       for (const root of filledRoots) {
         const indices = groups.get(root) ?? [root];
@@ -277,6 +387,7 @@ export class PaperRenderer {
           const newPath = new paper.Path(subData[root]);
           this.applyPathStyle(newPath, fillColor);
           if (selectionMarker) this.setSelectionMarker(newPath, selectionMarker);
+          if (emfKeyframeFrame !== null) this.setEmfKeyframeFrame(newPath, emfKeyframeFrame);
           newPath.closed = src.closed;
           normalizeBooleanResult(newPath);
           layer.insertChild(insertAt++, newPath);
@@ -285,6 +396,9 @@ export class PaperRenderer {
           this.applyPathStyle(newCompound, fillColor);
           if (selectionMarker) {
             this.setSelectionMarker(newCompound, selectionMarker);
+          }
+          if (emfKeyframeFrame !== null) {
+            this.setEmfKeyframeFrame(newCompound, emfKeyframeFrame);
           }
           // Even-odd is robust to winding issues and preserves holes / islands correctly
           newCompound.fillRule = "evenodd";
@@ -777,6 +891,7 @@ export class PaperRenderer {
     for (const neighbor of neighbors) {
       if (!current.parent || !neighbor.parent) continue;
       if (current === neighbor || consumedIds.has(neighbor.id)) continue;
+      if (!this.emfContentCompatible(current, neighbor)) continue;
       const neighborColor = neighbor.fillColor?.toCSS(true) ?? "none";
       if (neighborColor !== currentColor) continue;
 
@@ -786,6 +901,7 @@ export class PaperRenderer {
 
       this.applyPathStyle(united, current.fillColor);
       this.copySelectionMarkerFromMany([current, neighbor], united);
+      this.copyEmfKeyframeFrame(current, united);
       this.clearSelectionMarker(current);
       this.clearSelectionMarker(neighbor);
       consumedIds.add(neighbor.id);
@@ -807,6 +923,15 @@ export class PaperRenderer {
     const changedItems: paper.PathItem[] = [];
     const survivors: paper.PathItem[] = [];
 
+    // New strokes during EMF belong to the playhead frame.
+    if (this.emfPlayheadFrame !== null) {
+      for (const addition of additions) {
+        if (this.getEmfKeyframeFrame(addition) === null) {
+          this.setEmfKeyframeFrame(addition, this.emfPlayheadFrame);
+        }
+      }
+    }
+
     for (const addition of additions) {
       if (!addition.parent) continue;
       let current = addition;
@@ -815,6 +940,8 @@ export class PaperRenderer {
       // One AABB neighbor query, then same-color unites, then other-color cuts.
       // After a successful unite pass, re-query once for newly overlapping
       // same-color neighbors whose bounds were outside the pre-unite AABB.
+      // During EMF, only interact with items in the same content bucket so
+      // drawing on the playhead cannot merge into / punch other frames.
       const neighbors = this.getOrderedNeighbors([current]);
       const currentColor = current.fillColor?.toCSS(true) ?? "none";
 
@@ -822,6 +949,7 @@ export class PaperRenderer {
       let otherColor: paper.PathItem[] = [];
       for (const neighbor of neighbors) {
         if (!neighbor.parent || neighbor === current) continue;
+        if (!this.emfContentCompatible(current, neighbor)) continue;
         const neighborColor = neighbor.fillColor?.toCSS(true) ?? "none";
         if (neighborColor === currentColor) sameColor.push(neighbor);
         else otherColor.push(neighbor);
@@ -844,6 +972,7 @@ export class PaperRenderer {
         for (const neighbor of expandedNeighbors) {
           if (!neighbor.parent || neighbor === current) continue;
           if (consumedIds.has(neighbor.id)) continue;
+          if (!this.emfContentCompatible(current, neighbor)) continue;
           const neighborColor = neighbor.fillColor?.toCSS(true) ?? "none";
           if (neighborColor === fillColor) newSameColor.push(neighbor);
           else otherColor.push(neighbor);
@@ -1586,6 +1715,7 @@ export class PaperRenderer {
 
       this.applyPathStyle(selectedPiece, fill);
       this.setSelectionMarker(selectedPiece, selectionMarker);
+      this.copyEmfKeyframeFrame(candidate, selectedPiece);
 
       const remainder = trySubtract(candidate, selectionPath);
       if (remainder) {

@@ -84,6 +84,9 @@ export interface TimelineState {
   playing: boolean;
   onionSkin: boolean;
   autoHold: boolean;
+  /** Flash-style Edit Multiple Frames: range contents editable on stage. */
+  editMultipleFrames: boolean;
+  emfRange: { layerIds: string[]; start: number; end: number } | null;
 }
 
 export const timelineStore = new Store<TimelineState>({
@@ -94,7 +97,18 @@ export const timelineStore = new Store<TimelineState>({
   playing: false,
   onionSkin: true,
   autoHold: true,
+  editMultipleFrames: false,
+  emfRange: null,
 });
+
+/** Sentinel in loadedContent while an EMF composite overlay is on a layer. */
+const EMF_LOADED_SENTINEL = "__emf__";
+
+export type EmfRange = {
+  layerIds: string[];
+  start: number;
+  end: number;
+};
 
 /** Serialized `.inkwell` document (also the autosave payload). */
 export interface SerializedDocument {
@@ -145,6 +159,14 @@ export class DocumentManager {
    */
   private autoHoldEnabled = true;
 
+  /**
+   * Edit Multiple Frames: show unique keyframe contents in a selected range
+   * on stage so select/transform/recolor can edit them together. Not
+   * persisted, not in history.
+   */
+  private editMultipleFrames = false;
+  private emfRange: EmfRange | null = null;
+
   /** contentId currently loaded into each Paper layer. */
   private loadedContent = new Map<string, string>();
   private contentIdCounter = 1;
@@ -157,6 +179,14 @@ export class DocumentManager {
     layerStore.subscribe((s) => {
       if (s.activeLayerId === lastActive) return;
       lastActive = s.activeLayerId;
+      if (this.editMultipleFrames && this.emfRange) {
+        const { start, end } = this.emfRange;
+        this.renderer.setEmfPlayheadFrame(
+          this.currentFrame >= start && this.currentFrame <= end
+            ? this.currentFrame
+            : null,
+        );
+      }
       if (this.onionSkinEnabled) this.updateOnionSkin();
     });
     viewOverlayStore.subscribe(() => {
@@ -294,8 +324,16 @@ export class DocumentManager {
    * If the content changed while the playhead sits on a hold frame, a new
    * keyframe is auto-created at the current frame (Flash-style auto-key).
    * Returns true when the document changed.
+   *
+   * During Edit Multiple Frames, partitions the layer by keyframe-frame tags and
+   * writes each bucket back to its source keyframe (new strokes stay on the
+   * playhead frame).
    */
   commitActiveLayerContent(): boolean {
+    if (this.editMultipleFrames) {
+      return this.commitEditMultipleFrames();
+    }
+
     const layerId = this.renderer.getActiveLayerId();
     if (!layerId) return false;
     const track = this.getTrack(layerId);
@@ -328,6 +366,95 @@ export class DocumentManager {
     this.loadedContent.set(layerId, contentId);
     this.publish();
     return true;
+  }
+
+  /**
+   * Write each EMF keyframe bucket back into the document. New strokes are
+   * tagged with the playhead frame; select edits on other keyframes write
+   * back to those keyframes only. Does not rebuild the overlay so the live
+   * selection stays valid after transform/recolor.
+   */
+  private commitEditMultipleFrames(): boolean {
+    const layerId = this.renderer.getActiveLayerId();
+    if (!layerId || !this.emfRange) return false;
+    if (!this.emfRange.layerIds.includes(layerId)) return false;
+    const track = this.getTrack(layerId);
+    if (!track) return false;
+
+    const { start, end } = this.emfRange;
+    const expectedFrames = this.keyframeFramesInRange(track, start, end);
+    // Only treat the playhead as a write target when it sits inside the EMF
+    // range. Scrubbing outside used to push currentFrame into this list with
+    // an empty partition and wipe that frame via placeKeyframe(EMPTY).
+    if (
+      this.currentFrame >= start &&
+      this.currentFrame <= end &&
+      !expectedFrames.includes(this.currentFrame)
+    ) {
+      expectedFrames.push(this.currentFrame);
+    }
+
+    const partitions = this.renderer.exportLayerContentsByKeyframe(
+      layerId,
+      // Untagged strokes only belong to the playhead when it's in-range.
+      this.currentFrame >= start && this.currentFrame <= end
+        ? this.currentFrame
+        : start,
+    );
+    let changed = false;
+
+    const writeFrame = (frameIndex: number, json: string): boolean => {
+      if (frameIndex < start || frameIndex > end) return false;
+      const kf = track.keyframes.find((k) => k.frameIndex === frameIndex);
+      const prev = kf ? (this.content.get(kf.contentId) ?? "") : "";
+      if (json === prev) return false;
+
+      let newId: string;
+      if (json === "") {
+        newId = EMPTY_CONTENT_ID;
+      } else {
+        newId = this.newContentId();
+        this.content.set(newId, json);
+      }
+      this.placeKeyframe(track, frameIndex, newId);
+      return true;
+    };
+
+    for (const frameIndex of expectedFrames) {
+      if (writeFrame(frameIndex, partitions.get(frameIndex) ?? "")) {
+        changed = true;
+      }
+    }
+
+    for (const [frameIndex, json] of partitions) {
+      if (expectedFrames.includes(frameIndex)) continue;
+      if (!json) continue;
+      if (writeFrame(frameIndex, json)) changed = true;
+    }
+
+    if (changed) {
+      this.renderer.setEmfPlayheadFrame(
+        this.currentFrame >= start && this.currentFrame <= end
+          ? this.currentFrame
+          : null,
+      );
+      this.publish();
+    }
+    return changed;
+  }
+
+  /** Keyframe start frames whose spans intersect [start, end]. */
+  private keyframeFramesInRange(
+    track: LayerTrack,
+    start: number,
+    end: number,
+  ): number[] {
+    const frames: number[] = [];
+    for (const kf of track.keyframes) {
+      if (kf.holdUntil < start || kf.frameIndex > end) continue;
+      frames.push(kf.frameIndex);
+    }
+    return frames;
   }
 
   private insertKeyframe(track: LayerTrack, keyframe: Keyframe): void {
@@ -666,6 +793,10 @@ export class DocumentManager {
 
   setPlaying(playing: boolean): void {
     if (this.playing === playing) return;
+    if (playing && this.editMultipleFrames) {
+      this.clearEditMultipleFramesState();
+      this.reloadCurrentFrame();
+    }
     this.playing = playing;
     this.publish();
   }
@@ -690,6 +821,97 @@ export class DocumentManager {
     this.publish();
   }
 
+  isEditMultipleFrames(): boolean {
+    return this.editMultipleFrames;
+  }
+
+  getEditMultipleFramesRange(): EmfRange | null {
+    return this.emfRange ? { ...this.emfRange, layerIds: [...this.emfRange.layerIds] } : null;
+  }
+
+  /**
+   * Enter or leave Flash-style Edit Multiple Frames. Caller must commit live
+   * edits before enabling. While on, unique contents in the range are shown
+   * together on stage for select/transform/recolor; new drawing still goes
+   * to the playhead frame. Returns true when the document model changed
+   * (playhead content was split for independent drawing).
+   */
+  setEditMultipleFrames(enabled: boolean, range?: EmfRange | null): boolean {
+    if (enabled) {
+      if (!range || range.layerIds.length === 0) return false;
+      const [start, end] = this.normalizeRange(range.start, range.end);
+      this.editMultipleFrames = true;
+      this.emfRange = {
+        layerIds: [...range.layerIds],
+        start,
+        end,
+      };
+      this.rebuildEditMultipleFramesOverlay();
+      this.publish();
+      return false;
+    }
+
+    if (!this.editMultipleFrames) return false;
+    this.clearEditMultipleFramesState();
+    this.reloadCurrentFrame();
+    this.publish();
+    return false;
+  }
+
+  /** Composite one editable copy per intersecting keyframe onto each EMF layer. */
+  private rebuildEditMultipleFramesOverlay(): void {
+    if (!this.emfRange) return;
+    const { layerIds, start, end } = this.emfRange;
+    const emfSet = new Set(layerIds);
+
+    this.renderer.restoreLayersSnapshot(
+      this.tracks.map((track) => {
+        if (!emfSet.has(track.id)) {
+          const contentId = this.contentIdAt(track, this.currentFrame);
+          const changed = this.loadedContent.get(track.id) !== contentId;
+          if (changed) this.loadedContent.set(track.id, contentId);
+          return {
+            id: track.id,
+            name: track.name,
+            visible: track.visible,
+            json: changed ? this.content.get(contentId) ?? "" : undefined,
+          };
+        }
+        this.loadedContent.set(track.id, EMF_LOADED_SENTINEL);
+        return {
+          id: track.id,
+          name: track.name,
+          visible: track.visible,
+          json: "",
+        };
+      }),
+      this.renderer.getActiveLayerId() ??
+        this.tracks[this.tracks.length - 1]?.id ??
+        STAGE_LAYER_ID,
+    );
+
+    for (const layerId of layerIds) {
+      const track = this.getTrack(layerId);
+      if (!track) continue;
+      const contents: Array<{ keyframeFrame: number; json: string }> = [];
+      for (const kf of track.keyframes) {
+        if (kf.holdUntil < start || kf.frameIndex > end) continue;
+        if (kf.contentId === EMPTY_CONTENT_ID) continue;
+        const json = this.content.get(kf.contentId) ?? "";
+        if (!json) continue;
+        contents.push({ keyframeFrame: kf.frameIndex, json });
+      }
+      this.renderer.setLayerContentsByKeyframe(layerId, contents);
+      this.loadedContent.set(layerId, EMF_LOADED_SENTINEL);
+    }
+
+    this.renderer.setEmfPlayheadFrame(
+      this.currentFrame >= start && this.currentFrame <= end
+        ? this.currentFrame
+        : null,
+    );
+  }
+
   /**
    * Rebuild the onion-skin ghost layers for the current playhead position.
    * Shows exactly two ghosts for the *active* layer only: its nearest
@@ -699,7 +921,7 @@ export class DocumentManager {
    * copy under itself.
    */
   private updateOnionSkin(): void {
-    if (!this.onionSkinEnabled || this.playing) {
+    if (!this.onionSkinEnabled || this.playing || this.editMultipleFrames) {
       this.renderer.clearOnionSkin();
       return;
     }
@@ -777,6 +999,42 @@ export class DocumentManager {
       this.renderer.getActiveLayerId() ?? this.tracks[this.tracks.length - 1]?.id;
     if (this.tracks.length === 0) return;
 
+    // EMF overlay is keyed by the selected range, not the playhead. Moving the
+    // playhead only retargets where new strokes go — keep the composite (and
+    // any live selection) intact.
+    if (this.editMultipleFrames && this.emfRange) {
+      const emfSet = new Set(this.emfRange.layerIds);
+      this.renderer.restoreLayersSnapshot(
+        this.tracks.map((track) => {
+          if (emfSet.has(track.id)) {
+            return {
+              id: track.id,
+              name: track.name,
+              visible: track.visible,
+              json: undefined,
+            };
+          }
+          const contentId = this.contentIdAt(track, this.currentFrame);
+          const changed = this.loadedContent.get(track.id) !== contentId;
+          if (changed) this.loadedContent.set(track.id, contentId);
+          return {
+            id: track.id,
+            name: track.name,
+            visible: track.visible,
+            json: changed ? this.content.get(contentId) ?? "" : undefined,
+          };
+        }),
+        activeLayerId ?? STAGE_LAYER_ID,
+      );
+      const { start, end } = this.emfRange;
+      this.renderer.setEmfPlayheadFrame(
+        this.currentFrame >= start && this.currentFrame <= end
+          ? this.currentFrame
+          : null,
+      );
+      return;
+    }
+
     this.renderer.restoreLayersSnapshot(
       this.tracks.map((track) => {
         const contentId = this.contentIdAt(track, this.currentFrame);
@@ -813,6 +1071,7 @@ export class DocumentManager {
    * stage id (stage row selected at snapshot time).
    */
   applyState(state: DocumentState, activeLayerId: string): void {
+    this.clearEditMultipleFramesState();
     this.tracks = cloneTracks(state.tracks);
     this.duration = state.duration;
     this.frameRate = state.frameRate;
@@ -828,6 +1087,20 @@ export class DocumentManager {
     // restoreLayersSnapshot itself.
     this.reloadCurrentFrame();
     this.publish();
+  }
+
+  /** Drop EMF mode without reloading (caller reloads / publishes as needed). */
+  private clearEditMultipleFramesState(): void {
+    if (!this.editMultipleFrames && !this.emfRange) {
+      this.renderer.setEmfPlayheadFrame(null);
+      return;
+    }
+    this.editMultipleFrames = false;
+    this.emfRange = null;
+    this.renderer.setEmfPlayheadFrame(null);
+    for (const [layerId, loaded] of [...this.loadedContent.entries()]) {
+      if (loaded === EMF_LOADED_SENTINEL) this.loadedContent.delete(layerId);
+    }
   }
 
   private updateLayerStoreFromTracks(activeLayerId: string): void {
@@ -910,6 +1183,7 @@ export class DocumentManager {
     this.frameRate = Math.max(1, Math.min(60, Math.round(doc.frameRate)));
     this.currentFrame = 0;
     this.playing = false;
+    this.clearEditMultipleFramesState();
 
     // Force full reload of every layer.
     this.loadedContent.clear();
@@ -949,6 +1223,10 @@ export class DocumentManager {
       playing: this.playing,
       onionSkin: this.onionSkinEnabled,
       autoHold: this.autoHoldEnabled,
+      editMultipleFrames: this.editMultipleFrames,
+      emfRange: this.emfRange
+        ? { ...this.emfRange, layerIds: [...this.emfRange.layerIds] }
+        : null,
     });
   }
 }

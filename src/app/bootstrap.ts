@@ -413,7 +413,8 @@ class App {
       onDocSave: () => this.onDocSave(),
       onDocOpen: () => this.onDocOpen(),
       onDocNew: () => this.onDocNew(),
-      onTimelineFrameSelect: (frame, layerId) => this.onTimelineFrameSelect(frame, layerId),
+      onTimelineFrameSelect: (frame, layerId, options) =>
+        this.onTimelineFrameSelect(frame, layerId, options),
       onKeyframeAdd: (blank) => this.onKeyframeAdd(blank),
       onKeyframeRemove: (range) => this.onKeyframeRemove(range),
       onFramesMove: (layerIds, layerId, start, end, delta) =>
@@ -426,6 +427,8 @@ class App {
         this.onFramesDuplicateDragEnd(layerIds, layerId, start, end, delta),
       onFramesReverse: (layerIds, layerId, start, end) =>
         this.onFramesReverse(layerIds, layerId, start, end),
+      onEditMultipleFramesToggle: (enabled, layerIds, layerId, start, end) =>
+        this.onEditMultipleFramesToggle(enabled, layerIds, layerId, start, end),
       onKeyframeHoldToggle: (layerId, frame) => this.onKeyframeHoldToggle(layerId, frame),
       onAutoHoldToggle: () => {
         this.documentManager.setAutoHold(!this.documentManager.isAutoHoldEnabled());
@@ -1373,8 +1376,12 @@ class App {
     this.timelineSession.stepPlayback(dtMs);
   }
 
-  private onTimelineFrameSelect(frame: number, layerId?: string) {
-    this.timelineSession.onTimelineFrameSelect(frame, layerId);
+  private onTimelineFrameSelect(
+    frame: number,
+    layerId?: string,
+    options?: { navigateOnly?: boolean },
+  ) {
+    this.timelineSession.onTimelineFrameSelect(frame, layerId, options);
   }
 
   private onKeyframeAdd(blank: boolean) {
@@ -1436,6 +1443,22 @@ class App {
     end: number,
   ) {
     this.timelineSession.onFramesReverse(layerIds, layerId, start, end);
+  }
+
+  private onEditMultipleFramesToggle(
+    enabled: boolean,
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+  ) {
+    this.timelineSession.onEditMultipleFramesToggle(
+      enabled,
+      layerIds,
+      layerId,
+      start,
+      end,
+    );
   }
 
   private onOnionToggle() {

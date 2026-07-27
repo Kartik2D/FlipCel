@@ -119,7 +119,11 @@ export class TimelineSession {
    * select tool and select every item on the active layer. Playhead scrub /
    * jog (no `layerId`) only moves the playhead and clears selection.
    */
-  onTimelineFrameSelect(frame: number, layerId?: string): void {
+  onTimelineFrameSelect(
+    frame: number,
+    layerId?: string,
+    options?: { navigateOnly?: boolean },
+  ): void {
     const {
       documentManager,
       selectionController,
@@ -130,6 +134,13 @@ export class TimelineSession {
       closeFunctionsPanelHidden,
     } = this.deps;
 
+    const navigateOnly = options?.navigateOnly === true;
+
+    // Commit EMF overlays before the playhead moves so rebuilds don't drop edits.
+    if (documentManager.isEditMultipleFrames()) {
+      this.commitLiveEdits();
+    }
+
     if (layerId) {
       if (layerId === STAGE_LAYER_ID) return;
 
@@ -138,6 +149,7 @@ export class TimelineSession {
       const isSameFrame = documentManager.getCurrentFrame() === frame;
 
       if (
+        !navigateOnly &&
         isAlreadyActive &&
         isSameFrame &&
         (selectionController.hasSelection() || directSelectController.hasSelection())
@@ -149,9 +161,11 @@ export class TimelineSession {
       }
     }
 
-    selectionController.clearSelection();
-    directSelectController.clearSelection();
-    closeFunctionsPanelHidden();
+    if (!navigateOnly) {
+      selectionController.clearSelection();
+      directSelectController.clearSelection();
+      closeFunctionsPanelHidden();
+    }
 
     if (layerId && layerId !== layerStore.get().activeLayerId) {
       if (paperRenderer.setActiveLayer(layerId)) {
@@ -162,7 +176,7 @@ export class TimelineSession {
 
     documentManager.gotoFrame(frame);
 
-    if (layerId) {
+    if (layerId && !navigateOnly) {
       if (toolStore.get() !== "select") {
         switchTool("select");
       }
@@ -225,6 +239,10 @@ export class TimelineSession {
     if (targets.length === 0) return;
     selectionController.clearSelection();
     directSelectController.clearSelection();
+    this.commitLiveEdits();
+    if (documentManager.isEditMultipleFrames()) {
+      documentManager.setEditMultipleFrames(false);
+    }
     const frame = documentManager.getCurrentFrame();
     const start = range?.start ?? frame;
     const end = range?.end ?? frame;
@@ -267,6 +285,9 @@ export class TimelineSession {
     if (targets.length === 0) return;
     // Commit live edits first so an in-progress drawing travels with its frame.
     this.commitLiveEdits();
+    if (documentManager.isEditMultipleFrames()) {
+      documentManager.setEditMultipleFrames(false);
+    }
     selectionController.clearSelection();
     directSelectController.clearSelection();
     let changed = false;
@@ -291,6 +312,9 @@ export class TimelineSession {
     const targets = this.frameActionTargets(layerIds, layerId);
     if (targets.length === 0) return;
     this.commitLiveEdits();
+    if (documentManager.isEditMultipleFrames()) {
+      documentManager.setEditMultipleFrames(false);
+    }
     let changed = false;
     let destStart: number | null = null;
     let destEnd: number | null = null;
@@ -331,6 +355,9 @@ export class TimelineSession {
     const targets = this.frameActionTargets(layerIds, layerId);
     if (targets.length === 0) return;
     this.commitLiveEdits();
+    if (documentManager.isEditMultipleFrames()) {
+      documentManager.setEditMultipleFrames(false);
+    }
     if (delta === 0) {
       this.onFramesDuplicate(layerIds, layerId, start, end);
       return;
@@ -371,6 +398,9 @@ export class TimelineSession {
     const targets = this.frameActionTargets(layerIds, layerId);
     if (targets.length === 0) return;
     this.commitLiveEdits();
+    if (documentManager.isEditMultipleFrames()) {
+      documentManager.setEditMultipleFrames(false);
+    }
     let changed = false;
     for (const id of targets) {
       if (documentManager.reverseFrameRange(id, start, end)) {
@@ -381,6 +411,39 @@ export class TimelineSession {
       historyManager.snapshot();
       requestRedraw();
     }
+  }
+
+  /**
+   * Flash-style Edit Multiple Frames: show range contents on stage for
+   * select/transform/recolor. New drawing still targets the playhead.
+   */
+  onEditMultipleFramesToggle(
+    enabled: boolean,
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+  ): void {
+    const { documentManager, selectionController, directSelectController, requestRedraw } =
+      this.deps;
+    this.commitLiveEdits();
+    selectionController.clearSelection();
+    directSelectController.clearSelection();
+
+    if (!enabled) {
+      documentManager.setEditMultipleFrames(false);
+      requestRedraw();
+      return;
+    }
+
+    const targets = this.frameActionTargets(layerIds, layerId);
+    if (targets.length === 0) return;
+    documentManager.setEditMultipleFrames(true, {
+      layerIds: targets,
+      start,
+      end,
+    });
+    requestRedraw();
   }
 
   onOnionToggle(): void {

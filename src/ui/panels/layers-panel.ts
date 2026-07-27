@@ -298,8 +298,12 @@ export class InkwellLayersPanel extends FloatingPanel {
   private scrubbing = false;
   /** Last frame-cell tap, for double-tap (toggle keyframe hold) detection. */
   private lastCellTap: { layerId: string; frame: number; time: number } | null = null;
+  /** Timestamp of the last tap inside the frame-range highlight (for double-tap dismiss). */
+  private lastSelectionTapTime: number | null = null;
   /** Selected frame range across one or more layer rows (inclusive). */
   @state() private frameSelection: LayersFrameSelection | null = null;
+  /** Whether the range actions popover is visible (highlight can persist without it). */
+  @state() private frameActionsOpen = false;
   /** Spinning keyframe markers while a frame-range reverse is previewed. */
   @state() private reverseAnimation: {
     layerIds: string[];
@@ -364,6 +368,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     this.frameSelection = normalizeLayersFrameSelection(sel);
     this.duplicatePlacement = null;
     this.moveDelta = 0;
+    this.frameActionsOpen = this.frameSelection !== null;
   }
 
   private displayLayerIds(): string[] {
@@ -463,6 +468,7 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   private showFrameActionsForSelection(): boolean {
     return (
+      this.frameActionsOpen &&
       this.frameSelection !== null &&
       this.cellDrag === null &&
       this.frameActionDrag === null &&
@@ -489,7 +495,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
     const rect = el.getBoundingClientRect();
     const margin = 8;
-    const popW = 118;
+    const popW = 150;
     const popH = 44;
     let x = rect.left + rect.width / 2;
     let y = rect.top - 4;
@@ -599,7 +605,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   private onFrameActionDeleteClick() {
     const sel = this.frameSelection;
     if (!sel) return;
-    this.frameSelection = null;
+    this.clearFrameSelection();
     this.emit("keyframe-remove", {
       layerIds: sel.layerIds,
       start: sel.start,
@@ -744,6 +750,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     if (!this.frameActionsAnchor) return nothing;
     const len = sel.end - sel.start + 1;
     const { x, y } = this.frameActionsAnchor;
+    const emfOn = this.timeline.value.editMultipleFrames;
     return html`
       <div
         class="frame-actions-fixed"
@@ -753,6 +760,14 @@ export class InkwellLayersPanel extends FloatingPanel {
       >
         <div class="frame-actions-shell">
           <div class="frame-actions-face">
+            <button
+              type="button"
+              class="frame-action-btn ${emfOn ? "active" : ""}"
+              title=${emfOn ? "Edit Multiple Frames (on)" : "Edit Multiple Frames"}
+              aria-label="Edit Multiple Frames"
+              aria-pressed=${emfOn ? "true" : "false"}
+              @click=${() => this.onFrameActionEmfClick()}
+            >${phosphorIcon("edit-multiple-frames", 14)}</button>
             <button
               type="button"
               class="frame-action-btn"
@@ -787,6 +802,16 @@ export class InkwellLayersPanel extends FloatingPanel {
         </div>
       </div>
     `;
+  }
+
+  private onFrameActionEmfClick() {
+    const sel = this.frameSelection;
+    if (!sel) return;
+    const enabled = !this.timeline.value.editMultipleFrames;
+    this.emit("frames-edit-multiple", {
+      ...layerActionDetail(sel),
+      enabled,
+    });
   }
 
   private selectLayer(layerId: string) {
@@ -848,8 +873,56 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   private onFramesViewportScroll = () => {
     this.syncTimelineStrip();
-    this.syncFrameActionsAnchor();
+    // Scroll dismisses the actions popup but keeps the range highlight.
+    if (this.frameActionsOpen && !this.cellDrag) {
+      this.dismissFrameActionsPopup();
+    } else {
+      this.syncFrameActionsAnchor();
+    }
   };
+
+  private onLayerScroll = () => {
+    if (this.frameActionsOpen && !this.cellDrag) {
+      this.dismissFrameActionsPopup();
+    } else {
+      this.syncFrameActionsAnchor();
+    }
+  };
+
+  private dismissFrameActionsPopup() {
+    if (!this.frameActionsOpen && this.frameActionsAnchor === null) return;
+    this.frameActionsOpen = false;
+    this.frameActionsAnchor = null;
+  }
+
+  /** Dismiss the range popup when pointerdown lands outside it (selection stays). */
+  private onFrameActionsOutsidePointerDown = (e: PointerEvent) => {
+    if (!this.frameActionsOpen || this.cellDrag || this.frameActionDrag) return;
+    for (const node of e.composedPath()) {
+      if (
+        node instanceof HTMLElement &&
+        node.classList.contains("frame-actions-fixed")
+      ) {
+        return;
+      }
+    }
+    this.dismissFrameActionsPopup();
+  };
+
+  /** Clear the frame-range selection (and leave EMF if it was on). */
+  private clearFrameSelection() {
+    const sel = this.frameSelection;
+    if (sel && this.timeline.value.editMultipleFrames) {
+      this.emit("frames-edit-multiple", {
+        ...layerActionDetail(sel),
+        enabled: false,
+      });
+    }
+    this.frameSelection = null;
+    this.frameActionsOpen = false;
+    this.frameActionsAnchor = null;
+    this.lastSelectionTapTime = null;
+  }
 
   private frameCellWidth(): number {
     const raw = getComputedStyle(this).getPropertyValue("--frame-cell-w");
@@ -868,7 +941,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   private scrubTo(e: PointerEvent) {
     const frame = this.frameFromPointer(e);
     if (frame !== this.timeline.value.currentFrame) {
-      this.emit("frame-select", { frame });
+      this.emit("frame-select", { frame, navigateOnly: true });
     }
     this.ensureFrameVisible(frame);
   }
@@ -945,6 +1018,16 @@ export class InkwellLayersPanel extends FloatingPanel {
       const thresholdY = this.layerRowPitch() * 0.6;
       if (dx < thresholdX && dy < thresholdY) return;
       drag.mode = drag.base !== null && dx > dy ? "move" : "select";
+      if (drag.mode === "select") {
+        // Replacing the range dismisses EMF; a fresh selection gets a new popup.
+        if (this.timeline.value.editMultipleFrames && this.frameSelection) {
+          this.emit("frames-edit-multiple", {
+            ...layerActionDetail(this.frameSelection),
+            enabled: false,
+          });
+        }
+        this.frameActionsOpen = false;
+      }
     }
     e.preventDefault();
 
@@ -995,21 +1078,59 @@ export class InkwellLayersPanel extends FloatingPanel {
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
 
     if (drag.mode === "tap") {
-      this.frameSelection = null;
-      this.frameActionsAnchor = null;
-      this.emit("frame-select", { frame: drag.anchor, layerId: drag.layerId });
-      const now = performance.now();
-      const last = this.lastCellTap;
-      if (
-        last &&
-        last.layerId === drag.layerId &&
-        last.frame === drag.anchor &&
-        now - last.time < 350
-      ) {
-        this.lastCellTap = null;
-        this.emit("keyframe-hold-toggle", { frame: drag.anchor, layerId: drag.layerId });
+      const sel = this.frameSelection;
+      const inSelection =
+        sel !== null &&
+        sel.layerIds.includes(drag.layerId) &&
+        drag.anchor >= sel.start &&
+        drag.anchor <= sel.end;
+
+      if (inSelection) {
+        const now = performance.now();
+        if (
+          this.lastSelectionTapTime !== null &&
+          now - this.lastSelectionTapTime < 350
+        ) {
+          // Double-tap the highlight: dismiss the range selection.
+          this.clearFrameSelection();
+          this.lastCellTap = null;
+          this.emit("frame-select", {
+            frame: drag.anchor,
+            layerId: drag.layerId,
+            navigateOnly: true,
+          });
+        } else {
+          // Single tap: reopen the actions popup; keep playhead navigation quiet.
+          this.lastSelectionTapTime = now;
+          this.frameActionsOpen = true;
+          this.lastCellTap = null;
+          this.emit("frame-select", {
+            frame: drag.anchor,
+            layerId: drag.layerId,
+            navigateOnly: true,
+          });
+        }
       } else {
-        this.lastCellTap = { layerId: drag.layerId, frame: drag.anchor, time: now };
+        // Tap outside deselects the range (and leaves EMF if it was on).
+        this.clearFrameSelection();
+        this.emit("frame-select", { frame: drag.anchor, layerId: drag.layerId });
+
+        const now = performance.now();
+        const last = this.lastCellTap;
+        if (
+          last &&
+          last.layerId === drag.layerId &&
+          last.frame === drag.anchor &&
+          now - last.time < 350
+        ) {
+          this.lastCellTap = null;
+          this.emit("keyframe-hold-toggle", {
+            frame: drag.anchor,
+            layerId: drag.layerId,
+          });
+        } else {
+          this.lastCellTap = { layerId: drag.layerId, frame: drag.anchor, time: now };
+        }
       }
     } else if (drag.mode === "move" && drag.base) {
       const delta = this.moveDelta;
@@ -1034,9 +1155,28 @@ export class InkwellLayersPanel extends FloatingPanel {
           layerIds: drag.base.layerIds,
           anchorLayerId,
         };
+        this.frameActionsOpen = true;
+      } else if (this.frameSelection) {
+        // Click (no move) on the highlighted range reopens the actions popup.
+        this.frameActionsOpen = true;
+      }
+    } else if (drag.mode === "select") {
+      this.frameActionsOpen = this.frameSelection !== null;
+      this.lastSelectionTapTime = null;
+      // Multi-layer range: activate the layer under the pointer at release
+      // (the last layer the selection reached). Single-layer keeps the anchor.
+      if (this.frameSelection) {
+        const displayIds = this.displayLayerIds();
+        const endIndex = this.layerIndexFromPointer(e);
+        const endLayerId =
+          displayIds[endIndex] ?? this.frameSelection.anchorLayerId;
+        this.emit("frame-select", {
+          frame: this.timeline.value.currentFrame,
+          layerId: endLayerId,
+          navigateOnly: true,
+        });
       }
     }
-    // "select" mode: the live-updated selection simply stays.
 
     // cellDrag is not @state — re-render so the actions popover can appear.
     this.requestUpdate();
@@ -1109,12 +1249,14 @@ export class InkwellLayersPanel extends FloatingPanel {
     window.addEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
     window.addEventListener("pointercancel", this.globalFrameDuplicateDragEndHandler);
     window.addEventListener("blur", this.globalFrameDuplicateDragEndHandler);
+    window.addEventListener("pointerdown", this.onFrameActionsOutsidePointerDown, true);
   }
 
   disconnectedCallback() {
     window.removeEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
     window.removeEventListener("pointercancel", this.globalFrameDuplicateDragEndHandler);
     window.removeEventListener("blur", this.globalFrameDuplicateDragEndHandler);
+    window.removeEventListener("pointerdown", this.onFrameActionsOutsidePointerDown, true);
     this.cancelFrameActionDrag();
     this.cancelRowDrag();
     super.disconnectedCallback();
@@ -1354,7 +1496,9 @@ export class InkwellLayersPanel extends FloatingPanel {
         ${dupGhosts ? html`<div class="span-overlay ghost-overlay">${dupGhosts}</div>` : nothing}
         ${selected && !dupPreviewing
           ? html`<div
-              class="frame-selection ${cellMoving ? "moving" : ""} ${reversing ? "reversing" : ""}"
+              class="frame-selection ${cellMoving ? "moving" : ""} ${reversing ? "reversing" : ""} ${
+                this.timeline.value.editMultipleFrames ? "emf-on" : ""
+              }"
               style="--f: ${selected.start + (cellMoving ? this.moveDelta : 0)}; --len: ${
                 selected.end - selected.start + 1
               }"
@@ -1390,7 +1534,7 @@ export class InkwellLayersPanel extends FloatingPanel {
           title="Delete selected frames (or the frame at the playhead)"
           @click=${() => {
             const sel = this.frameSelection;
-            this.frameSelection = null;
+            this.clearFrameSelection();
             if (!sel) {
               this.emit("keyframe-remove", null);
               return;
@@ -1513,7 +1657,8 @@ export class InkwellLayersPanel extends FloatingPanel {
                       <div
                         class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
                         title=${`Go to frame ${f + 1}`}
-                        @click=${() => this.emit("frame-select", { frame: f })}
+                        @click=${() =>
+                          this.emit("frame-select", { frame: f, navigateOnly: true })}
                       >
                         ${f === 0 || (f + 1) % 5 === 0 || f === t.currentFrame ? f + 1 : ""}
                       </div>
@@ -1532,7 +1677,7 @@ export class InkwellLayersPanel extends FloatingPanel {
               </div>
             </div>
             <div class="layer-scroll-wrap">
-              <div class="layer-scroll">
+              <div class="layer-scroll" @scroll=${this.onLayerScroll}>
               <div class="layers-body">
                 <div class="side-column">
                   <div class="layer-list">
