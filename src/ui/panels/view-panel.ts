@@ -193,6 +193,7 @@ export class InkwellViewPanel extends FloatingPanel {
     const gridOn = this.viewOverlay.value.gridEnabled;
     const onionOn = this.timeline.value.onionSkin;
     const onionOutline = this.viewOverlay.value.onionSkinOutline;
+    const onionLayers = this.viewOverlay.value.onionSkinLayers;
     const sym = this.symmetry.value;
     return this.renderFloatingBlock(
       "View",
@@ -211,14 +212,32 @@ export class InkwellViewPanel extends FloatingPanel {
                 <input
                   type="checkbox"
                   .checked=${onionOutline}
+                  ?disabled=${!onionOn}
                   @change=${(e: Event) => {
                     const checked = (e.target as HTMLInputElement).checked;
-                    this.viewOverlay.update((v) =>
-                      normalizeViewOverlaySettings({ ...v, onionSkinOutline: checked }),
-                    );
+                    this.updateViewOverlay({ onionSkinOutline: checked });
                   }}
                 />
               </div>
+              <label>
+                <span>Layers</span>
+                <div class="row">
+                  <blocky-button
+                    flat
+                    ?active=${onionLayers === "active"}
+                    ?disabled=${!onionOn}
+                    @click=${() => this.updateViewOverlay({ onionSkinLayers: "active" })}
+                    >Active</blocky-button
+                  >
+                  <blocky-button
+                    flat
+                    ?active=${onionLayers === "all"}
+                    ?disabled=${!onionOn}
+                    @click=${() => this.updateViewOverlay({ onionSkinLayers: "all" })}
+                    >All</blocky-button
+                  >
+                </div>
+              </label>
             </inkwell-panel-section>
             <inkwell-panel-section data-interactive>
               <div class="toggle">

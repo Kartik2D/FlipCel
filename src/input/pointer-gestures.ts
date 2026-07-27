@@ -811,6 +811,8 @@ export class UnifiedInputManager {
         this.canvas.style.cursor = "grab";
         break;
       case "select":
+      case "direct-select":
+      case "magic-move":
         this.canvas.style.cursor = "default";
         break;
       case "eyedropper":

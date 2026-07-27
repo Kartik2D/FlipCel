@@ -29,6 +29,7 @@ import { Camera } from "../render/camera";
 import { SelectionController } from "../editing/object-select";
 import { DirectSelectController } from "../editing/direct-select";
 import { MagnetController } from "../editing/magnet";
+import { MagicMoveController } from "../editing/magic-move";
 import { HistoryManager } from "../document/history";
 import {
   DocumentManager,
@@ -56,6 +57,7 @@ import type {
   InkwellLayersPanel,
   InkwellWheelPanel,
   InkwellFunctionsPanel,
+  InkwellMagicMovePopup,
 } from "../ui/register";
 import "../ui/register"; // Register Lit components
 import {
@@ -116,6 +118,7 @@ class App {
   private selectionController: SelectionController;
   private directSelectController: DirectSelectController;
   private magnetController: MagnetController;
+  private magicMoveController: MagicMoveController;
   private historyManager: HistoryManager;
   private documentManager: DocumentManager;
   private readonly scheduleAutosave = debounce(() => {
@@ -133,6 +136,7 @@ class App {
   private layersPanel: InkwellLayersPanel;
   private wheelPanel: InkwellWheelPanel;
   private functionsPanel: InkwellFunctionsPanel;
+  private magicMovePopup: InkwellMagicMovePopup;
   private camera: Camera;
   private isInitialized = false;
   private pixelResScale = 2;
@@ -231,14 +235,27 @@ class App {
       this.chromeLayer,
     );
     this.magnetController = new MagnetController(this.paperRenderer, this.camera);
+    this.magicMoveController = new MagicMoveController(
+      this.paperRenderer,
+      this.camera,
+      this.chromeLayer,
+    );
     this.documentManager = new DocumentManager(this.paperRenderer);
     this.historyManager = new HistoryManager(this.documentManager);
     this.historyManager.setOnChange(() => this.scheduleAutosave());
+    this.magicMoveController.setDocumentManager(this.documentManager);
+    this.magicMoveController.setHistoryManager(this.historyManager);
     this.selectionController.setSnapshotCallback(() => this.historyManager.snapshot());
+    this.selectionController.setLiveEditStartCallback(() =>
+      this.documentManager.refreshOnionSkin(),
+    );
     this.selectionController.setActivateLayerCallback((layerId) =>
       this.activateLayerFromSelect(layerId),
     );
     this.directSelectController.setSnapshotCallback(() => this.historyManager.snapshot());
+    this.directSelectController.setLiveEditStartCallback(() =>
+      this.documentManager.refreshOnionSkin(),
+    );
     this.directSelectController.setActivateLayerCallback((layerId) =>
       this.activateLayerFromSelect(layerId),
     );
@@ -247,6 +264,9 @@ class App {
       return this.paperRenderer.reconcileItemsToFixpoint(expanded);
     });
     this.magnetController.setSnapshotCallback(() => this.historyManager.snapshot());
+    this.magnetController.setLiveEditStartCallback(() =>
+      this.documentManager.refreshOnionSkin(),
+    );
     this.magnetController.setReconcileCallback((items) => {
       const expanded = this.paperRenderer.expandIncomingWithSymmetry(items);
       return this.paperRenderer.reconcileItemsToFixpoint(expanded);
@@ -263,11 +283,15 @@ class App {
     this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
     this.wheelPanel = document.getElementById("wheel-panel") as InkwellWheelPanel;
     this.functionsPanel = document.getElementById("functions-panel") as InkwellFunctionsPanel;
+    this.magicMovePopup = document.getElementById(
+      "magic-move-popup",
+    ) as InkwellMagicMovePopup;
     this.timelineSession = new TimelineSession({
       documentManager: this.documentManager,
       historyManager: this.historyManager,
       selectionController: this.selectionController,
       directSelectController: this.directSelectController,
+      magicMoveController: this.magicMoveController,
       paperRenderer: this.paperRenderer,
       layersPanel: this.layersPanel,
       closeFunctionsPanelHidden: () => this.functionsPanel.close("hidden"),
@@ -276,6 +300,15 @@ class App {
       fitStageInView: (immediate) => this.fitStageInView(immediate),
     });
     this.setupPanelEvents();
+    const onMagicMoveApply = () => {
+      const result = this.magicMoveController.apply();
+      if (!result.ok) {
+        console.warn("Magic Move:", result.error);
+      }
+      this.requestRedraw();
+    };
+    this.toolsPanel.addEventListener("magic-move-apply", onMagicMoveApply);
+    this.magicMovePopup.addEventListener("magic-move-apply", onMagicMoveApply);
     window.addEventListener("pointerup", this.globalDuplicateDragEndHandler);
     window.addEventListener("pointercancel", this.globalDuplicateDragEndHandler);
     window.addEventListener("blur", this.globalDuplicateDragEndHandler);
@@ -332,6 +365,7 @@ class App {
       selectionController: this.selectionController,
       directSelectController: this.directSelectController,
       magnetController: this.magnetController,
+      magicMoveController: this.magicMoveController,
       paperRenderer: this.paperRenderer,
       pixelCanvasManager: this.pixelCanvasManager,
       feedbackLayer: this.feedbackLayer,
@@ -692,6 +726,10 @@ class App {
       this.selectionController.drawUI();
       return;
     }
+    if (currentTool === "magic-move" && this.magicMoveController.hasTransientUI()) {
+      this.magicMoveController.drawUI();
+      return;
+    }
     this.chromeLayer.clear();
   }
 
@@ -712,15 +750,25 @@ class App {
 
   private onCameraPan(deltaX: number, deltaY: number) {
     this.camera.pan(deltaX, deltaY);
+    this.dismissFunctionsPanelForCameraChange();
   }
 
   private onCameraZoom(factor: number, centerX: number, centerY: number) {
     this.camera.zoomAt(factor, centerX, centerY);
+    this.dismissFunctionsPanelForCameraChange();
   }
 
   private onCameraRotate(deltaRadians: number, centerX: number, centerY: number) {
     this.cancelRotationSnapAnimation();
     this.camera.rotateAt(deltaRadians, centerX, centerY);
+    this.dismissFunctionsPanelForCameraChange();
+  }
+
+  /** Hide the select/direct-select popup when the view moves; sticky until selection changes. */
+  private dismissFunctionsPanelForCameraChange() {
+    if (!this.functionsPanel.open && this.functionsPanelDismissed) return;
+    this.functionsPanelDismissed = true;
+    this.functionsPanel.close("hidden");
   }
 
   private cancelRotationSnapAnimation() {
@@ -795,6 +843,7 @@ class App {
   private onDockZoomReset() {
     this.cancelRotationSnapAnimation();
     this.fitStageInView(false);
+    this.dismissFunctionsPanelForCameraChange();
   }
 
   // ============================================================
@@ -827,6 +876,9 @@ class App {
     if (currentTool === "direct-select") {
       this.redrawActiveSelectionUI();
     }
+    if (currentTool === "magic-move" && this.magicMoveController.hasTransientUI()) {
+      this.redrawActiveSelectionUI();
+    }
   }
 
   // ============================================================
@@ -841,6 +893,9 @@ class App {
     if (tool !== "direct-select") {
       this.directSelectController.clearSelection();
       this.functionsPanel.close("hidden");
+    }
+    if (tool !== "magic-move") {
+      this.magicMoveController.deactivate();
     }
     if (tool !== "magnet" && this.magnetController.hasActiveStroke()) {
       this.magnetController.handleCancel();
@@ -1311,10 +1366,17 @@ class App {
     }));
     // Solo + visibility → Paper; do not write Paper before effective pass.
     this.documentManager.applyEffectiveVisibility();
+    // Content JSON can embed a stale visible:false from while the layer was
+    // hidden; re-apply store visibility after any pending import path.
+    if (newVisibility) {
+      this.documentManager.invalidateLoadedLayer(layerId);
+      this.documentManager.reloadVisibleFrame();
+    }
 
     // Visibility is part of the layer-structure snapshot, so it participates
     // in undo/redo like every other layer operation.
     this.historyManager.snapshot();
+    this.requestRedraw();
   }
 
   /**

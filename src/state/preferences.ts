@@ -53,9 +53,13 @@ export const colorPanelPrefsStore = new Store<ColorPanelPrefs>(
   }),
 );
 
+/** Which layers contribute onion-skin ghosts. */
+export type OnionSkinLayers = "active" | "all";
+
 export interface ViewOverlaySettings {
   gridEnabled: boolean;
   onionSkinOutline: boolean;
+  onionSkinLayers: OnionSkinLayers;
   gridSpacing: number;
   gridMajorEvery: number;
   gridMinorOpacity: number;
@@ -68,6 +72,7 @@ export function normalizeViewOverlaySettings(
   return {
     gridEnabled: prefs.gridEnabled,
     onionSkinOutline: prefs.onionSkinOutline,
+    onionSkinLayers: prefs.onionSkinLayers === "all" ? "all" : "active",
     gridSpacing: Math.max(10, Math.min(500, Math.round(prefs.gridSpacing || 100))),
     gridMajorEvery: Math.max(2, Math.min(20, Math.round(prefs.gridMajorEvery || 5))),
     gridMinorOpacity: Math.max(0, Math.min(1, prefs.gridMinorOpacity ?? 0.06)),
@@ -79,6 +84,7 @@ export const viewOverlayStore = new Store<ViewOverlaySettings>(
   normalizeViewOverlaySettings({
     gridEnabled: true,
     onionSkinOutline: false,
+    onionSkinLayers: "active",
     gridSpacing: 100,
     gridMajorEvery: 5,
     gridMinorOpacity: 0.06,
@@ -234,9 +240,9 @@ export const THEMES: Record<ThemeMode, ThemeInfo> = {
     label: "Banana",
     colorScheme: "light",
     preview: {
-      app: "#d4b84e",
-      panel: "#f0e6b4",
-      border: "#5a4528",
+      app: "#a8a090",
+      panel: "#f7f0c8",
+      border: "#3f3018",
       accent: "#c4891a",
     },
   },

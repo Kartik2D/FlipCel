@@ -25,6 +25,7 @@ import {
 import type { SelectionHandle, MergePassResult } from "./types";
 import {
   strokeSelectionShapeOutline as strokeSelectionShapeOutlineHelper,
+  strokeAccentSelectionOutline as strokeAccentSelectionOutlineHelper,
   drawTransformChrome as drawTransformChromeHelper,
 } from "./selection-chrome";
 import {
@@ -173,10 +174,13 @@ export class PaperRenderer {
       for (const child of allChildren) {
         if (!keep.has(child)) child.remove();
       }
+      const wasVisible = layer.visible;
+      layer.visible = true;
       out.set(
         frame,
         layer.children.length === 0 ? "" : ((layer.exportJSON() as string) ?? ""),
       );
+      layer.visible = wasVisible;
       layer.removeChildren();
       for (const child of allChildren) layer.addChild(child);
     }
@@ -606,11 +610,17 @@ export class PaperRenderer {
 
   /**
    * Serialize a logical layer's content for history snapshots.
+   * Always exports as visible so hide/solo state is not baked into artwork
+   * (otherwise the next import would re-hide the layer).
    */
   exportLayerJSON(id: string): string | null {
     const layer = this.layerMap.get(id);
     if (!layer) return null;
-    return layer.exportJSON() as string;
+    const wasVisible = layer.visible;
+    layer.visible = true;
+    const json = layer.exportJSON() as string;
+    layer.visible = wasVisible;
+    return json;
   }
 
   /** True when the layer has no children (lets empty layers share one content id). */
@@ -653,12 +663,14 @@ export class PaperRenderer {
         this.layerMap.set(wanted.id, layer);
       }
       layer.name = wanted.name;
-      layer.visible = wanted.visible;
       if (wanted.json !== undefined) {
         layer.removeChildren();
         if (wanted.json) layer.importJSON(wanted.json);
         contentChanged = true;
       }
+      // Re-apply after importJSON: Layer exports can embed `visible: false`
+      // from when the layer was hidden, which would undo wanted.visible.
+      layer.visible = wanted.visible;
     }
 
     // Restored content has fresh item ids; stale markers would never match
@@ -1754,6 +1766,148 @@ export class PaperRenderer {
     paper.view.update();
   }
 
+  /**
+   * Indices of `items` among siblings that share the same EMF keyframe tag
+   * (or among all layer children when untagged). Used to map a live selection
+   * onto matching children inside stored per-keyframe JSON.
+   */
+  getEmfBucketChildIndices(items: paper.Item[]): number[] {
+    const indices: number[] = [];
+    for (const item of items) {
+      const parent = item.parent;
+      if (!parent) continue;
+      const tag = this.getEmfKeyframeFrame(item);
+      let bucketIndex = 0;
+      for (const child of parent.children) {
+        if (child === item) {
+          indices.push(bucketIndex);
+          break;
+        }
+        if (this.getEmfKeyframeFrame(child) === tag) bucketIndex++;
+      }
+    }
+    return indices;
+  }
+
+  /**
+   * Import layer JSON, translate the given top-level children by `delta`,
+   * and return the updated JSON. Does not touch the live layer.
+   */
+  translateLayerJsonChildren(
+    json: string,
+    childIndices: number[],
+    delta: { x: number; y: number },
+  ): string {
+    if (!json || (delta.x === 0 && delta.y === 0)) return json;
+    const scratch = new paper.Layer();
+    scratch.importJSON(json);
+    const point = new paper.Point(delta.x, delta.y);
+    const unique = [...new Set(childIndices)].sort((a, b) => a - b);
+    for (const idx of unique) {
+      const child = scratch.children[idx];
+      if (child) child.position = child.position.add(point);
+    }
+    const out = scratch.exportJSON() as string;
+    scratch.remove();
+    return out;
+  }
+
+  /**
+   * Import layer JSON and move the union center of `childIndices` to `target`
+   * (exact Magic Move positioning). Does not touch the live layer.
+   */
+  moveLayerJsonChildrenCenterTo(
+    json: string,
+    childIndices: number[],
+    target: { x: number; y: number },
+  ): string {
+    return this.transformLayerJsonChildren(json, childIndices, {
+      moveCenterTo: target,
+    });
+  }
+
+  /**
+   * Import layer JSON, optionally rotate selected children around their union
+   * center, then translate (relative delta or exact center snap). Does not
+   * touch the live layer.
+   */
+  transformLayerJsonChildren(
+    json: string,
+    childIndices: number[],
+    opts: {
+      delta?: { x: number; y: number };
+      moveCenterTo?: { x: number; y: number };
+      rotateDeg?: number;
+    },
+  ): string {
+    if (!json || childIndices.length === 0) return json;
+    const rotateDeg = opts.rotateDeg ?? 0;
+    const delta = opts.delta;
+    const moveCenterTo = opts.moveCenterTo;
+    if (
+      rotateDeg === 0 &&
+      !moveCenterTo &&
+      (!delta || (delta.x === 0 && delta.y === 0))
+    ) {
+      return json;
+    }
+
+    const scratch = new paper.Layer();
+    scratch.importJSON(json);
+    const unique = [...new Set(childIndices)].sort((a, b) => a - b);
+    const items: paper.Item[] = [];
+    for (const idx of unique) {
+      const child = scratch.children[idx];
+      if (child) items.push(child);
+    }
+    if (items.length === 0) {
+      scratch.remove();
+      return json;
+    }
+
+    const centerOf = (): { x: number; y: number } => {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const item of items) {
+        const b = item.bounds;
+        minX = Math.min(minX, b.x);
+        minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.width);
+        maxY = Math.max(maxY, b.y + b.height);
+      }
+      return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+    };
+
+    if (rotateDeg !== 0) {
+      const pivot = centerOf();
+      const origin = new paper.Point(pivot.x, pivot.y);
+      for (const item of items) {
+        item.rotate(rotateDeg, origin);
+      }
+    }
+
+    if (moveCenterTo) {
+      const c = centerOf();
+      const point = new paper.Point(moveCenterTo.x - c.x, moveCenterTo.y - c.y);
+      if (point.x !== 0 || point.y !== 0) {
+        for (const item of items) {
+          item.position = item.position.add(point);
+        }
+      }
+    } else if (delta && (delta.x !== 0 || delta.y !== 0)) {
+      const point = new paper.Point(delta.x, delta.y);
+      for (const item of items) {
+        item.position = item.position.add(point);
+      }
+    }
+
+    const out = scratch.exportJSON() as string;
+    scratch.remove();
+    return out;
+  }
+
   flipItemsInViewSpace(
     items: paper.PathItem[],
     axis: "horizontal" | "vertical",
@@ -1793,6 +1947,7 @@ export class PaperRenderer {
     start: { x: number; y: number },
     end: { x: number; y: number },
     scope: SelectLayerScope = "all",
+    itemFilter?: (item: paper.PathItem) => boolean,
   ): paper.PathItem[] {
     // Build the selection polygon from all four screen corners projected to
     // world. This keeps the marquee matching what the user drew on screen
@@ -1814,7 +1969,7 @@ export class PaperRenderer {
       closed: true,
       insert: false,
     });
-    const selectedItems = this.extractSelectionFromPath(rect, scope);
+    const selectedItems = this.extractSelectionFromPath(rect, scope, itemFilter);
     rect.remove();
     return selectedItems;
   }
@@ -1822,6 +1977,7 @@ export class PaperRenderer {
   extractSelectionFromScreenLasso(
     points: Array<{ x: number; y: number }>,
     scope: SelectLayerScope = "all",
+    itemFilter?: (item: paper.PathItem) => boolean,
   ): paper.PathItem[] {
     if (points.length < 3) return [];
 
@@ -1831,7 +1987,7 @@ export class PaperRenderer {
       closed: true,
       insert: false,
     });
-    const selectedItems = this.extractSelectionFromPath(lasso, scope);
+    const selectedItems = this.extractSelectionFromPath(lasso, scope, itemFilter);
     lasso.remove();
     return selectedItems;
   }
@@ -1839,6 +1995,7 @@ export class PaperRenderer {
   private extractSelectionFromPath(
     selectionPath: paper.Path,
     scope: SelectLayerScope = "all",
+    itemFilter?: (item: paper.PathItem) => boolean,
   ): paper.PathItem[] {
     if (selectionPath.isEmpty()) return [];
 
@@ -1853,6 +2010,7 @@ export class PaperRenderer {
       const layerOrder = this.getLayerOrder(layer);
       const candidates = this.getPathsOnPaperLayer(layer)
         .filter((item) => item.parent)
+        .filter((item) => !itemFilter || itemFilter(item))
         .filter((item) => selectionPath.bounds.expand(4).intersects(item.bounds))
         .sort((a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0));
 
@@ -2112,6 +2270,23 @@ export class PaperRenderer {
 
   strokeSelectionShapeOutline(ctx: CanvasRenderingContext2D, item: paper.Item): void {
     strokeSelectionShapeOutlineHelper(ctx, item, (x, y) => this.worldToScreen(x, y));
+  }
+
+  /** Magic Move selection: accent glow outline, no transform gizmo. */
+  drawAccentSelectionOutline(
+    items: paper.Item[],
+    ctx: CanvasRenderingContext2D,
+    accent: string,
+  ): void {
+    const live = items.filter((item) => item.parent);
+    for (const item of live) {
+      strokeAccentSelectionOutlineHelper(
+        ctx,
+        item,
+        (x, y) => this.worldToScreen(x, y),
+        accent,
+      );
+    }
   }
 
   drawTransformChrome(

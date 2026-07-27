@@ -12,6 +12,7 @@ import type { Tracer } from "../tracing/potrace-tracer";
 import type { SelectionController } from "../editing/object-select";
 import type { DirectSelectController } from "../editing/direct-select";
 import type { MagnetController } from "../editing/magnet";
+import type { MagicMoveController } from "../editing/magic-move";
 import type { HistoryManager } from "../document/history";
 import type { DocumentManager } from "../document/document";
 import type { CanvasConfig, Point } from "../geometry/types";
@@ -39,6 +40,7 @@ export interface ToolSessionDeps {
   selectionController: SelectionController;
   directSelectController: DirectSelectController;
   magnetController: MagnetController;
+  magicMoveController: MagicMoveController;
   paperRenderer: PaperRenderer;
   pixelCanvasManager: PixelCanvas;
   feedbackLayer: FeedbackLayer;
@@ -97,12 +99,15 @@ export class ToolSession {
     // (the stroke lands on whichever frame is current at release).
     if (
       deps.documentManager.isPlaying() &&
-      (tool === "select" || tool === "direct-select" || tool === "magnet")
+      (tool === "select" ||
+        tool === "direct-select" ||
+        tool === "magnet" ||
+        tool === "magic-move")
     ) {
       deps.documentManager.setPlaying(false);
     }
 
-    if (tool !== "select" && tool !== "direct-select") {
+    if (tool !== "select" && tool !== "direct-select" && tool !== "magic-move") {
       stageSelectedStore.set(false);
     }
 
@@ -120,6 +125,11 @@ export class ToolSession {
       return;
     }
 
+    if (tool === "magic-move") {
+      deps.magicMoveController.handleStart(point);
+      return;
+    }
+
     // Safety net: if a selection is still active when another tool starts,
     // place it before the new interaction mutates the layer.
     if (deps.selectionController.hasSelection()) {
@@ -128,6 +138,9 @@ export class ToolSession {
     if (deps.directSelectController.hasSelection()) {
       deps.directSelectController.clearSelection();
       deps.closeFunctionsPanelHidden();
+    }
+    if (deps.magicMoveController.hasSelection()) {
+      deps.magicMoveController.deactivate();
     }
 
     // Locked layers accept no drawing / magnet edits.
@@ -201,6 +214,11 @@ export class ToolSession {
       return;
     }
 
+    if (tool === "magic-move") {
+      deps.magicMoveController.handleMove(point);
+      return;
+    }
+
     if (tool === "magnet") {
       deps.magnetController.handleMove(point);
       deps.feedbackLayer.updateCursor(point);
@@ -241,6 +259,11 @@ export class ToolSession {
       deps.setSelectionGestureActive(false);
       deps.setFunctionsPanelDismissed(false);
       deps.updateFunctionsPanel();
+      return;
+    }
+
+    if (tool === "magic-move") {
+      deps.magicMoveController.handleEnd();
       return;
     }
 
@@ -345,6 +368,11 @@ export class ToolSession {
       deps.setSelectionGestureActive(false);
       deps.setFunctionsPanelDismissed(false);
       deps.updateFunctionsPanel();
+      return;
+    }
+
+    if (tool === "magic-move") {
+      deps.magicMoveController.handleCancel();
       return;
     }
 

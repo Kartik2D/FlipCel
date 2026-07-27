@@ -86,6 +86,7 @@ export class DirectSelectController {
   private chromeLayer: ChromeLayer;
   private chromeCtx: CanvasRenderingContext2D;
   private onSnapshot?: () => void;
+  private onLiveEditStart?: () => void;
   private onActivateLayer?: (layerId: string) => void;
   private onReconcile?: (items: paper.PathItem[]) => void;
 
@@ -218,6 +219,10 @@ export class DirectSelectController {
 
   setSnapshotCallback(callback: () => void): void {
     this.onSnapshot = callback;
+  }
+
+  setLiveEditStartCallback(callback: () => void): void {
+    this.onLiveEditStart = callback;
   }
 
   setActivateLayerCallback(callback: (layerId: string) => void): void {
@@ -431,6 +436,24 @@ export class DirectSelectController {
     this.lastSelectionViewport = null;
     selectionStore.set({ items: [] });
     this.drawUI();
+  }
+
+  /**
+   * Finalize any in-progress anchor/handle/transform edit, then clear picks
+   * and chrome. Used when leaving the frame (playhead move) so edits commit
+   * to the frame they were made on.
+   */
+  confirmAndClearSelection(): void {
+    if (this.transformGizmo.isTransforming() && this.didTransformAnchors) {
+      this.finalizeAnchorMove();
+    } else if (this.handleDrag && this.didMoveHandle) {
+      this.finalizeHandleMove();
+    } else if (this.edgeDrag && this.didMoveEdge) {
+      this.finalizeEdgeMove();
+    } else if (this.isDraggingAnchor && this.didMoveAnchor) {
+      this.finalizeAnchorMove();
+    }
+    this.clearSelection();
   }
 
   // ============================================================
@@ -698,7 +721,7 @@ export class DirectSelectController {
     if (this.transformGizmo.isTransforming()) {
       if (this.pastDragThreshold(viewportPoint)) {
         if (this.transformGizmo.update(viewportPoint, this.camera)) {
-          this.didTransformAnchors = true;
+          this.noteLiveEditStarted("transform");
         }
       }
       this.drawUI();
@@ -732,7 +755,7 @@ export class DirectSelectController {
     const dy = worldPoint.y - worldStart.y;
 
     if (dx !== 0 || dy !== 0) {
-      this.didMoveAnchor = true;
+      this.noteLiveEditStarted("anchor");
       this.moveSelectedAnchors(dx, dy);
       this.dragStartPoint = viewportPoint;
       this.drawUI();
@@ -966,7 +989,7 @@ export class DirectSelectController {
       this.camera,
     );
     if (!moved) return;
-    this.didMoveHandle = true;
+    this.noteLiveEditStarted("handle");
     this.drawUI();
   }
 
@@ -1000,7 +1023,7 @@ export class DirectSelectController {
 
     this.dragStartPoint = viewportPoint;
     paper.view.update();
-    this.didMoveEdge = true;
+    this.noteLiveEditStarted("edge");
     this.drawUI();
   }
 
@@ -1320,6 +1343,23 @@ export class DirectSelectController {
   private beginDragThreshold(viewportPoint: Point): void {
     this.dragPointerOrigin = viewportPoint;
     this.dragPastThreshold = false;
+  }
+
+  private noteLiveEditStarted(kind: "anchor" | "handle" | "edge" | "transform"): void {
+    if (kind === "anchor") {
+      if (this.didMoveAnchor) return;
+      this.didMoveAnchor = true;
+    } else if (kind === "handle") {
+      if (this.didMoveHandle) return;
+      this.didMoveHandle = true;
+    } else if (kind === "edge") {
+      if (this.didMoveEdge) return;
+      this.didMoveEdge = true;
+    } else {
+      if (this.didTransformAnchors) return;
+      this.didTransformAnchors = true;
+    }
+    this.onLiveEditStart?.();
   }
 
   private resetDragThreshold(): void {

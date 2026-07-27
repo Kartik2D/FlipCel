@@ -290,6 +290,8 @@ export const timelinePanelStyles = css`
     position: absolute;
     inset: 0;
     pointer-events: none;
+    /* Above .frame-selection so keyframe markers stay readable on a range tint. */
+    z-index: 2;
   }
 
   .span-pill {
@@ -301,6 +303,7 @@ export const timelinePanelStyles = css`
     height: 6px;
     border-radius: 999px;
     background: var(--block-border, #555555);
+    box-shadow: 0 0 0 1px var(--inkwell-panel-surface, #ffffff);
   }
 
   .span-dot {
@@ -313,6 +316,7 @@ export const timelinePanelStyles = css`
     border-radius: 50%;
     box-sizing: border-box;
     border: 1.5px solid var(--block-border, #555555);
+    box-shadow: 0 0 0 1px var(--inkwell-panel-surface, #ffffff);
   }
 
   /* Single-frame keyframe: filled dot instead of a crammed pill. */
@@ -342,9 +346,10 @@ export const timelinePanelStyles = css`
     left: calc(var(--f) * var(--frame-cell-w, 15px) + 1px);
     width: calc(var(--len) * var(--frame-cell-w, 15px) - 2px);
     border-radius: 4px;
+    z-index: 1;
     background: color-mix(
       in srgb,
-      var(--inkwell-timeline-selection-bg, var(--inkwell-accent, #4a6fb5)) 88%,
+      var(--inkwell-timeline-selection-bg, var(--inkwell-accent, #4a6fb5)) 38%,
       transparent
     );
     box-shadow: inset 0 0 0 2px var(--inkwell-accent, #4a6fb5);
@@ -359,7 +364,7 @@ export const timelinePanelStyles = css`
   .frame-selection.duplicating {
     background: color-mix(
       in srgb,
-      var(--inkwell-timeline-selection-bg, var(--inkwell-accent, #4a6fb5)) 55%,
+      var(--inkwell-timeline-selection-bg, var(--inkwell-accent, #4a6fb5)) 28%,
       transparent
     );
     box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 70%, transparent);
@@ -446,7 +451,7 @@ export const timelinePanelStyles = css`
   .frame-selection.emf-on {
     background: color-mix(
       in srgb,
-      var(--inkwell-accent, #4a6fb5) 55%,
+      var(--inkwell-accent, #4a6fb5) 34%,
       transparent
     );
     box-shadow:

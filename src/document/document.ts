@@ -177,19 +177,20 @@ export class DocumentManager {
 
   constructor(renderer: PaperRenderer) {
     this.renderer = renderer;
-    // Ghosts follow the active layer, and selection changes don't go
-    // through publish() — refresh them here when the selection moves.
+    // Ghosts follow layer selection / visibility / lock; those can change
+    // without a document publish(), so refresh here too.
     let lastActive = layerStore.get().activeLayerId;
     layerStore.subscribe((s) => {
-      if (s.activeLayerId === lastActive) return;
-      lastActive = s.activeLayerId;
-      if (this.editMultipleFrames && this.emfRange) {
-        const { start, end } = this.emfRange;
-        this.renderer.setEmfPlayheadFrame(
-          this.currentFrame >= start && this.currentFrame <= end
-            ? this.currentFrame
-            : null,
-        );
+      if (s.activeLayerId !== lastActive) {
+        lastActive = s.activeLayerId;
+        if (this.editMultipleFrames && this.emfRange) {
+          const { start, end } = this.emfRange;
+          this.renderer.setEmfPlayheadFrame(
+            this.currentFrame >= start && this.currentFrame <= end
+              ? this.currentFrame
+              : null,
+          );
+        }
       }
       if (this.onionSkinEnabled) this.updateOnionSkin();
     });
@@ -281,6 +282,17 @@ export class DocumentManager {
     return kf && kf.holdUntil >= frame ? kf : null;
   }
 
+  /**
+   * Start frame of the keyframe covering `frame` on a layer, or null when
+   * empty. Used by Magic Move to treat held playhead content as “active frame”.
+   */
+  getCoveringKeyframeFrame(layerId: string, frame?: number): number | null {
+    const track = this.getTrack(layerId);
+    if (!track) return null;
+    const at = this.clampFrame(frame ?? this.currentFrame);
+    return this.coveringKeyframe(track, at)?.frameIndex ?? null;
+  }
+
   /** Content visible at a frame (empty when no keyframe span covers it). */
   private contentIdAt(track: LayerTrack, frame: number): string {
     return this.coveringKeyframe(track, frame)?.contentId ?? EMPTY_CONTENT_ID;
@@ -329,15 +341,24 @@ export class DocumentManager {
   /**
    * Apply solo + per-layer visibility to Paper without mutating stored
    * `visible` flags. Exclusive solo shows only that regular layer.
+   * Reads visibility from layerStore so toggles take effect before the
+   * next history sync copies them onto tracks.
    */
   applyEffectiveVisibility(soloLayerId: string | null = layerStore.get().soloLayerId): void {
+    const byId = new Map(layerStore.get().layers.map((l) => [l.id, l]));
     for (const track of this.tracks) {
+      const layer = byId.get(track.id);
       const effective = isLayerEffectivelyVisible(
-        { id: track.id, visible: track.visible, kind: "regular" },
+        {
+          id: track.id,
+          visible: layer?.visible ?? track.visible,
+          kind: "regular",
+        },
         soloLayerId,
       );
       this.renderer.setLayerVisibility(track.id, effective);
     }
+    if (this.onionSkinEnabled) this.updateOnionSkin();
   }
 
   /** True when a track should participate in select hit-testing. */
@@ -486,13 +507,6 @@ export class DocumentManager {
 
     const { start, end } = this.emfRange;
     const expectedFrames = this.keyframeFramesInRange(track, start, end);
-    if (
-      this.currentFrame >= start &&
-      this.currentFrame <= end &&
-      !expectedFrames.includes(this.currentFrame)
-    ) {
-      expectedFrames.push(this.currentFrame);
-    }
 
     const partitions = this.renderer.exportLayerContentsByKeyframe(
       layerId,
@@ -500,6 +514,19 @@ export class DocumentManager {
         ? this.currentFrame
         : start,
     );
+
+    // Only auto-key the playhead when it sits on a hold/empty frame AND the
+    // overlay actually has playhead-bucket artwork (e.g. user drew there).
+    // Scrubbing alone must not turn Magic Move holds into keyframes.
+    if (
+      this.currentFrame >= start &&
+      this.currentFrame <= end &&
+      !expectedFrames.includes(this.currentFrame)
+    ) {
+      const playheadJson = partitions.get(this.currentFrame) ?? "";
+      if (playheadJson) expectedFrames.push(this.currentFrame);
+    }
+
     let changed = false;
 
     const writeFrame = (frameIndex: number, json: string): boolean => {
@@ -546,6 +573,51 @@ export class DocumentManager {
       frames.push(kf.frameIndex);
     }
     return frames;
+  }
+
+  /**
+   * Non-blank keyframe start frames that fall inside [start, end] (inclusive).
+   */
+  getKeyframeFramesInRange(
+    layerId: string,
+    start: number,
+    end: number,
+  ): number[] {
+    const track = this.getTrack(layerId);
+    if (!track) return [];
+    [start, end] = this.normalizeRange(start, end);
+    const frames: number[] = [];
+    for (const kf of track.keyframes) {
+      if (kf.frameIndex < start || kf.frameIndex > end) continue;
+      if (kf.contentId === EMPTY_CONTENT_ID) continue;
+      frames.push(kf.frameIndex);
+    }
+    return frames;
+  }
+
+  /** Layer artwork JSON visible at `frame` (empty string when blank). */
+  getLayerContentAtFrame(layerId: string, frame: number): string {
+    const track = this.getTrack(layerId);
+    if (!track) return "";
+    const contentId = this.contentIdAt(track, this.clampFrame(frame));
+    if (contentId === EMPTY_CONTENT_ID) return "";
+    return this.content.get(contentId) ?? "";
+  }
+
+  /**
+   * Artwork JSON for a keyframe that starts exactly at `frame`, or null when
+   * there is no keyframe / blank keyframe at that index.
+   */
+  getExactKeyframeContentAtFrame(
+    layerId: string,
+    frame: number,
+  ): string | null {
+    const track = this.getTrack(layerId);
+    if (!track) return null;
+    frame = this.clampFrame(Math.max(0, Math.round(frame)));
+    const kf = track.keyframes.find((k) => k.frameIndex === frame);
+    if (!kf || kf.contentId === EMPTY_CONTENT_ID) return null;
+    return this.content.get(kf.contentId) ?? "";
   }
 
   private insertKeyframe(track: LayerTrack, keyframe: Keyframe): void {
@@ -619,6 +691,118 @@ export class DocumentManager {
 
     if (frame === this.currentFrame) this.reloadCurrentFrame();
     this.publish();
+    return true;
+  }
+
+  /**
+   * Write arbitrary layer JSON as a keyframe at `frame` without requiring the
+   * playhead to be there (used by Magic Move bake). Extends duration if needed.
+   * Does not reload Paper.
+   */
+  writeLayerContentAtFrame(
+    layerId: string,
+    frame: number,
+    json: string,
+    options: { publish?: boolean } = {},
+  ): boolean {
+    const track = this.getTrack(layerId);
+    if (!track) return false;
+
+    frame = Math.max(0, Math.round(frame));
+    if (frame >= this.duration) {
+      this.setDuration(frame + 1);
+    }
+    frame = this.clampFrame(frame);
+
+    let contentId: string;
+    if (json === "") {
+      contentId = EMPTY_CONTENT_ID;
+    } else {
+      contentId = this.newContentId();
+      this.content.set(contentId, json);
+    }
+    this.placeKeyframe(track, frame, contentId);
+    if (frame === this.currentFrame) {
+      this.loadedContent.set(layerId, contentId);
+    }
+    if (options.publish !== false) this.publish();
+    return true;
+  }
+
+  /**
+   * Extend each keyframe at `frames[i]` to hold through `frames[i+1] - 1`,
+   * never past the next keyframe on the track. Used by Magic Move so steps
+   * stay visible between samples even when auto-hold is off. Blank keyframes
+   * are skipped. When `holdLast` is set (or auto-hold is on), the final
+   * sample also holds through the next keyframe / end of the timeline.
+   */
+  bridgeKeyframeHolds(
+    layerId: string,
+    frames: number[],
+    options: { publish?: boolean; holdLast?: boolean } = {},
+  ): void {
+    const track = this.getTrack(layerId);
+    if (!track || frames.length === 0) return;
+
+    const sorted = [
+      ...new Set(frames.map((f) => this.clampFrame(Math.max(0, Math.round(f))))),
+    ].sort((a, b) => a - b);
+
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const kf = track.keyframes.find((k) => k.frameIndex === sorted[i]);
+      if (!kf || kf.contentId === EMPTY_CONTENT_ID) continue;
+
+      // Never hold over a later keyframe — that draws overlapping pills/dots.
+      const nextOnTrack = track.keyframes.find((k) => k.frameIndex > sorted[i]);
+      const maxUntil = nextOnTrack
+        ? nextOnTrack.frameIndex - 1
+        : this.duration - 1;
+      const until = Math.min(sorted[i + 1] - 1, maxUntil);
+      if (until > kf.holdUntil) kf.holdUntil = until;
+    }
+
+    const holdLast = options.holdLast === true || this.autoHoldEnabled;
+    if (holdLast) {
+      const last = sorted[sorted.length - 1];
+      const kf = track.keyframes.find((k) => k.frameIndex === last);
+      if (kf && kf.contentId !== EMPTY_CONTENT_ID) {
+        const nextOnTrack = track.keyframes.find((k) => k.frameIndex > last);
+        const until = nextOnTrack
+          ? nextOnTrack.frameIndex - 1
+          : this.duration - 1;
+        if (until > kf.holdUntil) kf.holdUntil = until;
+      }
+    }
+
+    if (options.publish !== false) this.publish();
+  }
+
+  /**
+   * Empty frames `start..end` on a layer (same semantics as removeFrameRange)
+   * without reloading Paper. Used to clear a Magic Move bake range before
+   * writing new keys. Extends duration when `end` is past the timeline.
+   */
+  clearFrameRange(
+    layerId: string,
+    start: number,
+    end: number,
+    options: { publish?: boolean } = {},
+  ): boolean {
+    const track = this.getTrack(layerId);
+    if (!track) return false;
+
+    start = Math.max(0, Math.round(start));
+    end = Math.max(0, Math.round(end));
+    if (end < start) return false;
+    if (end >= this.duration) {
+      this.setDuration(end + 1);
+    }
+    [start, end] = this.normalizeRange(start, end);
+    if (!this.cutFrameRange(track, start, end)) {
+      if (options.publish !== false) this.publish();
+      return false;
+    }
+    if (options.publish !== false) this.publish();
     return true;
   }
 
@@ -827,7 +1011,8 @@ export class DocumentManager {
   }
 
   /**
-   * Reverse the visible artwork order across start..end (frame-by-frame).
+   * Reverse the artwork order across start..end, preserving hold spans
+   * (a hold covering [from, to] lands at the mirrored [start+end-to, start+end-from]).
    * Returns true when the range changed.
    */
   reverseFrameRange(layerId: string, start: number, end: number): boolean {
@@ -836,16 +1021,19 @@ export class DocumentManager {
     [start, end] = this.normalizeRange(start, end);
     if (start >= end) return false;
 
-    const frameContents: string[] = [];
-    for (let frame = start; frame <= end; frame++) {
-      frameContents.push(this.contentIdAt(track, frame));
-    }
-    frameContents.reverse();
+    const segment = this.extractFrameRange(track, start, end);
+    if (segment.length === 0) return false;
 
-    if (!this.cutFrameRange(track, start, end)) return false;
+    this.cutFrameRange(track, start, end);
 
-    for (let i = 0; i < frameContents.length; i++) {
-      this.placeKeyframe(track, start + i, frameContents[i]!);
+    for (const kf of segment) {
+      const from = kf.frameIndex;
+      const to = kf.holdUntil;
+      this.insertKeyframe(track, {
+        frameIndex: start + end - to,
+        contentId: kf.contentId,
+        holdUntil: start + end - from,
+      });
     }
 
     this.reloadCurrentFrame();
@@ -910,6 +1098,11 @@ export class DocumentManager {
     if (this.onionSkinEnabled === enabled) return;
     this.onionSkinEnabled = enabled;
     this.publish();
+  }
+
+  /** Rebuild onion-skin ghosts (e.g. when live art diverges before commit). */
+  refreshOnionSkin(): void {
+    this.updateOnionSkin();
   }
 
   isEditMultipleFrames(): boolean {
@@ -1010,11 +1203,14 @@ export class DocumentManager {
 
   /**
    * Rebuild the onion-skin ghost layers for the current playhead position.
-   * Shows exactly two ghosts for the *active* layer only: its nearest
-   * previous and nearest next keyframe with real artwork, however far away
-   * (blank keyframes and empty gaps are skipped). A keyframe whose content
-   * matches what's on screen is skipped — it would just paint an invisible
-   * copy under itself.
+   * Shows up to two ghosts (nearest previous / next keyframe with real
+   * artwork). Scope is the active layer or every unlocked + effectively
+   * visible layer, per `viewOverlayStore.onionSkinLayers`.
+   *
+   * Ghosts whose stored artwork matches the current frame are skipped while
+   * live Paper still matches the store (including brand-new keyframes that
+   * share content via copy-on-write). Once live art diverges — e.g. mid-move —
+   * that shared stored content is shown as the onion reference.
    */
   private updateOnionSkin(): void {
     if (!this.onionSkinEnabled || this.playing || this.editMultipleFrames) {
@@ -1044,22 +1240,33 @@ export class DocumentManager {
       return null;
     };
 
-    // Only the active layer gets ghosts; other layers' motion is noise
-    // while drawing on this one.
-    const activeId = layerStore.get().activeLayerId;
-    const track = this.tracks.find((t) => t.id === activeId);
-    if (!track || !this.isTrackEffectivelyVisible(track)) {
+    const overlay = viewOverlayStore.get();
+    const tracks = this.onionSkinTracks(overlay.onionSkinLayers);
+
+    if (tracks.length === 0) {
       this.renderer.clearOnionSkin();
       return;
     }
 
     const collectGhost = (direction: -1 | 1, color: string) => {
-      const kf = nearestKeyframe(track, direction);
-      if (!kf) return;
-      if (kf.contentId === this.contentIdAt(track, this.currentFrame)) return;
-      const json = this.content.get(kf.contentId);
-      if (json) {
-        ghosts.push({ jsons: [json], opacity: ONION_OPACITY, color });
+      // tracks are bottom→top; keep that order for composite ghosts.
+      const jsons: string[] = [];
+      for (const track of tracks) {
+        const kf = nearestKeyframe(track, direction);
+        if (!kf) continue;
+        const ghostJson = this.content.get(kf.contentId);
+        if (!ghostJson) continue;
+        const currentJson =
+          this.content.get(this.contentIdAt(track, this.currentFrame)) ?? "";
+        // Identical stored art is useless as onion while the layer still
+        // matches the store; once live Paper diverges, show it as reference.
+        if (ghostJson === currentJson && !this.layerContentDiffers(track.id)) {
+          continue;
+        }
+        jsons.push(ghostJson);
+      }
+      if (jsons.length > 0) {
+        ghosts.push({ jsons, opacity: ONION_OPACITY, color });
       }
     };
 
@@ -1067,7 +1274,31 @@ export class DocumentManager {
     collectGhost(-1, ONION_PREV_COLOR);
     collectGhost(1, ONION_NEXT_COLOR);
 
-    this.renderer.setOnionSkin(ghosts, viewOverlayStore.get().onionSkinOutline);
+    this.renderer.setOnionSkin(ghosts, overlay.onionSkinOutline);
+  }
+
+  /**
+   * Layers that may contribute onion ghosts: unlocked and effectively
+   * visible (honors hide + solo). Reads lock/visibility from layerStore so
+   * toggles apply before tracks are synced.
+   */
+  private onionSkinTracks(mode: "active" | "all"): LayerTrack[] {
+    const { layers, activeLayerId, soloLayerId } = layerStore.get();
+    const eligible = new Set(
+      layers
+        .filter(
+          (l) =>
+            l.kind !== "stage" &&
+            !l.locked &&
+            isLayerEffectivelyVisible(l, soloLayerId),
+        )
+        .map((l) => l.id),
+    );
+    if (mode === "active") {
+      const track = this.tracks.find((t) => t.id === activeLayerId);
+      return track && eligible.has(track.id) ? [track] : [];
+    }
+    return this.tracks.filter((t) => eligible.has(t.id));
   }
 
   private clampFrame(frame: number): number {
@@ -1090,6 +1321,16 @@ export class DocumentManager {
     this.publish();
   }
 
+  /** Drop the loaded-content cache for a layer so the next reload reimports. */
+  invalidateLoadedLayer(layerId: string): void {
+    this.loadedContent.delete(layerId);
+  }
+
+  /** Reimport the current frame into Paper (e.g. after un-hiding a layer). */
+  reloadVisibleFrame(): void {
+    this.reloadCurrentFrame();
+  }
+
   private reloadCurrentFrame(): void {
     const activeLayerId =
       this.renderer.getActiveLayerId() ?? this.tracks[this.tracks.length - 1]?.id;
@@ -1099,11 +1340,16 @@ export class DocumentManager {
     // playhead only retargets where new strokes go — keep the composite (and
     // any live selection) intact.
     const solo = layerStore.get().soloLayerId;
+    const layerById = new Map(layerStore.get().layers.map((l) => [l.id, l]));
     const withEffective = (track: LayerTrack, json: string | undefined) => ({
       id: track.id,
       name: track.name,
       visible: isLayerEffectivelyVisible(
-        { id: track.id, visible: track.visible, kind: "regular" },
+        {
+          id: track.id,
+          visible: layerById.get(track.id)?.visible ?? track.visible,
+          kind: "regular",
+        },
         solo,
       ),
       json,
@@ -1111,6 +1357,17 @@ export class DocumentManager {
 
     if (this.editMultipleFrames && this.emfRange) {
       const emfSet = new Set(this.emfRange.layerIds);
+      // Magic Move / range edits invalidate loadedContent. Rebuild the
+      // composite from the document so scrub commits don't write a stale
+      // overlay (and invent keyframes on hold frames).
+      const needsRebuild = this.emfRange.layerIds.some(
+        (id) => this.loadedContent.get(id) !== EMF_LOADED_SENTINEL,
+      );
+      if (needsRebuild) {
+        this.rebuildEditMultipleFramesOverlay();
+        return;
+      }
+
       this.renderer.restoreLayersSnapshot(
         this.tracks.map((track) => {
           if (emfSet.has(track.id)) {

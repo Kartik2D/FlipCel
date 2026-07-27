@@ -37,3 +37,19 @@ export interface SelectionState {
 export const selectionStore = new Store<SelectionState>({
   items: [],
 });
+
+/** Magic Move panel: Apply availability + floating Apply popup. */
+export interface MagicMoveUiState {
+  canApply: boolean;
+  popupOpen: boolean;
+  /** Client (fixed) coordinates for the Apply popup. */
+  popupX: number;
+  popupY: number;
+}
+
+export const magicMoveUiStore = new Store<MagicMoveUiState>({
+  canApply: false,
+  popupOpen: false,
+  popupX: 0,
+  popupY: 0,
+});

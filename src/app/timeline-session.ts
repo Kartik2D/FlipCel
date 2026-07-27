@@ -15,6 +15,7 @@ import { downloadDocument, pickDocumentFile, loadAutosave } from "../document/pe
 import type { HistoryManager } from "../document/history";
 import type { SelectionController } from "../editing/object-select";
 import type { DirectSelectController } from "../editing/direct-select";
+import type { MagicMoveController } from "../editing/magic-move";
 import type { PaperRenderer } from "../render/paper-renderer";
 import type { InkwellLayersPanel } from "../ui/register";
 import type { ToolId } from "../tools/registry";
@@ -60,6 +61,7 @@ export interface TimelineSessionDeps {
   historyManager: HistoryManager;
   selectionController: SelectionController;
   directSelectController: DirectSelectController;
+  magicMoveController: MagicMoveController;
   paperRenderer: PaperRenderer;
   layersPanel: InkwellLayersPanel;
   switchTool: (tool: ToolId) => void;
@@ -113,12 +115,14 @@ export class TimelineSession {
 
   /**
    * Move the playhead (optionally also activating a layer, when the click
-   * landed on another row). Selections are placed first so pending edits
-   * commit to the frame they were made on.
+   * landed on another row). Selections are always confirmed first so pending
+   * transforms commit to the frame they were made on, and selection chrome
+   * is cleared before the new frame loads.
    *
-   * Frame-cell clicks (with `layerId`) mirror the layers panel: switch to the
-   * select tool and select every item on the active layer. Playhead scrub /
-   * jog (no `layerId`) only moves the playhead and clears selection.
+   * Frame-cell clicks (with `layerId`, without `navigateOnly`) mirror the
+   * layers panel: switch to the select tool and select every item on the
+   * active layer. Playhead scrub / jog / navigateOnly only moves the
+   * playhead after confirming selection.
    */
   onTimelineFrameSelect(
     frame: number,
@@ -129,6 +133,7 @@ export class TimelineSession {
       documentManager,
       selectionController,
       directSelectController,
+      magicMoveController,
       paperRenderer,
       switchTool,
       requestRedraw,
@@ -153,20 +158,25 @@ export class TimelineSession {
         !navigateOnly &&
         isAlreadyActive &&
         isSameFrame &&
-        (selectionController.hasSelection() || directSelectController.hasSelection())
+        (selectionController.hasSelection() ||
+          directSelectController.hasSelection() ||
+          magicMoveController.hasSelection())
       ) {
-        selectionController.clearSelection();
-        directSelectController.clearSelection();
+        selectionController.confirmAndClearSelection();
+        directSelectController.confirmAndClearSelection();
+        magicMoveController.deactivate();
         closeFunctionsPanelHidden();
         return;
       }
     }
 
-    if (!navigateOnly) {
-      selectionController.clearSelection();
-      directSelectController.clearSelection();
-      closeFunctionsPanelHidden();
-    }
+    // Always confirm pending transforms and clear outlines — including
+    // navigateOnly scrub/ruler paths (navigateOnly only skips re-select-all).
+    selectionController.confirmAndClearSelection();
+    directSelectController.confirmAndClearSelection();
+    magicMoveController.deactivate();
+    closeFunctionsPanelHidden();
+    this.commitLiveEdits();
 
     if (layerId && layerId !== layerStore.get().activeLayerId) {
       if (paperRenderer.setActiveLayer(layerId)) {
@@ -214,6 +224,9 @@ export class TimelineSession {
 
   onKeyframeHoldToggle(layerId: string, frame: number): void {
     const { documentManager, historyManager, requestRedraw } = this.deps;
+    if (layerStore.get().layers.some((l) => l.id === layerId && l.locked)) {
+      return;
+    }
     // Commit live edits first so extending a hold doesn't clobber an
     // in-progress drawing on the tapped span.
     this.commitLiveEdits();
@@ -240,6 +253,7 @@ export class TimelineSession {
     if (targets.length === 0) return;
     selectionController.clearSelection();
     directSelectController.clearSelection();
+    this.deps.magicMoveController.deactivate();
     this.commitLiveEdits();
     if (documentManager.isEditMultipleFrames()) {
       documentManager.setEditMultipleFrames(false);
@@ -263,9 +277,19 @@ export class TimelineSession {
     layerIds: string[] | undefined,
     layerId: string | undefined,
   ): string[] {
-    if (layerIds && layerIds.length > 0) return layerIds;
-    if (layerId) return [layerId];
-    return [];
+    const locked = new Set(
+      layerStore
+        .get()
+        .layers.filter((l) => l.locked)
+        .map((l) => l.id),
+    );
+    const ids =
+      layerIds && layerIds.length > 0
+        ? layerIds
+        : layerId
+          ? [layerId]
+          : [];
+    return ids.filter((id) => !locked.has(id));
   }
 
   onFramesMove(
@@ -465,10 +489,11 @@ export class TimelineSession {
     } = this.deps;
     const playing = !documentManager.isPlaying();
     if (playing) {
-      // Commit pending edits, then drop selection UI for clean playback.
+      // Confirm pending transforms, then drop selection UI for clean playback.
+      selectionController.confirmAndClearSelection();
+      directSelectController.confirmAndClearSelection();
+      this.deps.magicMoveController.deactivate();
       this.commitLiveEdits();
-      selectionController.clearSelection();
-      directSelectController.clearSelection();
       closeFunctionsPanelHidden();
       this.playbackAccumulatorMs = 0;
     }
@@ -559,6 +584,7 @@ export class TimelineSession {
 
     selectionController.discardSelection();
     directSelectController.clearSelection();
+    this.deps.magicMoveController.deactivate();
     closeFunctionsPanelHidden();
 
     stageStore.set({ ...doc.stage });

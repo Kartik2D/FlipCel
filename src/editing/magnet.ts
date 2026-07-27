@@ -31,6 +31,7 @@ export class MagnetController {
   private paperRenderer: PaperRenderer;
   private camera: Camera;
   private onSnapshot?: () => void;
+  private onLiveEditStart?: () => void;
   private onReconcile?: (items: paper.PathItem[]) => void;
 
   /** Brush diameter in viewport/screen pixels. */
@@ -66,6 +67,10 @@ export class MagnetController {
 
   setSnapshotCallback(callback: () => void): void {
     this.onSnapshot = callback;
+  }
+
+  setLiveEditStartCallback(callback: () => void): void {
+    this.onLiveEditStart = callback;
   }
 
   setReconcileCallback(
@@ -143,7 +148,10 @@ export class MagnetController {
     paper.view.update();
 
     this.lastWorldPoint = { x: worldPoint.x, y: worldPoint.y };
-    this.didMove = true;
+    if (!this.didMove) {
+      this.didMove = true;
+      this.onLiveEditStart?.();
+    }
   }
 
   handleEnd(): void {

@@ -34,6 +34,7 @@ export class SelectionController {
   private selectionNeedsPlacement = false;
   private config: CanvasConfig;
   private onSnapshot?: () => void;
+  private onLiveEditStart?: () => void;
   private onActivateLayer?: (layerId: string) => void;
 
   private paperRenderer: PaperRenderer;
@@ -102,6 +103,11 @@ export class SelectionController {
     this.onSnapshot = callback;
   }
 
+  /** Fired once when a selection first diverges from committed content (move/transform). */
+  setLiveEditStartCallback(callback: () => void): void {
+    this.onLiveEditStart = callback;
+  }
+
   setActivateLayerCallback(callback: (layerId: string) => void): void {
     this.onActivateLayer = callback;
   }
@@ -120,7 +126,8 @@ export class SelectionController {
   ): void {
     this.selectedItems = [...items];
     this.selectionNeedsPlacement = options?.needsPlacement ?? false;
-    this.didMove = options?.didMove ?? false;
+    this.didMove = false;
+    if (options?.didMove) this.noteLiveEditStarted();
     this.handles = [];
     selectionStore.set({ items: [...this.selectedItems] });
     this.drawUI();
@@ -150,6 +157,20 @@ export class SelectionController {
     this.didMove = false;
     this.handles = [];
     selectionStore.set({ items: [] });
+  }
+
+  /**
+   * Always place a pending extraction / moved selection (never revert), then
+   * clear drag/gizmo chrome. Used when leaving the frame so edits stick.
+   */
+  confirmAndClearSelection(): void {
+    this.placeSelection();
+    this.isDragging = false;
+    this.dragStartPoint = null;
+    this.resetDragThreshold();
+    this.marquee.reset();
+    this.clearTransformState();
+    this.drawUI();
   }
 
   clearSelection(): void {
@@ -183,7 +204,7 @@ export class SelectionController {
 
   markSelectionAsModified(): void {
     if (!this.hasSelection()) return;
-    this.didMove = true;
+    this.noteLiveEditStarted();
     selectionStore.set({ items: [...this.selectedItems] });
     this.drawUI();
   }
@@ -256,7 +277,7 @@ export class SelectionController {
 
     if (this.transformGizmo.isTransforming()) {
       if (this.transformGizmo.update(viewportPoint, this.camera)) {
-        this.didMove = true;
+        this.noteLiveEditStarted();
       }
     } else {
       this.handleTranslateMove(viewportPoint);
@@ -388,12 +409,19 @@ export class SelectionController {
     );
 
     if (worldDelta.x !== 0 || worldDelta.y !== 0) {
-      this.didMove = true;
       for (const item of this.selectedItems) {
         this.paperRenderer.movePath(item, worldDelta);
       }
       this.dragStartPoint = viewportPoint;
+      this.noteLiveEditStarted();
     }
+  }
+
+  /** Mark the selection as dirty and refresh onion once on the first edit. */
+  private noteLiveEditStarted(): void {
+    if (this.didMove) return;
+    this.didMove = true;
+    this.onLiveEditStart?.();
   }
 
   // ============================================================

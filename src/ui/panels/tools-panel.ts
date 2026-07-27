@@ -6,6 +6,7 @@ import {
   toolStore,
   modifiersStore,
   toolSettingsStore,
+  magicMoveUiStore,
   StoreController,
 } from "../../state";
 import { FloatingPanel } from "../primitives/floating-panel";
@@ -21,12 +22,13 @@ export class InkwellToolsPanel extends FloatingPanel {
   private tool = new StoreController(this, toolStore);
   private modifiers = new StoreController(this, modifiersStore);
   private settings = new StoreController(this, toolSettingsStore);
+  private magicMoveUi = new StoreController(this, magicMoveUiStore);
 
   /** Panel tool order; pan is dock-only and omitted here. */
   private static readonly TOOL_GROUPS: ToolId[][] = [
     ["select", "direct-select"],
     ["brush", "lasso", "rect", "circle"],
-    ["magnet", "eyedropper"],
+    ["magnet", "magic-move", "eyedropper"],
   ];
 
   static styles = css`
@@ -197,11 +199,21 @@ export class InkwellToolsPanel extends FloatingPanel {
     const toolSettings = this.settings.value[currentToolId] as Record<string, unknown>;
     const schema = currentTool.settings as SettingsSchema;
 
-    const schemaKeys = Object.keys(schema);
+    let schemaKeys = Object.keys(schema);
     // Pixel resolution only affects tools that rasterize through the pixel
     // canvas before tracing; vector tools (select, direct-select, magnet,
     // pan, eyedropper) don't touch it and shouldn't advertise the setting.
     const showsPixelRes = currentToolId === "brush" || currentToolId === "lasso" || currentToolId === "rect" || currentToolId === "circle";
+
+    if (currentToolId === "magic-move") {
+      const timing = toolSettings.timing === "duration" ? "duration" : "step";
+      schemaKeys = schemaKeys.filter((key) => {
+        if (key === "step") return timing === "step";
+        if (key === "duration") return timing === "duration";
+        return true;
+      });
+    }
+
     if (schemaKeys.length === 0) {
       if (currentToolId === "select") {
         return html`<p class="hint">Click to select, drag to move.</p>`;
@@ -229,6 +241,23 @@ export class InkwellToolsPanel extends FloatingPanel {
       )}
       ${currentToolId === "select"
         ? html`<p class="hint">Drag a rectangle or freeform lasso to extract a selection. “All” selects across unlocked visible layers.</p>`
+        : ""}
+      ${currentToolId === "magic-move"
+        ? html`
+            <p class="hint">
+              Lasso a selection, then draw a trajectory with crossing timing
+              ticks. When the chart is valid, an Apply popup appears. Esc clears
+              the chart, then the selection.
+            </p>
+            <blocky-button
+              flat
+              accent
+              stretch
+              ?disabled=${!this.magicMoveUi.value.canApply}
+              @click=${() => this.emit("magic-move-apply")}
+              >Apply</blocky-button
+            >
+          `
         : ""}
       ${showsPixelRes ? this.renderPixelRes() : ""}
     `;

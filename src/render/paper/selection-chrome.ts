@@ -91,6 +91,45 @@ export function strokeSelectionShapeOutline(
   ctx.restore();
 }
 
+/**
+ * Magic Move selection chrome: soft accent glow + dense white/accent dashed
+ * outline. No transform gizmo.
+ */
+export function strokeAccentSelectionOutline(
+  ctx: CanvasRenderingContext2D,
+  item: paper.Item,
+  worldToScreen: WorldToScreen,
+  accent: string,
+): void {
+  const dash = [3, 2];
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  // Soft glow (no dash)
+  ctx.setLineDash([]);
+  ctx.strokeStyle = accent;
+  ctx.globalAlpha = 0.22;
+  ctx.lineWidth = 10;
+  forEachOutlineContour(ctx, item, worldToScreen, () => ctx.stroke());
+  ctx.globalAlpha = 0.35;
+  ctx.lineWidth = 5;
+  forEachOutlineContour(ctx, item, worldToScreen, () => ctx.stroke());
+  ctx.globalAlpha = 1;
+
+  // Dense dashed outline
+  ctx.setLineDash(dash);
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 3;
+  forEachOutlineContour(ctx, item, worldToScreen, () => ctx.stroke());
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1.5;
+  forEachOutlineContour(ctx, item, worldToScreen, () => ctx.stroke());
+
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
 /** Pure bbox + handle chrome given a screen-space rect. */
 export function drawTransformChrome(
   screenBounds: { x: number; y: number; width: number; height: number },
