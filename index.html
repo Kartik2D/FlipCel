@@ -38,11 +38,13 @@
                     ocean: "light",
                     matcha: "light",
                     twilight: "dark",
-                    berry: "dark",
+                    synth: "dark",
+                    banana: "light",
                 };
                 try {
                     var stored = localStorage.getItem("inkwell.theme");
-                    if (stored && themes[stored]) mode = stored;
+                    if (stored === "berry") mode = "synth";
+                    else if (stored && themes[stored]) mode = stored;
                 } catch (e) {}
                 document.documentElement.dataset.theme = mode;
                 document.documentElement.style.colorScheme = themes[mode] || "dark";
@@ -224,20 +226,20 @@
             /* Neon: near-black chrome with electric cyan / magenta accents. */
             html[data-theme="neon"] {
                 --inkwell-app-bg: #05060c;
-                --inkwell-canvas-bg: #0b0e18;
-                --inkwell-panel-surface: #14182a;
-                --inkwell-panel-depth: #000000;
-                --inkwell-panel-inset-bg: #0e1220;
+                --inkwell-canvas-bg: #0f1320;
+                --inkwell-panel-surface: #222a42;
+                --inkwell-panel-depth: #0a0c14;
+                --inkwell-panel-inset-bg: #1a2034;
                 --inkwell-panel-border: #3dffe0;
-                --inkwell-topbar-surface: #14182a;
+                --inkwell-topbar-surface: #222a42;
                 --inkwell-text-primary: #e8fff9;
                 --inkwell-text-secondary: #9ef5e4;
-                --inkwell-text-muted: #6aabb0;
+                --inkwell-text-muted: #7ab8bc;
                 --inkwell-accent: #39ff9a;
                 --inkwell-accent-hover: #6dffb4;
                 --inkwell-accent-muted: rgba(57, 255, 154, 0.32);
-                --inkwell-track-bg: #1c2438;
-                --inkwell-toggle-track: #1a2032;
+                --inkwell-track-bg: #28324c;
+                --inkwell-toggle-track: #242e46;
                 --inkwell-toggle-border: #3dffe0;
                 --inkwell-toggle-thumb: #e8fff9;
                 --inkwell-danger: #ff3d8a;
@@ -501,8 +503,8 @@
                 );
             }
 
-            /* Berry: soft wine-tinted dark chrome; mint border + pink accent/glow. */
-            html[data-theme="berry"] {
+            /* Synth: soft wine-tinted dark chrome; mint border + pink accent/glow. */
+            html[data-theme="synth"] {
                 --inkwell-app-bg: #1c1218;
                 --inkwell-canvas-bg: #261820;
                 --inkwell-panel-surface: #3a2834;
@@ -553,6 +555,62 @@
                 --inkwell-timeline-selection-bg: color-mix(
                     in srgb,
                     var(--inkwell-accent) 36%,
+                    var(--inkwell-panel-surface)
+                );
+            }
+
+            /* Banana: creamy yellow chrome with brown border + golden accent. */
+            html[data-theme="banana"] {
+                --inkwell-app-bg: #d4b84e;
+                --inkwell-canvas-bg: #e8d078;
+                --inkwell-panel-surface: #f0e6b4;
+                --inkwell-panel-depth: #c4a840;
+                --inkwell-panel-inset-bg: #e4d698;
+                --inkwell-panel-border: #5a4528;
+                --inkwell-topbar-surface: #f0e6b4;
+                --inkwell-text-primary: #2e2414;
+                --inkwell-text-secondary: #4a3a20;
+                --inkwell-text-muted: #6e5a38;
+                --inkwell-accent: #c4891a;
+                --inkwell-accent-hover: #a87414;
+                --inkwell-accent-muted: rgba(196, 137, 26, 0.3);
+                --inkwell-track-bg: #c4a84e;
+                --inkwell-toggle-track: #c4a84e;
+                --inkwell-toggle-border: #a8903a;
+                --inkwell-toggle-thumb: #f8f0c8;
+                --inkwell-danger: #c45a48;
+                --inkwell-danger-hover: #a84838;
+                --inkwell-danger-contrast: #ffffff;
+                --inkwell-shadow-panel: 0 14px 30px rgba(90, 70, 20, 0.16);
+                --inkwell-shadow-soft: 0 6px 16px rgba(90, 70, 20, 0.12);
+                --inkwell-dock-shadow: 0 4px 14px rgba(90, 70, 20, 0.14);
+                --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.4);
+                --inkwell-panel-active-danger: rgba(196, 90, 72, 0.48);
+                --inkwell-scrollbar-thumb: rgba(90, 69, 40, 0.4);
+                --inkwell-playhead: #5a8f4a;
+                --inkwell-timeline-cell-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-panel-depth) 68%,
+                    #ffffff
+                );
+                --inkwell-timeline-active-row-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-accent) 30%,
+                    var(--inkwell-panel-surface)
+                );
+                --inkwell-timeline-playhead-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-playhead) 28%,
+                    var(--inkwell-panel-surface)
+                );
+                --inkwell-timeline-active-playhead-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-timeline-active-row-bg) 58%,
+                    var(--inkwell-timeline-playhead-bg)
+                );
+                --inkwell-timeline-selection-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-accent) 38%,
                     var(--inkwell-panel-surface)
                 );
             }
@@ -634,7 +692,7 @@
             }
 
         </style>
-      <script type="module" crossorigin src="/inkwell/assets/index-k0UPe74o.js"></script>
+      <script type="module" crossorigin src="/inkwell/assets/index-Bx3bny0_.js"></script>
     </head>
     <body>
         <div id="canvas-container">
