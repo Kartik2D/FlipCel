@@ -95,7 +95,8 @@ export type ThemeMode =
   | "ocean"
   | "matcha"
   | "twilight"
-  | "berry";
+  | "synth"
+  | "banana";
 
 export const THEME_STORAGE_KEY = "inkwell.theme";
 
@@ -106,9 +107,10 @@ export const THEME_OPTIONS: readonly ThemeMode[] = [
   "ocean",
   "matcha",
   "twilight",
-  "berry",
-  "bubblegum",
   "neon",
+  "banana",
+  "bubblegum",
+  "synth",
 ];
 
 /** Compact palette used by the settings theme preview glyph. */
@@ -167,7 +169,7 @@ export const THEMES: Record<ThemeMode, ThemeInfo> = {
     colorScheme: "dark",
     preview: {
       app: "#05060c",
-      panel: "#14182a",
+      panel: "#222a42",
       border: "#3dffe0",
       accent: "#39ff9a",
     },
@@ -216,15 +218,26 @@ export const THEMES: Record<ThemeMode, ThemeInfo> = {
       accent: "#7b8cff",
     },
   },
-  berry: {
-    id: "berry",
-    label: "Berry",
+  synth: {
+    id: "synth",
+    label: "Synth",
     colorScheme: "dark",
     preview: {
       app: "#1c1218",
       panel: "#3a2834",
       border: "#7dffc8",
       accent: "#ff6b9d",
+    },
+  },
+  banana: {
+    id: "banana",
+    label: "Banana",
+    colorScheme: "light",
+    preview: {
+      app: "#d4b84e",
+      panel: "#f0e6b4",
+      border: "#5a4528",
+      accent: "#c4891a",
     },
   },
 };
@@ -236,6 +249,7 @@ export function isThemeMode(value: unknown): value is ThemeMode {
 export function readStoredTheme(): ThemeMode {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    if (stored === "berry") return "synth";
     if (isThemeMode(stored)) return stored;
   } catch {
     // ignore quota / privacy mode

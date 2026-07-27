@@ -9,7 +9,7 @@ import type { SymmetrySettings } from "../state/index";
 export type SymmetrySide = number;
 
 const CLIP_EXTENT = 1e5;
-const HANDLE_HIT_RADIUS_PX = 10;
+const HANDLE_HIT_RADIUS_PX = 18;
 
 /** Active gesture source side — set on pointer-down, used at commit. */
 let gestureSourceSide: SymmetrySide | null = null;

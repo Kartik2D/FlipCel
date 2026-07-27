@@ -1,4 +1,4 @@
-import { LitElement, html, css } from "lit";
+import { LitElement, html, css, nothing } from "lit";
 import type { InkwellScrollbar } from "./scrollbar";
 import { property } from "lit/decorators.js";
 import {
@@ -53,6 +53,8 @@ export class Block extends LitElement {
     :host {
       /* Design tokens */
       --block-depth: 7px;
+      /* Corner resize hit zone (taller/wider than the visible depth lip). */
+      --block-resize-hit: 22px;
       --block-depth-color: var(--inkwell-panel-depth, #bcbcbc);
       --block-border: var(--inkwell-panel-border, #555555);
       --block-radius: 10px;
@@ -122,6 +124,7 @@ export class Block extends LitElement {
     }
 
     .face {
+      position: relative;
       box-sizing: border-box;
       background: var(--block-face-bg);
       border-radius: calc(var(--block-radius) - 2px);
@@ -133,14 +136,27 @@ export class Block extends LitElement {
       overflow: hidden;
     }
 
-    /* Resize corner zones in the depth area */
+    /* Resize corners live inside .face: above the face fill, under content. */
     .resize-left,
     .resize-right {
       position: absolute;
-      bottom: 0;
-      width: 25%;
-      height: var(--block-depth);
-      z-index: 10;
+      /* Reach into the block depth lip below the face. */
+      bottom: calc(-1 * var(--block-depth));
+      width: max(32px, 30%);
+      height: var(--block-resize-hit);
+      z-index: 1;
+    }
+
+    /* Panel body / slotted chrome sits above the resize hit zones. */
+    .panel-form,
+    .face-content {
+      position: relative;
+      z-index: 2;
+    }
+
+    slot::slotted(*) {
+      position: relative;
+      z-index: 2;
     }
 
     .resize-left {
@@ -231,22 +247,14 @@ export class Block extends LitElement {
   private _getResizeCorner(e: PointerEvent): ResizeCorner {
     if (!this.resizable) return null;
 
-    const rect = this.getBoundingClientRect();
-    const depth = parseInt(
-      getComputedStyle(this).getPropertyValue("--block-depth") || "10"
-    );
-
-    // Check if in bottom depth area
-    const inDepthY = e.clientY > rect.bottom - depth - 2; // -2 for border
-    if (!inDepthY) return null;
-
-    const relX = e.clientX - rect.left;
-    const cornerWidth = rect.width * 0.25;
-
-    if (relX < cornerWidth) return "left";
-    if (relX > rect.width - cornerWidth) return "right";
-
-    return null; // Middle area - use for dragging
+    // Only the dedicated handle elements count — geometric hit-testing used
+    // to steal clicks from face content where the oversized zones overlap.
+    for (const node of e.composedPath()) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.classList.contains("resize-left")) return "left";
+      if (node.classList.contains("resize-right")) return "right";
+    }
+    return null;
   }
 
   private _onPointerHover = (e: PointerEvent) => {
@@ -646,18 +654,22 @@ export class Block extends LitElement {
     this.faceScrollbar.target = face;
   }
 
+  /** Corner resize hit targets — render inside `.face`, under content. */
+  protected renderResizeHandles() {
+    if (!this.resizable) return nothing;
+    return html`
+      <div class="resize-left"></div>
+      <div class="resize-right"></div>
+    `;
+  }
+
   render() {
     return html`
       <div class="block">
         <div class="face">
+          ${this.renderResizeHandles()}
           <slot></slot>
         </div>
-        ${this.resizable
-          ? html`
-              <div class="resize-left"></div>
-              <div class="resize-right"></div>
-            `
-          : ""}
       </div>
     `;
   }

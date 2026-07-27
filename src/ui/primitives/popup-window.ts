@@ -1,4 +1,4 @@
-import { html, css, nothing, type TemplateResult } from "lit";
+import { html, css, type TemplateResult } from "lit";
 import { property } from "lit/decorators.js";
 import { FloatingPanel } from "./floating-panel";
 import { anchorPanelBelowTrigger, raisePanelZIndex } from "./panel-anchor";
@@ -149,12 +149,10 @@ export class PopupWindow extends FloatingPanel {
       <div class="block">
         <div class="panel-body">
           <div class="face">
+            ${this.renderResizeHandles()}
             <div class="panel-form">${content}</div>
           </div>
         </div>
-        ${this.resizable
-          ? html`<div class="resize-left"></div><div class="resize-right"></div>`
-          : nothing}
       </div>
     `;
   }

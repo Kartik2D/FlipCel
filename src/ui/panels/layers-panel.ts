@@ -65,6 +65,9 @@ export class InkwellLayersPanel extends FloatingPanel {
     :host {
       --panel-width: 480px;
       --panel-max-height: none;
+      /* Row/frame pitch (layer rows, row controls, timeline cells). */
+      --layers-row-size: 42px;
+      /* Compact chrome: add/delete, keyframe tools, playback buttons. */
       --layers-control-size: 24px;
       --layers-side-width: 196px;
     }
@@ -120,7 +123,7 @@ export class InkwellLayersPanel extends FloatingPanel {
         var(--layers-control-size);
       align-items: center;
       gap: 4px;
-      height: var(--layers-control-size);
+      height: var(--layers-row-size);
       min-width: 0;
       flex: 0 0 auto;
       cursor: pointer;
@@ -165,10 +168,18 @@ export class InkwellLayersPanel extends FloatingPanel {
       align-items: center;
       justify-content: center;
       min-width: 0;
-      min-height: 24px;
       border-radius: 6px;
       background: var(--block-depth-color, var(--inkwell-panel-depth));
       color: var(--block-border, var(--inkwell-panel-border));
+    }
+
+    .layer-control,
+    .layer-name-cell {
+      min-height: var(--layers-row-size);
+    }
+
+    .layer-action-button {
+      min-height: var(--layers-control-size);
     }
 
     .layer-action-button,
@@ -373,9 +384,9 @@ export class InkwellLayersPanel extends FloatingPanel {
       }
       return rowRect.height + 4;
     }
-    const raw = getComputedStyle(this).getPropertyValue("--layers-control-size");
+    const raw = getComputedStyle(this).getPropertyValue("--layers-row-size");
     const parsed = Number.parseFloat(raw);
-    return (Number.isFinite(parsed) ? parsed : 24) + 4;
+    return (Number.isFinite(parsed) ? parsed : 42) + 4;
   }
 
   private layerIndexFromPointer(e: PointerEvent): number {
@@ -1113,9 +1124,9 @@ export class InkwellLayersPanel extends FloatingPanel {
 
   /** Row pitch in the list: row height + the list's 4px gap. */
   private rowPitch(): number {
-    const raw = getComputedStyle(this).getPropertyValue("--layers-control-size");
+    const raw = getComputedStyle(this).getPropertyValue("--layers-row-size");
     const size = Number.parseFloat(raw);
-    return (Number.isFinite(size) && size > 0 ? size : 24) + 4;
+    return (Number.isFinite(size) && size > 0 ? size : 42) + 4;
   }
 
   private layerRowEls(): HTMLElement[] {
@@ -1370,28 +1381,30 @@ export class InkwellLayersPanel extends FloatingPanel {
   private renderKeyframeActions() {
     const t = this.timeline.value;
     return html`
-      <button type="button" class="tl-btn" title="Insert keyframe (copies current artwork)"
-        @click=${() => this.emit("keyframe-add", { blank: false })}>+K</button>
-      <button type="button" class="tl-btn" title="Insert blank keyframe"
-        @click=${() => this.emit("keyframe-add", { blank: true })}>+B</button>
-      <button type="button" class="tl-btn"
-        title="Delete selected frames (or the frame at the playhead)"
-        @click=${() => {
-          const sel = this.frameSelection;
-          this.frameSelection = null;
-          if (!sel) {
-            this.emit("keyframe-remove", null);
-            return;
-          }
-          this.emit("keyframe-remove", {
-            layerIds: sel.layerIds,
-            start: sel.start,
-            end: sel.end,
-          });
-        }}>&#215;K</button>
-      <button type="button" class="tl-btn ${t.autoHold ? "on" : ""}"
-        title="Auto hold: new keyframes extend the previous keyframe's hold"
-        @click=${() => this.emit("auto-hold-toggle")}>AH</button>
+      <div class="timeline-keyframe-actions">
+        <button type="button" class="tl-btn" title="Insert keyframe (copies current artwork)"
+          @click=${() => this.emit("keyframe-add", { blank: false })}>K</button>
+        <button type="button" class="tl-btn" title="Insert blank keyframe"
+          @click=${() => this.emit("keyframe-add", { blank: true })}>B</button>
+        <button type="button" class="tl-btn"
+          title="Delete selected frames (or the frame at the playhead)"
+          @click=${() => {
+            const sel = this.frameSelection;
+            this.frameSelection = null;
+            if (!sel) {
+              this.emit("keyframe-remove", null);
+              return;
+            }
+            this.emit("keyframe-remove", {
+              layerIds: sel.layerIds,
+              start: sel.start,
+              end: sel.end,
+            });
+          }}>C</button>
+        <button type="button" class="tl-btn ${t.autoHold ? "on" : ""}"
+          title="Auto hold: new keyframes extend the previous keyframe's hold"
+          @click=${() => this.emit("auto-hold-toggle")}>AH</button>
+      </div>
     `;
   }
 
@@ -1451,6 +1464,7 @@ export class InkwellLayersPanel extends FloatingPanel {
         ${this.renderDragHandlePill("Layers")}
         <div class="panel-body">
           <div class="face">
+            ${this.renderResizeHandles()}
             <div class="panel-form">
             <inkwell-panel-section data-interactive>
               <div class="layers-header">
@@ -1459,6 +1473,7 @@ export class InkwellLayersPanel extends FloatingPanel {
             </inkwell-panel-section>
             <div class="timeline-row">
               <div class="header-group timeline-actions">
+                <div class="timeline-layer-actions">
                 <button
                   type="button"
                   class="layer-action-button"
@@ -1474,6 +1489,7 @@ export class InkwellLayersPanel extends FloatingPanel {
                   ?disabled=${activeLayerId === STAGE_LAYER_ID || nonStageCount <= 1}
                   @click=${() => this.deleteCurrentLayer()}
                 >${phosphorIcon("trash", 14)}</button>
+                </div>
                 ${this.renderKeyframeActions()}
               </div>
               <div class="timeline-strip" data-interactive style="--timeline-frames: ${t.duration}">
@@ -1624,12 +1640,6 @@ export class InkwellLayersPanel extends FloatingPanel {
         ${this.frameSelection && this.showFrameActionsForSelection()
           ? this.renderFrameActionsPopover(this.frameSelection)
           : nothing}
-        ${this.resizable
-          ? html`
-              <div class="resize-left"></div>
-              <div class="resize-right"></div>
-            `
-          : ""}
       </div>
     `;
   }

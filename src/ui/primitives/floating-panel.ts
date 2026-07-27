@@ -79,6 +79,8 @@ export class FloatingPanel extends Block {
       flex: 1 1 auto;
       min-height: 0;
       border-radius: 0 0 calc(var(--block-radius) - 2px) calc(var(--block-radius) - 2px);
+      /* Let corner resize zones reach the depth lip under the face. */
+      overflow-clip-margin: var(--block-depth);
     }
 
     .panel-body > .face-scrollbar {
@@ -171,7 +173,7 @@ export class FloatingPanel extends Block {
     /* Title bar row: title (left), drag pill (center), close (right).
        Sized from the close control, not the title — untitled panels match. */
     .panel-header {
-      --panel-header-control-size: 18px;
+      --panel-header-control-size: 26px;
       position: relative;
       z-index: 20;
       display: grid;
@@ -305,21 +307,26 @@ export class FloatingPanel extends Block {
       justify-self: stretch;
     }
 
+    /* Pairwise button rows: at most two across, then wrap. */
     .row {
-      display: flex;
-      flex-direction: row;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
       align-items: stretch;
       min-width: 0;
       width: 100%;
     }
     .row > * {
-      flex: 1;
       min-width: 0;
     }
 
+    /* Lone control (e.g. "New File") still spans the full row. */
+    .row > :only-child {
+      grid-column: 1 / -1;
+    }
+
     .row > blocky-button {
-      width: auto;
+      width: 100%;
       max-width: 100%;
     }
 
@@ -372,7 +379,7 @@ export class FloatingPanel extends Block {
     .panel-form input[type="range"] {
       width: 100%;
       min-width: 0;
-      height: 1.25rem;
+      height: 1.75rem;
       margin: 0;
       -webkit-appearance: none;
       appearance: none;
@@ -384,12 +391,10 @@ export class FloatingPanel extends Block {
       outline: none;
     }
 
-    .panel-form input[type="range"]:focus-visible::-webkit-slider-thumb {
-      box-shadow: 0 0 0 3px var(--panel-accent-muted, rgba(74, 111, 181, 0.35));
-    }
-
+    .panel-form input[type="range"]:focus-visible::-webkit-slider-thumb,
     .panel-form input[type="range"]:focus-visible::-moz-range-thumb {
-      box-shadow: 0 0 0 3px var(--panel-accent-muted, rgba(74, 111, 181, 0.35));
+      outline: none;
+      box-shadow: none;
     }
 
     .panel-form input[type="range"]::-webkit-slider-runnable-track {
@@ -400,12 +405,12 @@ export class FloatingPanel extends Block {
 
     .panel-form input[type="range"]::-webkit-slider-thumb {
       -webkit-appearance: none;
-      width: 16px;
-      height: 16px;
-      margin-top: -5px;
+      width: 22px;
+      height: 22px;
+      margin-top: -8px;
       border-radius: 50%;
       background: var(--panel-accent);
-      border: 2px solid var(--inkwell-toggle-thumb, #fff);
+      border: none;
       box-shadow: none;
     }
 
@@ -420,11 +425,11 @@ export class FloatingPanel extends Block {
     }
 
     .panel-form input[type="range"]::-moz-range-thumb {
-      width: 16px;
-      height: 16px;
+      width: 22px;
+      height: 22px;
       border-radius: 50%;
       background: var(--panel-accent);
-      border: 2px solid var(--inkwell-toggle-thumb, #fff);
+      border: none;
       box-shadow: none;
     }
 
@@ -556,12 +561,10 @@ export class FloatingPanel extends Block {
         ${this.renderDragHandlePill(title)}
         <div class="panel-body">
           <div class="face">
+            ${this.renderResizeHandles()}
             <div class="panel-form">${content}</div>
           </div>
         </div>
-        ${this.resizable
-          ? html`<div class="resize-left"></div><div class="resize-right"></div>`
-          : nothing}
       </div>
     `;
   }
@@ -630,7 +633,7 @@ export class FloatingPanel extends Block {
           this.hidePanel();
         }}
       >
-        ${phosphorIcon("x", 11)}
+        ${phosphorIcon("x", 14)}
       </button>
     `;
   }

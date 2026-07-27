@@ -78,7 +78,7 @@ export class InkwellScrollStrip extends LitElement {
 
     .header {
       display: grid;
-      grid-template-columns: 22px minmax(0, 1fr) 22px;
+      grid-template-columns: 28px minmax(0, 1fr) 28px;
       align-items: center;
       column-gap: 6px;
       width: 100%;
@@ -109,8 +109,8 @@ export class InkwellScrollStrip extends LitElement {
     .arrow {
       flex: 0 0 auto;
       box-sizing: border-box;
-      width: 22px;
-      height: 22px;
+      width: 28px;
+      height: 28px;
       margin: 0;
       padding: 0;
       border: none;
@@ -264,7 +264,7 @@ export class InkwellScrollStrip extends LitElement {
         data-interactive
         @click=${() => this.scrollByPage(direction)}
       >
-        ${phosphorIcon(left ? "caret-left" : "caret-right", 11)}
+        ${phosphorIcon(left ? "caret-left" : "caret-right", 14)}
       </button>
     `;
   }

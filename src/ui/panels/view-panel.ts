@@ -25,19 +25,19 @@ export class InkwellViewPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      --panel-width: 280px;
+      /* Wide enough for FloatingPanel masonry to settle into two columns. */
+      --panel-width: 600px;
     }
 
     .symmetry-modes {
-      display: flex;
-      flex-direction: row;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 4px;
-      flex-wrap: wrap;
     }
 
     .symmetry-modes blocky-button {
-      flex: 1 1 0;
       min-width: 0;
+      width: 100%;
     }
   `;
 

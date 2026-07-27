@@ -2,7 +2,7 @@ import { css } from "lit";
 
 export const timelinePanelStyles = css`
   :host {
-    --frame-cell-w: 15px;
+    --frame-cell-w: 20px;
   }
 
   .playback-fps {
@@ -18,9 +18,33 @@ export const timelinePanelStyles = css`
   }
 
   .timeline-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
     width: var(--layers-side-width, 168px);
     flex: 0 0 auto;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .timeline-layer-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
     gap: 3px;
+    flex: 0 0 auto;
+  }
+
+  .timeline-keyframe-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 3px;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-left: auto;
   }
 
   .timeline-actions .tl-btn {
@@ -175,7 +199,7 @@ export const timelinePanelStyles = css`
   .strip-row {
     display: flex;
     align-items: center;
-    height: var(--layers-control-size);
+    height: var(--layers-row-size, var(--layers-control-size));
     width: max-content;
     min-width: 100%;
     flex: 0 0 auto;
@@ -205,12 +229,12 @@ export const timelinePanelStyles = css`
   }
 
   /* Flat cells: each frame is its own rounded rect separated by a tiny
-     gap. The margins keep the 15px pitch so the ruler and span overlay
-     stay aligned. */
+     gap. The margins keep the --frame-cell-w pitch so the ruler and span
+     overlay stay aligned. */
   .frame-cell {
     width: calc(var(--frame-cell-w, 15px) - 2px);
     flex: 0 0 calc(var(--frame-cell-w, 15px) - 2px);
-    height: calc(var(--layers-control-size) - 4px);
+    height: calc(var(--layers-row-size, var(--layers-control-size)) - 4px);
     padding: 0;
     margin: 0 1px;
     border: none;
@@ -499,12 +523,15 @@ export const timelinePanelStyles = css`
   /* Row holding the add/delete layer buttons (in the name-column slot)
      and the timeline strip next to them, over the frames column. */
   .timeline-row {
+    position: relative;
+    z-index: 2;
     display: flex;
     flex-direction: row;
     align-items: center;
     gap: 8px;
     flex: 0 0 auto;
     min-width: 0;
+    overflow: visible;
   }
 
   .timeline-strip {
@@ -514,7 +541,11 @@ export const timelinePanelStyles = css`
     min-width: 0;
     /* Never wider than the frames themselves (duration set inline). */
     max-width: calc(var(--timeline-frames, 1) * var(--frame-cell-w, 15px));
-    overflow: hidden;
+    overflow: visible;
+    /* Clip left/right so a scrolled-away playhead can't paint over the
+       layer buttons, but expand top/bottom so the flag can overhang the
+       scrollbar track. (overflow-x/y alone can't do this mix.) */
+    clip-path: inset(-3px 0);
     border-radius: 6px;
   }
 
@@ -570,18 +601,18 @@ export const timelinePanelStyles = css`
     font-weight: 700;
   }
 
-  /* Playhead flag: topmost layer of the strip; slides out of view when
-     the current frame is scrolled away (intended). */
+  /* Playhead flag: taller/wider than the scrollbar track. Vertical
+     overhang is allowed by the strip's clip-path; horizontal overflow
+     is clipped so the flag disappears when its frame scrolls away. */
   .strip-playhead {
     position: absolute;
-    top: 2px;
-    bottom: 2px;
+    top: -3px;
+    bottom: -3px;
     left: 0;
     transform: translateX(-50%);
-    width: 11px;
-    border-radius: 4px;
+    width: 20px;
+    border-radius: 6px;
     background: var(--inkwell-playhead, #f2c14e);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
     z-index: 3;
     cursor: grab;
     touch-action: none;
@@ -591,7 +622,7 @@ export const timelinePanelStyles = css`
   .strip-playhead::after {
     content: "";
     position: absolute;
-    inset: -4px -6px;
+    inset: -4px -8px;
   }
 
   .strip-playhead:active {

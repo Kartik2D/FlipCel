@@ -33,7 +33,8 @@ export class InkwellUniversalPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      --panel-width: 280px;
+      /* Wide enough for FloatingPanel masonry to settle into two columns. */
+      --panel-width: 600px;
     }
 
     .stage-color-row {
@@ -136,7 +137,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
       position: relative;
       width: 100%;
       min-width: 0;
-      height: 1.25rem;
+      height: 1.75rem;
     }
 
     .stage-size-track {
@@ -197,21 +198,21 @@ export class InkwellUniversalPanel extends FloatingPanel {
 
     .stage-size-slider input[type="range"]::-webkit-slider-thumb {
       -webkit-appearance: none;
-      width: 16px;
-      height: 16px;
-      margin-top: -5px;
+      width: 22px;
+      height: 22px;
+      margin-top: -8px;
       border-radius: 50%;
       background: var(--panel-accent, #4a6fb5);
-      border: 2px solid var(--inkwell-toggle-thumb, #fff);
+      border: none;
       box-shadow: none;
     }
 
     .stage-size-slider input[type="range"]::-moz-range-thumb {
-      width: 16px;
-      height: 16px;
+      width: 22px;
+      height: 22px;
       border-radius: 50%;
       background: var(--panel-accent, #4a6fb5);
-      border: 2px solid var(--inkwell-toggle-thumb, #fff);
+      border: none;
       box-shadow: none;
     }
 

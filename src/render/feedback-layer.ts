@@ -273,8 +273,8 @@ export class FeedbackLayer {
       }
     }
 
-    // Draggable origin handle
-    const r = 6;
+    // Draggable origin handle (visual size tracks the larger hit radius)
+    const r = 9;
     ctx.beginPath();
     ctx.arc(center.x, center.y, r, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
@@ -283,7 +283,7 @@ export class FeedbackLayer {
     ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(center.x, center.y, 2, 0, Math.PI * 2);
+    ctx.arc(center.x, center.y, 2.5, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(0, 0, 0, 0.75)";
     ctx.fill();
   }
