@@ -5,8 +5,12 @@
  * Handles selecting, dragging, resizing, rotating, and placing paths on the canvas.
  */
 import type { Point, CanvasConfig } from "../geometry/types";
-import type { PaperRenderer } from "../render/paper-renderer";
-import type { SelectionHandleId, SelectionHandle } from "../render/paper-renderer";
+import type {
+  PaperRenderer,
+  SelectLayerScope,
+  SelectionHandleId,
+  SelectionHandle,
+} from "../render/paper-renderer";
 import type { Camera } from "../render/camera";
 import type { ChromeLayer } from "../render/chrome-layer";
 import { configStore, toolSettingsStore, selectionStore } from "../state/index";
@@ -21,14 +25,16 @@ export class SelectionController {
   private dragPastThreshold = false;
 
   private selectionShape: "rect" | "lasso" = "rect";
+  private layerScope: SelectLayerScope = "all";
   private selectedItems: paper.PathItem[] = [];
-  private pendingExtractionSnapshot: paper.PathItem[] | null = null;
+  private pendingExtractionSnapshot: Map<string, paper.PathItem[]> | null = null;
   private isDragging = false;
   private dragStartPoint: Point | null = null;
   private didMove = false;
   private selectionNeedsPlacement = false;
   private config: CanvasConfig;
   private onSnapshot?: () => void;
+  private onActivateLayer?: (layerId: string) => void;
 
   private paperRenderer: PaperRenderer;
   private camera: Camera;
@@ -80,15 +86,24 @@ export class SelectionController {
     configStore.subscribe((config) => {
       this.config = config;
     });
-    toolSettingsStore.subscribe((settings) => {
-      const selectSettings = settings.select as { shape?: unknown };
-      const shape = selectSettings.shape;
-      this.selectionShape = shape === "lasso" ? "lasso" : "rect";
-    });
+    const applySelectSettings = () => {
+      const selectSettings = toolSettingsStore.get().select as {
+        shape?: unknown;
+        scope?: unknown;
+      };
+      this.selectionShape = selectSettings.shape === "lasso" ? "lasso" : "rect";
+      this.layerScope = selectSettings.scope === "active" ? "active" : "all";
+    };
+    applySelectSettings();
+    toolSettingsStore.subscribe(() => applySelectSettings());
   }
 
   setSnapshotCallback(callback: () => void): void {
     this.onSnapshot = callback;
+  }
+
+  setActivateLayerCallback(callback: (layerId: string) => void): void {
+    this.onActivateLayer = callback;
   }
 
   getSelectedItem(): paper.Item | null {
@@ -189,10 +204,11 @@ export class SelectionController {
     }
 
     const initialHitItem = this.paperRenderer.resolveSelectableItem(
-      this.paperRenderer.hitTest(viewportPoint),
+      this.paperRenderer.hitTestSelectable(viewportPoint, this.layerScope),
     );
 
     if (initialHitItem && this.isSelectedItem(initialHitItem)) {
+      this.activateLayerForItem(initialHitItem);
       this.isDragging = true;
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
@@ -201,11 +217,12 @@ export class SelectionController {
     } else {
       this.resolvePendingSelectionForNewGesture();
       const hitItem = this.paperRenderer.resolveSelectableItem(
-        this.paperRenderer.hitTest(viewportPoint),
+        this.paperRenderer.hitTestSelectable(viewportPoint, this.layerScope),
       );
 
       if (hitItem) {
-      // Click inside (or on) another shape: select that whole path, then drag.
+        // Click inside (or on) another shape: select that whole path, then drag.
+        this.activateLayerForItem(hitItem);
         this.setSelectedItems([hitItem]);
         this.isDragging = true;
         this.dragStartPoint = viewportPoint;
@@ -255,17 +272,24 @@ export class SelectionController {
       const lassoPoints = this.marquee.getLassoPoints();
       if (!marqueeStartPoint || !marqueeCurrentPoint) return;
       if (this.hasActiveMarquee()) {
-        this.pendingExtractionSnapshot = this.paperRenderer.captureActiveLayerSnapshot();
+        this.pendingExtractionSnapshot =
+          this.paperRenderer.captureSelectableLayersSnapshot(this.layerScope);
         this.selectedItems =
           this.selectionShape === "lasso"
-            ? this.paperRenderer.extractSelectionFromScreenLasso(lassoPoints)
+            ? this.paperRenderer.extractSelectionFromScreenLasso(
+                lassoPoints,
+                this.layerScope,
+              )
             : this.paperRenderer.extractSelectionFromScreenRect(
                 marqueeStartPoint,
                 marqueeCurrentPoint,
+                this.layerScope,
               );
         this.selectionNeedsPlacement = this.selectedItems.length > 0;
         if (!this.selectionNeedsPlacement) {
           this.pendingExtractionSnapshot = null;
+        } else if (this.layerScope === "all") {
+          this.activateTopmostSelectedLayer();
         }
         selectionStore.set({ items: [...this.selectedItems] });
       } else {
@@ -421,7 +445,9 @@ export class SelectionController {
 
   private revertPendingSelection(): void {
     if (this.pendingExtractionSnapshot) {
-      this.paperRenderer.restoreActiveLayerSnapshot(this.pendingExtractionSnapshot);
+      this.paperRenderer.restoreSelectableLayersSnapshot(
+        this.pendingExtractionSnapshot,
+      );
     }
     this.pendingExtractionSnapshot = null;
     this.selectedItems = [];
@@ -429,6 +455,16 @@ export class SelectionController {
     this.didMove = false;
     this.handles = [];
     selectionStore.set({ items: [] });
+  }
+
+  private activateLayerForItem(item: paper.PathItem): void {
+    const layerId = this.paperRenderer.getLayerIdForPathItem(item);
+    if (layerId) this.onActivateLayer?.(layerId);
+  }
+
+  private activateTopmostSelectedLayer(): void {
+    const layerId = this.paperRenderer.getTopmostSelectedLayerId(this.selectedItems);
+    if (layerId) this.onActivateLayer?.(layerId);
   }
 
   private isSelectedItem(item: paper.Item): boolean {

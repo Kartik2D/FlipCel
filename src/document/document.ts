@@ -24,7 +24,9 @@ import {
   stageSelectedStore,
   documentColorsStore,
   viewOverlayStore,
+  selectionStore,
   STAGE_LAYER_ID,
+  isLayerEffectivelyVisible,
   type Layer,
   type LayerState,
 } from "../state/index";
@@ -52,6 +54,7 @@ export interface LayerTrack {
   id: string;
   name: string;
   visible: boolean;
+  locked: boolean;
   /** Sorted by frameIndex ascending. May be empty (every frame empty). */
   keyframes: Keyframe[];
 }
@@ -76,6 +79,7 @@ export interface TimelineState {
     id: string;
     name: string;
     visible: boolean;
+    locked: boolean;
     keyframes: Array<{ frame: number; blank: boolean; holdUntil: number }>;
   }>;
   currentFrame: number;
@@ -301,12 +305,14 @@ export class DocumentManager {
       if (existing) {
         existing.name = layer.name;
         existing.visible = layer.visible;
+        existing.locked = layer.locked;
         next.push(existing);
       } else {
         next.push({
           id: layer.id,
           name: layer.name,
           visible: layer.visible,
+          locked: layer.locked,
           keyframes: [{ frameIndex: 0, contentId: EMPTY_CONTENT_ID, holdUntil: 0 }],
         });
       }
@@ -316,26 +322,100 @@ export class DocumentManager {
     for (const id of [...this.loadedContent.keys()]) {
       if (!this.tracks.some((t) => t.id === id)) this.loadedContent.delete(id);
     }
+    this.applyEffectiveVisibility(state.soloLayerId);
     this.publish();
   }
 
   /**
+   * Apply solo + per-layer visibility to Paper without mutating stored
+   * `visible` flags. Exclusive solo shows only that regular layer.
+   */
+  applyEffectiveVisibility(soloLayerId: string | null = layerStore.get().soloLayerId): void {
+    for (const track of this.tracks) {
+      const effective = isLayerEffectivelyVisible(
+        { id: track.id, visible: track.visible, kind: "regular" },
+        soloLayerId,
+      );
+      this.renderer.setLayerVisibility(track.id, effective);
+    }
+  }
+
+  /** True when a track should participate in select hit-testing. */
+  isTrackSelectable(layerId: string): boolean {
+    const track = this.getTrack(layerId);
+    if (!track || track.locked) return false;
+    return this.isTrackEffectivelyVisible(track);
+  }
+
+  private isTrackEffectivelyVisible(track: LayerTrack): boolean {
+    return isLayerEffectivelyVisible(
+      { id: track.id, visible: track.visible, kind: "regular" },
+      layerStore.get().soloLayerId,
+    );
+  }
+
+  /** Layer ids currently selectable (effectively visible + unlocked). */
+  getSelectableLayerIds(): string[] {
+    return this.tracks.filter((t) => this.isTrackSelectable(t.id)).map((t) => t.id);
+  }
+
+  /**
    * Capture the live Paper content of the active layer into the document.
-   * If the content changed while the playhead sits on a hold frame, a new
-   * keyframe is auto-created at the current frame (Flash-style auto-key).
-   * Returns true when the document changed.
-   *
-   * During Edit Multiple Frames, partitions the layer by keyframe-frame tags and
-   * writes each bucket back to its source keyframe (new strokes stay on the
-   * playhead frame).
+   * Drawing tools use this; select edits across layers use
+   * `commitDirtyLayerContent` / `commitLayersContent`.
    */
   commitActiveLayerContent(): boolean {
     if (this.editMultipleFrames) {
       return this.commitEditMultipleFrames();
     }
-
     const layerId = this.renderer.getActiveLayerId();
     if (!layerId) return false;
+    return this.commitLayerContent(layerId);
+  }
+
+  /**
+   * Commit every layer that looks dirty vs the document model, plus the
+   * active layer. Used by history snapshots so multi-layer select edits persist.
+   */
+  commitDirtyLayerContent(): boolean {
+    if (this.editMultipleFrames) {
+      return this.commitEditMultipleFrames();
+    }
+    const ids = new Set<string>();
+    const activeId = this.renderer.getActiveLayerId();
+    if (activeId) ids.add(activeId);
+    // Prefer layers that own the current selection items.
+    for (const item of selectionStore.get().items) {
+      const layerId = this.renderer.getLayerIdForPathItem(item);
+      if (layerId) ids.add(layerId);
+    }
+    for (const track of this.tracks) {
+      if (this.layerContentDiffers(track.id)) ids.add(track.id);
+    }
+    return this.commitLayersContent(ids);
+  }
+
+  commitLayersContent(layerIds: Iterable<string>): boolean {
+    if (this.editMultipleFrames) {
+      return this.commitEditMultipleFrames();
+    }
+    let changed = false;
+    for (const layerId of layerIds) {
+      if (this.commitLayerContent(layerId, { publish: false })) changed = true;
+    }
+    if (changed) this.publish();
+    return changed;
+  }
+
+  /**
+   * Capture one Paper layer into the document. If content changed while the
+   * playhead sits on a hold frame, auto-keys at the current frame.
+   */
+  commitLayerContent(
+    layerId: string,
+    options: { publish?: boolean } = {},
+  ): boolean {
+    const publish = options.publish !== false;
     const track = this.getTrack(layerId);
     if (!track) return false;
 
@@ -360,32 +440,52 @@ export class DocumentManager {
       this.content.set(contentId, json);
     }
 
-    // Editing a hold or empty frame auto-creates a keyframe here (with the
-    // same hold/auto-hold rules as an explicit insert).
     this.placeKeyframe(track, this.currentFrame, contentId);
     this.loadedContent.set(layerId, contentId);
-    this.publish();
+    if (publish) this.publish();
     return true;
   }
 
+  private layerContentDiffers(layerId: string): boolean {
+    const track = this.getTrack(layerId);
+    if (!track) return false;
+    const json = this.renderer.isLayerEmpty(layerId)
+      ? ""
+      : this.renderer.exportLayerJSON(layerId) ?? "";
+    const covering = this.coveringKeyframe(track, this.currentFrame);
+    const visibleContentId = covering?.contentId ?? EMPTY_CONTENT_ID;
+    return json !== (this.content.get(visibleContentId) ?? "");
+  }
+
   /**
-   * Write each EMF keyframe bucket back into the document. New strokes are
-   * tagged with the playhead frame; select edits on other keyframes write
-   * back to those keyframes only. Does not rebuild the overlay so the live
-   * selection stays valid after transform/recolor.
+   * Write each EMF keyframe bucket back for every layer in the EMF range.
+   * Does not rebuild the overlay so the live selection stays valid.
    */
   private commitEditMultipleFrames(): boolean {
-    const layerId = this.renderer.getActiveLayerId();
-    if (!layerId || !this.emfRange) return false;
-    if (!this.emfRange.layerIds.includes(layerId)) return false;
+    if (!this.emfRange) return false;
+    let changed = false;
+    for (const layerId of this.emfRange.layerIds) {
+      if (this.commitEditMultipleFramesForLayer(layerId)) changed = true;
+    }
+    if (changed) {
+      const { start, end } = this.emfRange;
+      this.renderer.setEmfPlayheadFrame(
+        this.currentFrame >= start && this.currentFrame <= end
+          ? this.currentFrame
+          : null,
+      );
+      this.publish();
+    }
+    return changed;
+  }
+
+  private commitEditMultipleFramesForLayer(layerId: string): boolean {
+    if (!this.emfRange) return false;
     const track = this.getTrack(layerId);
     if (!track) return false;
 
     const { start, end } = this.emfRange;
     const expectedFrames = this.keyframeFramesInRange(track, start, end);
-    // Only treat the playhead as a write target when it sits inside the EMF
-    // range. Scrubbing outside used to push currentFrame into this list with
-    // an empty partition and wipe that frame via placeKeyframe(EMPTY).
     if (
       this.currentFrame >= start &&
       this.currentFrame <= end &&
@@ -396,7 +496,6 @@ export class DocumentManager {
 
     const partitions = this.renderer.exportLayerContentsByKeyframe(
       layerId,
-      // Untagged strokes only belong to the playhead when it's in-range.
       this.currentFrame >= start && this.currentFrame <= end
         ? this.currentFrame
         : start,
@@ -432,14 +531,6 @@ export class DocumentManager {
       if (writeFrame(frameIndex, json)) changed = true;
     }
 
-    if (changed) {
-      this.renderer.setEmfPlayheadFrame(
-        this.currentFrame >= start && this.currentFrame <= end
-          ? this.currentFrame
-          : null,
-      );
-      this.publish();
-    }
     return changed;
   }
 
@@ -864,8 +955,13 @@ export class DocumentManager {
     const { layerIds, start, end } = this.emfRange;
     const emfSet = new Set(layerIds);
 
+    const solo = layerStore.get().soloLayerId;
     this.renderer.restoreLayersSnapshot(
       this.tracks.map((track) => {
+        const effective = isLayerEffectivelyVisible(
+          { id: track.id, visible: track.visible, kind: "regular" },
+          solo,
+        );
         if (!emfSet.has(track.id)) {
           const contentId = this.contentIdAt(track, this.currentFrame);
           const changed = this.loadedContent.get(track.id) !== contentId;
@@ -873,7 +969,7 @@ export class DocumentManager {
           return {
             id: track.id,
             name: track.name,
-            visible: track.visible,
+            visible: effective,
             json: changed ? this.content.get(contentId) ?? "" : undefined,
           };
         }
@@ -881,7 +977,7 @@ export class DocumentManager {
         return {
           id: track.id,
           name: track.name,
-          visible: track.visible,
+          visible: effective,
           json: "",
         };
       }),
@@ -952,7 +1048,7 @@ export class DocumentManager {
     // while drawing on this one.
     const activeId = layerStore.get().activeLayerId;
     const track = this.tracks.find((t) => t.id === activeId);
-    if (!track || !track.visible) {
+    if (!track || !this.isTrackEffectivelyVisible(track)) {
       this.renderer.clearOnionSkin();
       return;
     }
@@ -1002,27 +1098,31 @@ export class DocumentManager {
     // EMF overlay is keyed by the selected range, not the playhead. Moving the
     // playhead only retargets where new strokes go — keep the composite (and
     // any live selection) intact.
+    const solo = layerStore.get().soloLayerId;
+    const withEffective = (track: LayerTrack, json: string | undefined) => ({
+      id: track.id,
+      name: track.name,
+      visible: isLayerEffectivelyVisible(
+        { id: track.id, visible: track.visible, kind: "regular" },
+        solo,
+      ),
+      json,
+    });
+
     if (this.editMultipleFrames && this.emfRange) {
       const emfSet = new Set(this.emfRange.layerIds);
       this.renderer.restoreLayersSnapshot(
         this.tracks.map((track) => {
           if (emfSet.has(track.id)) {
-            return {
-              id: track.id,
-              name: track.name,
-              visible: track.visible,
-              json: undefined,
-            };
+            return withEffective(track, undefined);
           }
           const contentId = this.contentIdAt(track, this.currentFrame);
           const changed = this.loadedContent.get(track.id) !== contentId;
           if (changed) this.loadedContent.set(track.id, contentId);
-          return {
-            id: track.id,
-            name: track.name,
-            visible: track.visible,
-            json: changed ? this.content.get(contentId) ?? "" : undefined,
-          };
+          return withEffective(
+            track,
+            changed ? this.content.get(contentId) ?? "" : undefined,
+          );
         }),
         activeLayerId ?? STAGE_LAYER_ID,
       );
@@ -1040,12 +1140,10 @@ export class DocumentManager {
         const contentId = this.contentIdAt(track, this.currentFrame);
         const changed = this.loadedContent.get(track.id) !== contentId;
         if (changed) this.loadedContent.set(track.id, contentId);
-        return {
-          id: track.id,
-          name: track.name,
-          visible: track.visible,
-          json: changed ? this.content.get(contentId) ?? "" : undefined,
-        };
+        return withEffective(
+          track,
+          changed ? this.content.get(contentId) ?? "" : undefined,
+        );
       }),
       activeLayerId ?? STAGE_LAYER_ID,
     );
@@ -1070,9 +1168,14 @@ export class DocumentManager {
    * layerStore to match, and reloads Paper. `activeLayerId` may be the
    * stage id (stage row selected at snapshot time).
    */
-  applyState(state: DocumentState, activeLayerId: string): void {
+  applyState(
+    state: DocumentState,
+    activeLayerId: string,
+    soloLayerId: string | null = null,
+  ): void {
     this.clearEditMultipleFramesState();
     this.tracks = cloneTracks(state.tracks);
+    for (const track of this.tracks) track.locked = !!track.locked;
     this.duration = state.duration;
     this.frameRate = state.frameRate;
     this.currentFrame = Math.max(
@@ -1080,7 +1183,7 @@ export class DocumentManager {
       Math.min(state.duration - 1, state.currentFrame),
     );
 
-    this.updateLayerStoreFromTracks(activeLayerId);
+    this.updateLayerStoreFromTracks(activeLayerId, soloLayerId);
 
     // Reload Paper. Compare against loadedContent so unchanged layers skip
     // the reimport; structure changes (added/removed layers) are handled by
@@ -1103,30 +1206,60 @@ export class DocumentManager {
     }
   }
 
-  private updateLayerStoreFromTracks(activeLayerId: string): void {
+  private updateLayerStoreFromTracks(
+    activeLayerId: string,
+    soloLayerId: string | null = layerStore.get().soloLayerId,
+  ): void {
     const prev = layerStore.get();
     const stageRow: Layer =
       prev.layers.find((l) => l.kind === "stage") ??
-      ({ id: STAGE_LAYER_ID, name: "Stage", visible: true, kind: "stage" } as Layer);
+      ({
+        id: STAGE_LAYER_ID,
+        name: "Stage",
+        visible: true,
+        locked: false,
+        kind: "stage",
+      } as Layer);
 
     const layers: Layer[] = [
-      stageRow,
+      { ...stageRow, locked: false },
       ...this.tracks.map((t) => ({
         id: t.id,
         name: t.name,
         visible: t.visible,
+        locked: t.locked,
         kind: "regular" as const,
       })),
     ];
 
-    const validActive =
+    let validActive =
       activeLayerId === STAGE_LAYER_ID ||
       this.tracks.some((t) => t.id === activeLayerId)
         ? activeLayerId
         : this.tracks[this.tracks.length - 1]?.id ?? STAGE_LAYER_ID;
 
-    layerStore.set({ layers, activeLayerId: validActive });
+    // Prefer an unlocked regular layer when restoring.
+    if (validActive !== STAGE_LAYER_ID) {
+      const activeTrack = this.tracks.find((t) => t.id === validActive);
+      if (activeTrack?.locked) {
+        const unlocked =
+          [...this.tracks].reverse().find((t) => !t.locked) ?? null;
+        validActive = unlocked?.id ?? STAGE_LAYER_ID;
+      }
+    }
+
+    const validSolo =
+      soloLayerId && this.tracks.some((t) => t.id === soloLayerId)
+        ? soloLayerId
+        : null;
+
+    layerStore.set({
+      layers,
+      activeLayerId: validActive,
+      soloLayerId: validSolo,
+    });
     stageSelectedStore.set(validActive === STAGE_LAYER_ID);
+    this.applyEffectiveVisibility(validSolo);
   }
 
   // ------------------------------------------------------------
@@ -1161,6 +1294,7 @@ export class DocumentManager {
     this.duration = Math.max(1, Math.round(doc.duration));
     // Guarantee model invariants on untrusted input.
     for (const track of this.tracks) {
+      track.locked = !!track.locked;
       track.keyframes.sort((a, b) => a.frameIndex - b.frameIndex);
       // Normalize hold spans. Old documents (pre-explicit-holds) have no
       // holdUntil: default to the implicit span (up to the next keyframe)
@@ -1211,6 +1345,7 @@ export class DocumentManager {
         id: t.id,
         name: t.name,
         visible: t.visible,
+        locked: t.locked,
         keyframes: t.keyframes.map((k) => ({
           frame: k.frameIndex,
           blank: k.contentId === EMPTY_CONTENT_ID,

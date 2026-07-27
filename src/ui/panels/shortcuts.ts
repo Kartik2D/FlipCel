@@ -1,6 +1,7 @@
 import { html, css } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { getTool } from "../../tools/registry";
+import { paintModeAccent, type PaintModeAccent } from "../../tools/paint-mode";
 import {
   toolStore,
   toolSettingsStore,
@@ -72,21 +73,26 @@ export class InkwellShortcutsPanel extends FloatingPanel {
     this.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true }));
   }
 
-  private effectivePaintModeLabel(): string {
+  private effectivePaintMode(): string | null {
     const tool = getTool(this.tool.value);
     const key = tool.dockModeSetting;
-    if (!key) return "—";
+    if (!key) return null;
     const def = tool.settings[key];
-    if (!def || def.type !== "toggle") return "—";
+    if (!def || def.type !== "toggle") return null;
     const options = def.options as readonly string[];
     const raw = String(
       (this.settings.value[tool.id] as Record<string, unknown>)?.[key] ?? def.default,
     );
-    const effective =
-      this.modifiers.value.shift
-        ? options[(options.indexOf(raw) + 1) % options.length]
-        : raw;
-    return effective.charAt(0).toUpperCase() + effective.slice(1);
+    return this.modifiers.value.shift
+      ? options[(options.indexOf(raw) + 1) % options.length]
+      : raw;
+  }
+
+  private effectivePaintModeLabel(): string {
+    const mode = this.effectivePaintMode();
+    if (!mode) return "—";
+    if (mode === "subtract") return "Sub";
+    return mode.charAt(0).toUpperCase() + mode.slice(1);
   }
 
   private renderDockWidget(opts: {
@@ -94,10 +100,14 @@ export class InkwellShortcutsPanel extends FloatingPanel {
     value: string;
     title: string;
     onClick?: () => void;
+    modeAccent?: PaintModeAccent | null;
   }) {
+    const valueClass = opts.modeAccent
+      ? `dock-value mode-${opts.modeAccent}`
+      : "dock-value";
     const inner = html`
       <span class="dock-prefix">${opts.label}</span>
-      <span class="dock-value">${opts.value}</span>
+      <span class=${valueClass}>${opts.value}</span>
     `;
     return html`
       <div class="dock-cell">
@@ -123,13 +133,16 @@ export class InkwellShortcutsPanel extends FloatingPanel {
 
   private buildInfoChip(kind: DockInfoChip) {
     switch (kind) {
-      case "mode":
+      case "mode": {
+        const mode = this.effectivePaintMode();
         return {
           label: "mode",
           value: this.effectivePaintModeLabel(),
           title: "Click to cycle paint mode",
           onClick: () => this.emitDock("mode-cycle"),
+          modeAccent: mode ? paintModeAccent(mode) : null,
         };
+      }
       case "frame": {
         const t = this.timeline.value;
         return {

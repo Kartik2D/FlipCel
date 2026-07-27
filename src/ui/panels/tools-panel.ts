@@ -1,6 +1,7 @@
 import { html, css, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { type ToolId, type SettingsSchema, type SettingDef, getTool } from "../../tools/registry";
+import { paintModeAccent } from "../../tools/paint-mode";
 import {
   toolStore,
   modifiersStore,
@@ -102,16 +103,20 @@ export class InkwellToolsPanel extends FloatingPanel {
         <label>
           <span>${label} ${hint}</span>
           <div class="row">
-            ${def.options.map(
-              (opt) => html`
+            ${def.options.map((opt) => {
+              const modeAccent = key === "mode" ? paintModeAccent(opt) : null;
+              return html`
                 <blocky-button
                   flat
                   ?active=${currentValue === opt}
+                  ?positive=${modeAccent === "positive"}
+                  ?negative=${modeAccent === "negative"}
+                  ?neutral=${modeAccent === "neutral"}
                   @click=${() => this.updateSetting(toolId, key, opt)}
                   >${this.formatLabel(opt)}</blocky-button
                 >
-              `
-            )}
+              `;
+            })}
           </div>
         </label>
       `;
@@ -223,7 +228,7 @@ export class InkwellToolsPanel extends FloatingPanel {
         )
       )}
       ${currentToolId === "select"
-        ? html`<p class="hint">Drag a rectangle or freeform lasso to extract a selection.</p>`
+        ? html`<p class="hint">Drag a rectangle or freeform lasso to extract a selection. “All” selects across unlocked visible layers.</p>`
         : ""}
       ${showsPixelRes ? this.renderPixelRes() : ""}
     `;

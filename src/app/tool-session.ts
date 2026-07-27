@@ -24,6 +24,7 @@ import {
   stageSelectedStore,
   symmetryStore,
   normalizeSymmetrySettings,
+  layerStore,
 } from "../state/index";
 import {
   hitTestSymmetryHandle,
@@ -128,6 +129,13 @@ export class ToolSession {
       deps.directSelectController.clearSelection();
       deps.closeFunctionsPanelHidden();
     }
+
+    // Locked layers accept no drawing / magnet edits.
+    const layerState = layerStore.get();
+    const activeLayer = layerState.layers.find(
+      (l) => l.id === layerState.activeLayerId,
+    );
+    if (activeLayer?.locked) return;
 
     if (tool === "magnet") {
       deps.magnetController.handleStart(point);

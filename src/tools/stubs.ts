@@ -10,6 +10,12 @@ const selectSettings = {
     options: ["rect", "lasso"] as const,
     default: "rect",
   },
+  scope: {
+    type: "toggle",
+    options: ["active", "all"] as const,
+    default: "all",
+    label: "Layers",
+  },
 } as const satisfies SettingsSchema;
 
 export const select: ToolDefinition<typeof selectSettings> = {

@@ -164,4 +164,28 @@ export const dockChipStyles = css`
     outline: 2px solid var(--inkwell-panel-border, #555555);
     outline-offset: 1px;
   }
+
+  .dock-value.mode-positive,
+  .dock-value.mode-negative,
+  .dock-value.mode-neutral {
+    display: block;
+    padding: 1px 5px;
+    border-radius: 4px;
+    box-sizing: border-box;
+  }
+
+  .dock-value.mode-positive {
+    background: var(--inkwell-positive, #3d9a6a);
+    color: var(--inkwell-positive-contrast, #ffffff);
+  }
+
+  .dock-value.mode-negative {
+    background: var(--inkwell-negative, #c45a5a);
+    color: var(--inkwell-negative-contrast, #ffffff);
+  }
+
+  .dock-value.mode-neutral {
+    background: var(--inkwell-neutral, #6b7280);
+    color: var(--inkwell-neutral-contrast, #ffffff);
+  }
 `;

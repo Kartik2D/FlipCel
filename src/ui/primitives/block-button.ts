@@ -12,8 +12,13 @@ export class BlockyButton extends Block {
   @property({ type: Boolean, reflect: true }) flat = false;
   /** Larger flat control for primary chooser actions (e.g. startup window). */
   @property({ type: Boolean, reflect: true }) large = false;
-  @property({ type: Boolean, reflect: true }) danger = false;
   @property({ type: Boolean, reflect: true }) accent = false;
+  /** Flat face uses positive / constructive accent (e.g. paint add mode). */
+  @property({ type: Boolean, reflect: true }) positive = false;
+  /** Flat face uses negative / destructive accent (e.g. paint subtract mode). */
+  @property({ type: Boolean, reflect: true }) negative = false;
+  /** Flat face uses neutral accent (e.g. paint inside mode). */
+  @property({ type: Boolean, reflect: true }) neutral = false;
   /** Flat face uses timeline playhead color (theme token). */
   @property({ type: Boolean, reflect: true }) playhead = false;
   @property({ type: Boolean, reflect: true }) disabled = false;
@@ -171,38 +176,18 @@ export class BlockyButton extends Block {
 
     :host([flat][active]) .face {
       background: var(--inkwell-accent, #4a6fb5);
-      color: var(--inkwell-danger-contrast, #ffffff);
-      --block-font-color: var(--inkwell-danger-contrast, #ffffff);
-    }
-
-    :host([danger]) {
-      --block-face-bg: var(--inkwell-danger, #333);
-      --block-font-color: var(--inkwell-danger-contrast, white);
-    }
-
-    :host([flat][danger]) {
-      --block-face-bg: var(--inkwell-danger, #9a4545);
-      --block-font-color: var(--inkwell-danger-contrast, #ffffff);
-    }
-
-    :host([flat][danger]:not([active]):hover) .face {
-      filter: brightness(0.95);
-    }
-
-    :host([flat][danger][active]) .face {
-      background: var(--inkwell-danger-hover, #7a3535);
-      color: var(--inkwell-danger-contrast, #ffffff);
-      --block-font-color: var(--inkwell-danger-contrast, #ffffff);
+      color: var(--inkwell-accent-contrast, #ffffff);
+      --block-font-color: var(--inkwell-accent-contrast, #ffffff);
     }
 
     :host([accent]) {
       --block-face-bg: var(--inkwell-accent, #4a6fb5);
-      --block-font-color: var(--inkwell-danger-contrast, #ffffff);
+      --block-font-color: var(--inkwell-accent-contrast, #ffffff);
     }
 
     :host([flat][accent]) {
       --block-face-bg: var(--inkwell-accent, #4a6fb5);
-      --block-font-color: var(--inkwell-danger-contrast, #ffffff);
+      --block-font-color: var(--inkwell-accent-contrast, #ffffff);
     }
 
     :host([flat][accent]:not([active]):hover) .face {
@@ -211,8 +196,71 @@ export class BlockyButton extends Block {
 
     :host([flat][accent][active]) .face {
       background: var(--inkwell-accent-hover, #3d5e9a);
-      color: var(--inkwell-danger-contrast, #ffffff);
-      --block-font-color: var(--inkwell-danger-contrast, #ffffff);
+      color: var(--inkwell-accent-contrast, #ffffff);
+      --block-font-color: var(--inkwell-accent-contrast, #ffffff);
+    }
+
+    :host([positive]) {
+      --block-face-bg: var(--inkwell-positive, #3d9a6a);
+      --block-font-color: var(--inkwell-positive-contrast, #ffffff);
+    }
+
+    :host([flat][positive]) {
+      --block-face-bg: var(--inkwell-positive, #3d9a6a);
+      --block-font-color: var(--inkwell-positive-contrast, #ffffff);
+      color: var(--inkwell-positive-contrast, #ffffff);
+    }
+
+    :host([flat][positive]:not([active]):hover) .face {
+      filter: brightness(0.95);
+    }
+
+    :host([flat][positive][active]) .face {
+      background: var(--inkwell-positive-hover, #328555);
+      color: var(--inkwell-positive-contrast, #ffffff);
+      --block-font-color: var(--inkwell-positive-contrast, #ffffff);
+    }
+
+    :host([negative]) {
+      --block-face-bg: var(--inkwell-negative, #c45a5a);
+      --block-font-color: var(--inkwell-negative-contrast, #ffffff);
+    }
+
+    :host([flat][negative]) {
+      --block-face-bg: var(--inkwell-negative, #c45a5a);
+      --block-font-color: var(--inkwell-negative-contrast, #ffffff);
+      color: var(--inkwell-negative-contrast, #ffffff);
+    }
+
+    :host([flat][negative]:not([active]):hover) .face {
+      filter: brightness(0.95);
+    }
+
+    :host([flat][negative][active]) .face {
+      background: var(--inkwell-negative-hover, #a84848);
+      color: var(--inkwell-negative-contrast, #ffffff);
+      --block-font-color: var(--inkwell-negative-contrast, #ffffff);
+    }
+
+    :host([neutral]) {
+      --block-face-bg: var(--inkwell-neutral, #6b7280);
+      --block-font-color: var(--inkwell-neutral-contrast, #ffffff);
+    }
+
+    :host([flat][neutral]) {
+      --block-face-bg: var(--inkwell-neutral, #6b7280);
+      --block-font-color: var(--inkwell-neutral-contrast, #ffffff);
+      color: var(--inkwell-neutral-contrast, #ffffff);
+    }
+
+    :host([flat][neutral]:not([active]):hover) .face {
+      filter: brightness(0.95);
+    }
+
+    :host([flat][neutral][active]) .face {
+      background: var(--inkwell-neutral-hover, #565d6b);
+      color: var(--inkwell-neutral-contrast, #ffffff);
+      --block-font-color: var(--inkwell-neutral-contrast, #ffffff);
     }
 
     :host([playhead]) {

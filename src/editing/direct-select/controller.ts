@@ -86,6 +86,7 @@ export class DirectSelectController {
   private chromeLayer: ChromeLayer;
   private chromeCtx: CanvasRenderingContext2D;
   private onSnapshot?: () => void;
+  private onActivateLayer?: (layerId: string) => void;
   private onReconcile?: (items: paper.PathItem[]) => void;
 
   private selectionShape: "rect" | "lasso" = "rect";
@@ -217,6 +218,10 @@ export class DirectSelectController {
 
   setSnapshotCallback(callback: () => void): void {
     this.onSnapshot = callback;
+  }
+
+  setActivateLayerCallback(callback: (layerId: string) => void): void {
+    this.onActivateLayer = callback;
   }
 
   setReconcileCallback(callback: (items: paper.PathItem[]) => void): void {
@@ -544,9 +549,11 @@ export class DirectSelectController {
     }
 
     const shapeHit = this.paperRenderer.resolveSelectableItem(
-      this.paperRenderer.hitTest(viewportPoint),
+      this.paperRenderer.hitTestSelectable(viewportPoint),
     );
     if (shapeHit) {
+      const layerId = this.paperRenderer.getLayerIdForPathItem(shapeHit);
+      if (layerId) this.onActivateLayer?.(layerId);
       const now = performance.now();
       const isDoubleClick = this.isDoubleClickOnShape(viewportPoint, shapeHit.id, now);
 

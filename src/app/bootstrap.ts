@@ -235,7 +235,13 @@ class App {
     this.historyManager = new HistoryManager(this.documentManager);
     this.historyManager.setOnChange(() => this.scheduleAutosave());
     this.selectionController.setSnapshotCallback(() => this.historyManager.snapshot());
+    this.selectionController.setActivateLayerCallback((layerId) =>
+      this.activateLayerFromSelect(layerId),
+    );
     this.directSelectController.setSnapshotCallback(() => this.historyManager.snapshot());
+    this.directSelectController.setActivateLayerCallback((layerId) =>
+      this.activateLayerFromSelect(layerId),
+    );
     this.directSelectController.setReconcileCallback((items) => {
       const expanded = this.paperRenderer.expandIncomingWithSymmetry(items);
       return this.paperRenderer.reconcileItemsToFixpoint(expanded);
@@ -447,6 +453,8 @@ class App {
       onLayerDelete: (layerId) => this.onLayerDelete(layerId),
       onLayerSelect: (layerId) => this.onLayerSelect(layerId),
       onLayerVisibilityToggle: (layerId) => this.onLayerVisibilityToggle(layerId),
+      onLayerLockToggle: (layerId) => this.onLayerLockToggle(layerId),
+      onLayerSoloToggle: (layerId) => this.onLayerSoloToggle(layerId),
       onLayerReorder: (order, movedId) => this.onLayerReorder(order, movedId),
       onLayerRename: (id, name) => this.onLayerRename(id, name),
       onFunctionInvoke: (id) => this.onFunctionInvoke(id),
@@ -1067,15 +1075,29 @@ class App {
       if (survivingLayer && stageRow) {
         layerStore.set({
           layers: [
-            { ...stageRow, visible: true },
-            { ...survivingLayer, visible: true, kind: survivingLayer.kind ?? "regular" },
+            { ...stageRow, visible: true, locked: false },
+            {
+              ...survivingLayer,
+              visible: true,
+              locked: survivingLayer.locked ?? false,
+              kind: survivingLayer.kind ?? "regular",
+            },
           ],
           activeLayerId: survivingLayer.id,
+          soloLayerId: null,
         });
       } else if (survivingLayer) {
         layerStore.set({
-          layers: [{ ...survivingLayer, visible: true, kind: survivingLayer.kind ?? "regular" }],
+          layers: [
+            {
+              ...survivingLayer,
+              visible: true,
+              locked: survivingLayer.locked ?? false,
+              kind: survivingLayer.kind ?? "regular",
+            },
+          ],
           activeLayerId: survivingLayer.id,
+          soloLayerId: null,
         });
       }
     }
@@ -1158,8 +1180,15 @@ class App {
       );
       const insertAt = activeIndex < 0 ? state.layers.length : activeIndex + 1;
       const nextLayers = [...state.layers];
-      nextLayers.splice(insertAt, 0, { id, name, visible: true, kind: "regular" });
+      nextLayers.splice(insertAt, 0, {
+        id,
+        name,
+        visible: true,
+        locked: false,
+        kind: "regular",
+      });
       return {
+        ...state,
         layers: nextLayers,
         activeLayerId: id,
       };
@@ -1192,10 +1221,14 @@ class App {
       ? remainingLayers[remainingLayers.length - 1].id
       : state.activeLayerId;
     
+    const soloLayerId =
+      state.soloLayerId === layerId ? null : state.soloLayerId;
     layerStore.set({
       layers: remainingLayers,
       activeLayerId: newActiveId,
+      soloLayerId,
     });
+    this.documentManager.applyEffectiveVisibility(soloLayerId);
 
     // Keep Paper.js aligned with the store. PaperRenderer.deleteLayer() picks
     // an arbitrary survivor when the active layer is deleted.
@@ -1213,9 +1246,12 @@ class App {
     // The Stage is not selectable from the layers panel anymore.
     if (layerId === STAGE_LAYER_ID) return;
 
+    const state = layerStore.get();
+    const layer = state.layers.find((l) => l.id === layerId);
+    if (layer?.locked) return;
+
     stageSelectedStore.set(false);
 
-    const state = layerStore.get();
     const isAlreadyActive = state.activeLayerId === layerId;
 
     if (
@@ -1265,23 +1301,83 @@ class App {
     const state = layerStore.get();
     const layer = state.layers.find((l) => l.id === layerId);
     if (!layer) return;
-    
+
     const newVisibility = !layer.visible;
-    
-    // Update Paper.js layer visibility
-    this.paperRenderer.setLayerVisibility(layerId, newVisibility);
-    
-    // Update the store
-    layerStore.update((state) => ({
-      ...state,
-      layers: state.layers.map((l) =>
+    layerStore.update((s) => ({
+      ...s,
+      layers: s.layers.map((l) =>
         l.id === layerId ? { ...l, visible: newVisibility } : l
       ),
     }));
+    // Solo + visibility → Paper; do not write Paper before effective pass.
+    this.documentManager.applyEffectiveVisibility();
 
     // Visibility is part of the layer-structure snapshot, so it participates
     // in undo/redo like every other layer operation.
     this.historyManager.snapshot();
+  }
+
+  /**
+   * Activate a layer from canvas select (click / marquee). Clears stage
+   * selection but does not select-all on that layer.
+   */
+  private activateLayerFromSelect(layerId: string) {
+    if (layerId === STAGE_LAYER_ID) return;
+    const state = layerStore.get();
+    const layer = state.layers.find((l) => l.id === layerId);
+    if (!layer || layer.locked || layer.kind === "stage") return;
+    stageSelectedStore.set(false);
+    if (state.activeLayerId === layerId) return;
+    if (!this.paperRenderer.setActiveLayer(layerId)) return;
+    layerStore.update((s) => ({ ...s, activeLayerId: layerId }));
+  }
+
+  private onLayerLockToggle(layerId: string) {
+    if (layerId === STAGE_LAYER_ID) return;
+    const state = layerStore.get();
+    const layer = state.layers.find((l) => l.id === layerId);
+    if (!layer || layer.kind === "stage") return;
+
+    const nextLocked = !layer.locked;
+    layerStore.update((s) => ({
+      ...s,
+      layers: s.layers.map((l) =>
+        l.id === layerId ? { ...l, locked: nextLocked } : l
+      ),
+    }));
+
+    if (nextLocked && state.activeLayerId === layerId) {
+      const unlocked = [...layerStore.get().layers]
+        .reverse()
+        .find(
+          (l) =>
+            l.kind !== "stage" &&
+            !l.locked &&
+            l.visible &&
+            l.id !== layerId,
+        );
+      if (unlocked && this.paperRenderer.setActiveLayer(unlocked.id)) {
+        layerStore.update((s) => ({ ...s, activeLayerId: unlocked.id }));
+        stageSelectedStore.set(false);
+      }
+      this.selectionController.clearSelection();
+      this.directSelectController.clearSelection();
+    }
+
+    this.historyManager.snapshot();
+    this.requestRedraw();
+  }
+
+  private onLayerSoloToggle(layerId: string) {
+    if (layerId === STAGE_LAYER_ID) return;
+    const state = layerStore.get();
+    if (!state.layers.some((l) => l.id === layerId && l.kind !== "stage")) return;
+
+    const soloLayerId = state.soloLayerId === layerId ? null : layerId;
+    layerStore.update((s) => ({ ...s, soloLayerId }));
+    this.documentManager.applyEffectiveVisibility(soloLayerId);
+    this.historyManager.snapshot();
+    this.requestRedraw();
   }
 
   private onFunctionInvoke(functionId: string) {
@@ -1530,6 +1626,7 @@ class App {
     layerStore.set({
       layers: reorderedLayers,
       activeLayerId,
+      soloLayerId: state.soloLayerId,
     });
 
     this.historyManager.snapshot();

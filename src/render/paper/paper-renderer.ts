@@ -15,7 +15,7 @@
 import paper from "paper";
 import type { CanvasConfig } from "../../geometry/types";
 import type { Camera } from "../camera";
-import { STAGE_LAYER_ID, symmetryStore } from "../../state/index";
+import { STAGE_LAYER_ID, layerStore, symmetryStore } from "../../state/index";
 import {
   buildMirrorTransforms,
   buildSourceClipRegion,
@@ -41,6 +41,9 @@ import { OnionSkin } from "./onion-skin";
 import { flattenGroups, importSVG } from "./svg-io";
 
 export type { SelectionHandle, SelectionHandleId, MergePassResult } from "./types";
+
+/** Select tool layer scope: active layer only, or all unlocked visible layers. */
+export type SelectLayerScope = "active" | "all";
 
 export class PaperRenderer {
   private config: CanvasConfig;
@@ -289,10 +292,9 @@ export class PaperRenderer {
   }
 
   private splitDisconnectedItems(items: paper.CompoundPath[]): void {
-    const layer = paper.project.activeLayer;
-
     for (const item of items) {
-      if (!item.parent) continue;
+      const layer = item.layer;
+      if (!layer || !item.parent) continue;
       if (item.children.length <= 1) continue;
 
       const fillColor = item.fillColor;
@@ -795,6 +797,45 @@ export class PaperRenderer {
   }
 
   /**
+   * Snapshot layers in the select scope (for marquee extract revert).
+   */
+  captureSelectableLayersSnapshot(
+    scope: SelectLayerScope = "all",
+  ): Map<string, paper.PathItem[]> {
+    const map = new Map<string, paper.PathItem[]>();
+    for (const layer of this.getSelectablePaperLayersTopFirst(scope)) {
+      const id = this.getLayerIdForPaperLayer(layer);
+      if (!id) continue;
+      map.set(
+        id,
+        this.getPathsOnPaperLayer(layer).map(
+          (item) => item.clone({ insert: false }) as paper.PathItem,
+        ),
+      );
+    }
+    return map;
+  }
+
+  restoreSelectableLayersSnapshot(
+    snapshot: Map<string, paper.PathItem[]>,
+  ): void {
+    const prev = paper.project.activeLayer;
+    this.markerByItemId.clear();
+    for (const [id, items] of snapshot) {
+      const layer = this.layerMap.get(id);
+      if (!layer) continue;
+      layer.activate();
+      layer.removeChildren();
+      for (const item of items) {
+        layer.addChild(item);
+      }
+      flattenGroups();
+    }
+    prev.activate();
+    paper.view.update();
+  }
+
+  /**
    * World-space width so the stroke stays ~`aliasFixScreenWidthPx` CSS pixels on screen
    * after the camera view scale (no camera: fixed hairline in world space).
    */
@@ -1268,10 +1309,19 @@ export class PaperRenderer {
   }
 
   /**
-   * Resolve any hit-tested child back to the selectable root shape on the active layer.
+   * Resolve any hit-tested child back to the selectable root shape (any layer).
    */
   resolveSelectableItem(hit: paper.Item | null): paper.PathItem | null {
-    return this.hitToClipPathItem(hit);
+    if (!hit) return null;
+    let cur: paper.Item | null = hit;
+    let root: paper.PathItem | null = null;
+    while (cur) {
+      if (cur instanceof paper.Path || cur instanceof paper.CompoundPath) {
+        root = cur;
+      }
+      cur = cur.parent;
+    }
+    return root;
   }
 
   /**
@@ -1477,15 +1527,104 @@ export class PaperRenderer {
     return result?.item ?? null;
   }
 
+  /**
+   * Hit-test selectable art (top → bottom). With `scope: "active"` only the
+   * active unlocked layer is tested; `"all"` covers every unlocked visible layer.
+   * Draw tools keep `hitTest` (active layer, ignores lock).
+   */
+  hitTestSelectable(
+    point: { x: number; y: number },
+    scope: SelectLayerScope = "all",
+  ): paper.Item | null {
+    const worldPoint = this.screenToWorld(point.x, point.y);
+    const paperPoint = new paper.Point(worldPoint.x, worldPoint.y);
+    const options = {
+      fill: true,
+      stroke: true,
+      tolerance: 5 / (this.camera?.zoom ?? 1),
+    };
+    for (const layer of this.getSelectablePaperLayersTopFirst(scope)) {
+      const result = layer.hitTest(paperPoint, options);
+      if (result?.item) return result.item;
+    }
+    return null;
+  }
+
   getAllPaths(): paper.PathItem[] {
     // Single source of truth for "what shapes exist on the active layer".
     // Flatten any stray Group first so a path can never hide inside a wrapper
     // — that's the entire invariant the codebase now relies on.
     flattenGroups();
-    return paper.project.activeLayer.children.filter(
+    return this.getPathsOnPaperLayer(paper.project.activeLayer);
+  }
+
+  /** Paths in the select tool’s layer scope (unlocked + effectively visible). */
+  getSelectablePaths(scope: SelectLayerScope = "all"): paper.PathItem[] {
+    const out: paper.PathItem[] = [];
+    for (const layer of this.getSelectablePaperLayersTopFirst(scope)) {
+      out.push(...this.getPathsOnPaperLayer(layer));
+    }
+    return out;
+  }
+
+  private getPathsOnPaperLayer(layer: paper.Layer): paper.PathItem[] {
+    return layer.children.filter(
       (c): c is paper.PathItem =>
         c instanceof paper.Path || c instanceof paper.CompoundPath,
     );
+  }
+
+  /** Selectable Paper layers, top-most first. */
+  private getSelectablePaperLayersTopFirst(
+    scope: SelectLayerScope = "all",
+  ): paper.Layer[] {
+    const state = layerStore.get();
+    const locked = new Set(
+      state.layers.filter((l) => l.locked || l.kind === "stage").map((l) => l.id),
+    );
+
+    if (scope === "active") {
+      const layer = paper.project.activeLayer;
+      if (!layer || this.onionSkin.includes(layer) || !layer.visible) return [];
+      const id = this.getLayerIdForPaperLayer(layer);
+      if (!id || locked.has(id)) return [];
+      return [layer];
+    }
+
+    const layers: paper.Layer[] = [];
+    // paper.project.layers is bottom → top
+    for (let i = paper.project.layers.length - 1; i >= 0; i--) {
+      const layer = paper.project.layers[i];
+      if (this.onionSkin.includes(layer)) continue;
+      if (!layer.visible) continue;
+      const id = this.getLayerIdForPaperLayer(layer);
+      if (!id || locked.has(id)) continue;
+      layers.push(layer);
+    }
+    return layers;
+  }
+
+  private getLayerIdForPaperLayer(layer: paper.Layer): string | null {
+    for (const [id, mapped] of this.layerMap) {
+      if (mapped === layer) return id;
+    }
+    return null;
+  }
+
+  /** Top-most selected item’s layer id (among the given items), or null. */
+  getTopmostSelectedLayerId(items: paper.PathItem[]): string | null {
+    if (items.length === 0) return null;
+    const ids = new Set(items.map((item) => item.id));
+    for (const layer of this.getSelectablePaperLayersTopFirst()) {
+      for (let i = layer.children.length - 1; i >= 0; i--) {
+        const child = layer.children[i];
+        if (!ids.has(child.id)) continue;
+        if (child instanceof paper.Path || child instanceof paper.CompoundPath) {
+          return this.getLayerIdForPaperLayer(layer);
+        }
+      }
+    }
+    return this.getLayerIdForPathItem(items[0]);
   }
 
   getPathById(id: number): paper.PathItem | null {
@@ -1653,6 +1792,7 @@ export class PaperRenderer {
   extractSelectionFromScreenRect(
     start: { x: number; y: number },
     end: { x: number; y: number },
+    scope: SelectLayerScope = "all",
   ): paper.PathItem[] {
     // Build the selection polygon from all four screen corners projected to
     // world. This keeps the marquee matching what the user drew on screen
@@ -1674,12 +1814,15 @@ export class PaperRenderer {
       closed: true,
       insert: false,
     });
-    const selectedItems = this.extractSelectionFromPath(rect);
+    const selectedItems = this.extractSelectionFromPath(rect, scope);
     rect.remove();
     return selectedItems;
   }
 
-  extractSelectionFromScreenLasso(points: Array<{ x: number; y: number }>): paper.PathItem[] {
+  extractSelectionFromScreenLasso(
+    points: Array<{ x: number; y: number }>,
+    scope: SelectLayerScope = "all",
+  ): paper.PathItem[] {
     if (points.length < 3) return [];
 
     const worldPoints = points.map((point) => this.screenToWorld(point.x, point.y));
@@ -1688,52 +1831,61 @@ export class PaperRenderer {
       closed: true,
       insert: false,
     });
-    const selectedItems = this.extractSelectionFromPath(lasso);
+    const selectedItems = this.extractSelectionFromPath(lasso, scope);
     lasso.remove();
     return selectedItems;
   }
 
-  private extractSelectionFromPath(selectionPath: paper.Path): paper.PathItem[] {
+  private extractSelectionFromPath(
+    selectionPath: paper.Path,
+    scope: SelectLayerScope = "all",
+  ): paper.PathItem[] {
     if (selectionPath.isEmpty()) return [];
 
     const selectionMarker = this.createSelectionMarker();
-
-    const layer = paper.project.activeLayer;
-    const layerOrder = this.getLayerOrder(layer);
-    const candidates = this.queryByBounds(selectionPath.bounds)
-      .filter((item) => item.layer === layer && item.parent)
-      .sort((a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0));
-
     const selectedItems: paper.PathItem[] = [];
     const changedItems: paper.PathItem[] = [];
+    const prev = paper.project.activeLayer;
 
-    for (const candidate of candidates) {
-      if (!pathsCollide(candidate, selectionPath)) continue;
-      const fill = candidate.fillColor;
-      const selectedPiece = tryIntersect(candidate, selectionPath);
-      if (!selectedPiece) continue;
+    for (const layer of this.getSelectablePaperLayersTopFirst(scope)) {
+      layer.activate();
+      flattenGroups();
+      const layerOrder = this.getLayerOrder(layer);
+      const candidates = this.getPathsOnPaperLayer(layer)
+        .filter((item) => item.parent)
+        .filter((item) => selectionPath.bounds.expand(4).intersects(item.bounds))
+        .sort((a, b) => (layerOrder.get(a.id) ?? 0) - (layerOrder.get(b.id) ?? 0));
 
-      this.applyPathStyle(selectedPiece, fill);
-      this.setSelectionMarker(selectedPiece, selectionMarker);
-      this.copyEmfKeyframeFrame(candidate, selectedPiece);
+      for (const candidate of candidates) {
+        if (!pathsCollide(candidate, selectionPath)) continue;
+        const fill = candidate.fillColor;
+        const selectedPiece = tryIntersect(candidate, selectionPath);
+        if (!selectedPiece) continue;
 
-      const remainder = trySubtract(candidate, selectionPath);
-      if (remainder) {
-        this.applyPathStyle(remainder, fill);
-        this.swapIn(candidate, remainder, changedItems);
-      } else if (!this.removeIfFullyCovered(selectionPath, candidate)) {
-        this.clearSelectionMarker(selectedPiece);
-        selectedPiece.remove();
-        continue;
+        this.applyPathStyle(selectedPiece, fill);
+        this.setSelectionMarker(selectedPiece, selectionMarker);
+        this.copyEmfKeyframeFrame(candidate, selectedPiece);
+
+        const remainder = trySubtract(candidate, selectionPath);
+        if (remainder) {
+          this.applyPathStyle(remainder, fill);
+          this.swapIn(candidate, remainder, changedItems);
+        } else if (!this.removeIfFullyCovered(selectionPath, candidate)) {
+          this.clearSelectionMarker(selectedPiece);
+          selectedPiece.remove();
+          continue;
+        }
+
+        if (!selectedPiece.parent) layer.addChild(selectedPiece);
+        selectedItems.push(selectedPiece);
       }
-
-      if (!selectedPiece.parent) layer.addChild(selectedPiece);
-      selectedItems.push(selectedPiece);
     }
+
+    prev.activate();
 
     if (changedItems.length || selectedItems.length) {
       this.normalizeAfterLocalEdit([...changedItems, ...selectedItems]);
-      const survivingSelectedItems = this.getAllPaths().filter(
+      const survivingSelectedItems = this.getSelectablePaths(scope).filter(
         (item) => this.getSelectionMarker(item) === selectionMarker,
       );
       for (const item of survivingSelectedItems) {
@@ -1796,18 +1948,26 @@ export class PaperRenderer {
   }
 
   /**
-   * Place a selected item using "add" logic - union with same color, cut different colors
+   * Place a selected item using "add" logic - union with same color, cut different colors.
+   * Merges into the item’s own layer (not necessarily the active layer).
    */
   placeSelection(item: paper.PathItem): void {
-    const layer = paper.project.activeLayer;
-    const additions = this.expandIncomingWithSymmetry([item]);
-    if (additions.length === 0) {
-      paper.view.update();
-      return;
+    const layer = item.layer;
+    if (!layer) return;
+    const prev = paper.project.activeLayer;
+    layer.activate();
+    try {
+      const additions = this.expandIncomingWithSymmetry([item]);
+      if (additions.length === 0) {
+        paper.view.update();
+        return;
+      }
+      const merged = this.mergeAddInto(layer, additions);
+      this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
+      flattenGroups();
+    } finally {
+      prev.activate();
     }
-    const merged = this.mergeAddInto(layer, additions);
-    this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
-    flattenGroups();
     paper.view.update();
   }
 
@@ -1827,7 +1987,7 @@ export class PaperRenderer {
       this.placeSelection(item);
     }
 
-    const survivors = this.getAllPaths()
+    const survivors = this.getSelectablePaths()
       .filter((item) => {
         const marker = this.getSelectionMarker(item);
         return marker ? markerOrder.has(marker) : false;
@@ -1861,7 +2021,9 @@ export class PaperRenderer {
     if (!item.parent) {
       return { survivor: null, changedItems: [], didChange: false };
     }
-    const layer = paper.project.activeLayer;
+    const layer = item.layer ?? paper.project.activeLayer;
+    const prev = paper.project.activeLayer;
+    layer.activate();
     const fill = item.fillColor;
 
     normalizeBooleanResult(item);
@@ -1871,6 +2033,7 @@ export class PaperRenderer {
     const merged = this.mergeAddInto(layer, [item]);
     this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
     const survivor = merged.survivors[0] ?? null;
+    prev.activate();
     return {
       survivor,
       changedItems: merged.changedItems,

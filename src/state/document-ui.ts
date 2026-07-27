@@ -99,26 +99,53 @@ export interface Layer {
   id: string;
   name: string;
   visible: boolean;
+  /** When true, art is visible but not selectable/drawable. */
+  locked: boolean;
   kind?: LayerKind;
 }
 
 export interface LayerState {
   layers: Layer[];
   activeLayerId: string;
+  /** Exclusive solo: only this regular layer is shown when set. */
+  soloLayerId: string | null;
 }
 
 export function generateLayerId(): string {
   return `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
+/** Whether a regular layer is shown given visibility + exclusive solo. */
+export function isLayerEffectivelyVisible(
+  layer: Pick<Layer, "id" | "visible" | "kind">,
+  soloLayerId: string | null,
+): boolean {
+  if (layer.kind === "stage") return true;
+  if (soloLayerId) return layer.id === soloLayerId;
+  return layer.visible;
+}
+
 function createInitialLayerState(): LayerState {
   const defaultLayerId = generateLayerId();
   return {
     layers: [
-      { id: STAGE_LAYER_ID, name: "Stage", visible: true, kind: "stage" },
-      { id: defaultLayerId, name: "Layer 1", visible: true, kind: "regular" },
+      {
+        id: STAGE_LAYER_ID,
+        name: "Stage",
+        visible: true,
+        locked: false,
+        kind: "stage",
+      },
+      {
+        id: defaultLayerId,
+        name: "Layer 1",
+        visible: true,
+        locked: false,
+        kind: "regular",
+      },
     ],
     activeLayerId: defaultLayerId,
+    soloLayerId: null,
   };
 }
 

@@ -79,7 +79,7 @@ export const timelinePanelStyles = css`
 
   .tl-btn.on {
     background: var(--inkwell-accent, var(--panel-accent, #4a6fb5));
-    color: var(--inkwell-danger-contrast, #ffffff);
+    color: var(--inkwell-accent-contrast, #ffffff);
   }
 
   .frame-counter {
@@ -205,7 +205,8 @@ export const timelinePanelStyles = css`
     flex: 0 0 auto;
   }
 
-  .strip-row.hidden {
+  .strip-row.hidden,
+  .strip-row.locked {
     opacity: 0.5;
   }
 
@@ -417,12 +418,12 @@ export const timelinePanelStyles = css`
     background: var(--inkwell-accent-muted, rgba(77, 115, 215, 0.28));
   }
 
-  .frame-action-btn.danger {
-    color: var(--inkwell-danger, #af5b5b);
+  .frame-action-btn.negative {
+    color: var(--inkwell-negative, #af5b5b);
   }
 
-  .frame-action-btn.danger:hover {
-    background: var(--inkwell-panel-active-danger, rgba(255, 122, 122, 0.58));
+  .frame-action-btn.negative:hover {
+    background: var(--inkwell-panel-active-negative, rgba(255, 122, 122, 0.58));
   }
 
   .frame-action-btn:disabled {

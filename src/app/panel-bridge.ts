@@ -116,6 +116,8 @@ export type PanelBridgeDeps = {
   onLayerDelete: (layerId: string) => void;
   onLayerSelect: (layerId: string) => void;
   onLayerVisibilityToggle: (layerId: string) => void;
+  onLayerLockToggle: (layerId: string) => void;
+  onLayerSoloToggle: (layerId: string) => void;
   onLayerReorder: (order: string[], movedId: string) => void;
   onLayerRename: (id: string, name: string) => void;
   onFunctionInvoke: (id: string) => void;
@@ -287,6 +289,14 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
   layersPanel.addEventListener("layer-visibility-toggle", (e: Event) => {
     const layerId = (e as CustomEvent<string>).detail;
     deps.onLayerVisibilityToggle(layerId);
+  });
+  layersPanel.addEventListener("layer-lock-toggle", (e: Event) => {
+    const layerId = (e as CustomEvent<string>).detail;
+    deps.onLayerLockToggle(layerId);
+  });
+  layersPanel.addEventListener("layer-solo-toggle", (e: Event) => {
+    const layerId = (e as CustomEvent<string>).detail;
+    deps.onLayerSoloToggle(layerId);
   });
   layersPanel.addEventListener("layer-reorder", (e: Event) => {
     const { order, movedId } = (

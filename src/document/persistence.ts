@@ -49,7 +49,11 @@ export function parseSerializedDocument(data: unknown): SerializedDocument {
     },
     frameRate: Number(doc.frameRate) || 12,
     duration: Number(doc.duration) || 1,
-    tracks: doc.tracks,
+    tracks: doc.tracks.map((track) => ({
+      ...track,
+      locked: !!(track as { locked?: boolean }).locked,
+      visible: track.visible !== false,
+    })),
     content: doc.content as Record<string, string>,
   };
 }

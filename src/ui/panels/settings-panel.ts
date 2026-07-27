@@ -408,7 +408,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
                 <blocky-button flat @click=${() => this.emit("flatten")}
                   >Flatten</blocky-button
                 >
-                <blocky-button flat danger @click=${() => this.emit("clear")}
+                <blocky-button flat negative @click=${() => this.emit("clear")}
                   >Clear</blocky-button
                 >
               </div>

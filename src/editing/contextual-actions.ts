@@ -16,7 +16,7 @@ export interface ContextualActionMenuItem {
   id: string;
   name: string;
   icon: string;
-  danger?: boolean;
+  negative?: boolean;
   draggable?: boolean;
 }
 
@@ -83,7 +83,7 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
     id: "delete",
     name: "Delete",
     icon: "trash",
-    danger: true,
+    negative: true,
     isAvailable: (context) => context.tool === "select" && context.items.length > 0,
     run: (context, services) => {
       for (const item of context.items) {
@@ -123,7 +123,7 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
     id: "delete-vertices",
     name: "Delete Vertices",
     icon: "trash",
-    danger: true,
+    negative: true,
     isAvailable: (context) =>
       context.tool === "direct-select"
       && context.items.length > 0
@@ -138,7 +138,7 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
 export function getAvailableContextualActions(context: ContextualActionContext): ContextualActionMenuItem[] {
   return CONTEXTUAL_ACTION_REGISTRY
     .filter((fn) => fn.isAvailable(context))
-    .map(({ id, name, icon, danger, draggable }) => ({ id, name, icon, danger, draggable }));
+    .map(({ id, name, icon, negative, draggable }) => ({ id, name, icon, negative, draggable }));
 }
 
 export function runContextualAction(

@@ -253,7 +253,7 @@ export class InkwellWheelPanel extends FloatingPanel {
       margin: 0;
       padding: 0;
       background: transparent;
-      color: var(--inkwell-danger-contrast, #ffffff);
+      color: var(--inkwell-accent-contrast, #ffffff);
       font: inherit;
       font-size: 17px;
       line-height: 1;
@@ -277,7 +277,7 @@ export class InkwellWheelPanel extends FloatingPanel {
       margin: var(--hub-frame-inset) var(--hub-frame-inset) var(--hub-frame-inset) auto;
       border-radius: 50%;
       background: rgba(0, 0, 0, 0.22);
-      color: var(--inkwell-danger-contrast, #ffffff);
+      color: var(--inkwell-accent-contrast, #ffffff);
       display: grid;
       place-items: center;
       font-size: 14px;

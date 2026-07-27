@@ -47,6 +47,7 @@ export function createBlankSerializedDocument(): SerializedDocument {
         id: layerId,
         name: "Layer 1",
         visible: true,
+        locked: false,
         keyframes: [{ frameIndex: 0, contentId: EMPTY_CONTENT_ID, holdUntil: 0 }],
       },
     ],
@@ -196,7 +197,7 @@ export class TimelineSession {
   /** Pull live Paper edits into the document model without a history entry. */
   commitLiveEdits(): void {
     this.deps.documentManager.syncFromLayerStore(layerStore.get());
-    this.deps.documentManager.commitActiveLayerContent();
+    this.deps.documentManager.commitDirtyLayerContent();
   }
 
   onKeyframeAdd(blank: boolean): void {

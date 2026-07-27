@@ -93,8 +93,8 @@ export class InkwellFunctionsPanel extends LitElement {
       background: var(--inkwell-accent-muted, rgba(77, 115, 215, 0.28));
     }
 
-    .fn-btn.danger { color: var(--inkwell-danger, #af5b5b); }
-    .fn-btn.danger:hover { background: var(--inkwell-panel-active-danger, rgba(255, 122, 122, 0.58)); }
+    .fn-btn.negative { color: var(--inkwell-negative, #af5b5b); }
+    .fn-btn.negative:hover { background: var(--inkwell-panel-active-negative, rgba(255, 122, 122, 0.58)); }
   `;
 
   connectedCallback() {
@@ -255,7 +255,7 @@ export class InkwellFunctionsPanel extends LitElement {
             (fn) => html`
               <button
                 type="button"
-                class="fn-btn ${fn.danger ? "danger" : ""}"
+                class="fn-btn ${fn.negative ? "negative" : ""}"
                 title=${fn.name}
                 aria-label=${fn.name}
                 @pointerdown=${(e: PointerEvent) => this.onFunctionPointerDown(fn, e)}

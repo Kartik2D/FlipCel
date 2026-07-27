@@ -16,6 +16,7 @@ import type { DocumentManager, DocumentState } from "./document";
 interface HistoryEntry {
   doc: DocumentState;
   activeLayerId: string;
+  soloLayerId: string | null;
   stageColor: string;
   timestamp: number;
 }
@@ -63,10 +64,10 @@ export class HistoryManager {
     if (this.isRestoring) return;
 
     // Pull the live editing state into the document model first:
-    // layer list changes, then the active Paper layer's content.
+    // layer list changes, then dirty Paper layer content.
     const layerState = layerStore.get();
     this.doc.syncFromLayerStore(layerState);
-    this.doc.commitActiveLayerContent();
+    this.doc.commitDirtyLayerContent();
 
     // Truncate any redo entries (we're starting a new branch)
     this.stack = this.stack.slice(0, this.index + 1);
@@ -74,6 +75,7 @@ export class HistoryManager {
     this.stack.push({
       doc: this.doc.captureState(),
       activeLayerId: layerState.activeLayerId,
+      soloLayerId: layerState.soloLayerId,
       stageColor: stageStore.get().color,
       timestamp: Date.now(),
     });
@@ -142,7 +144,11 @@ export class HistoryManager {
     this.isRestoring = true;
     try {
       const entry = this.stack[this.index];
-      this.doc.applyState(entry.doc, entry.activeLayerId);
+      this.doc.applyState(
+        entry.doc,
+        entry.activeLayerId,
+        entry.soloLayerId ?? null,
+      );
       stageStore.update((s) => ({ ...s, color: entry.stageColor ?? "#ffffff" }));
     } finally {
       this.isRestoring = false;

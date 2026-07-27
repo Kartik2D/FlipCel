@@ -6,6 +6,7 @@ import {
   generateLayerId,
   STAGE_LAYER_ID,
   StoreController,
+  isLayerEffectivelyVisible,
 } from "../../state";
 import { timelineStore } from "../../document/document";
 import { FloatingPanel } from "../primitives/floating-panel";
@@ -69,7 +70,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       --layers-row-size: 42px;
       /* Compact chrome: add/delete, keyframe tools, playback buttons. */
       --layers-control-size: 24px;
-      --layers-side-width: 196px;
+      --layers-side-width: 248px;
     }
 
     .block {
@@ -120,7 +121,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       grid-template-columns:
         var(--layers-control-size)
         minmax(0, 1fr)
-        var(--layers-control-size);
+        auto;
       align-items: center;
       gap: 4px;
       height: var(--layers-row-size);
@@ -128,6 +129,19 @@ export class InkwellLayersPanel extends FloatingPanel {
       flex: 0 0 auto;
       cursor: pointer;
       color: var(--block-border, var(--inkwell-panel-border));
+    }
+
+    .layer-row-controls {
+      display: flex;
+      align-items: stretch;
+      gap: 3px;
+      height: 100%;
+      min-width: 0;
+    }
+
+    .layer-row-controls .layer-control {
+      width: var(--layers-control-size);
+      flex: 0 0 auto;
     }
 
     .layer-drag-handle {
@@ -142,7 +156,8 @@ export class InkwellLayersPanel extends FloatingPanel {
       cursor: grabbing;
     }
 
-    .layer-item.hidden {
+    .layer-item.hidden,
+    .layer-item.locked {
       opacity: 0.5;
     }
 
@@ -206,8 +221,8 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .layer-delete-current:hover:not(:disabled) {
-      background: var(--inkwell-danger, #9a4545);
-      color: var(--inkwell-danger-contrast, #ffffff);
+      background: var(--inkwell-negative, #9a4545);
+      color: var(--inkwell-negative-contrast, #ffffff);
       filter: none;
     }
 
@@ -231,7 +246,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     .layer-item.active .layer-control,
     .layer-item.active .layer-name-cell {
       background: var(--inkwell-accent, var(--panel-accent, #b5a04a));
-      color: var(--inkwell-danger-contrast, #ffffff);
+      color: var(--inkwell-accent-contrast, #ffffff);
     }
 
     .layer-name-cell {
@@ -248,7 +263,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .layer-item.active .layer-name {
-      color: var(--inkwell-danger-contrast, #ffffff);
+      color: var(--inkwell-accent-contrast, #ffffff);
     }
 
     .layer-name-input {
@@ -265,32 +280,55 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .layer-item.active .layer-name-input {
-      background: color-mix(in srgb, var(--inkwell-danger-contrast, #fff) 14%, transparent);
-      border-color: color-mix(in srgb, var(--inkwell-danger-contrast, #fff) 42%, transparent);
+      background: color-mix(in srgb, var(--inkwell-accent-contrast, #fff) 14%, transparent);
+      border-color: color-mix(in srgb, var(--inkwell-accent-contrast, #fff) 42%, transparent);
     }
 
-    .visibility-btn {
+    .visibility-btn,
+    .lock-btn,
+    .solo-btn {
       width: 100%;
       height: 100%;
       color: inherit;
     }
 
+    .solo-btn {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    .solo-btn.on {
+      background: var(--inkwell-accent, var(--panel-accent, #b5a04a));
+      color: var(--inkwell-accent-contrast, #ffffff);
+    }
+
     .visibility-btn svg,
+    .lock-btn svg,
     .layer-action-button svg {
       display: block;
     }
 
-    .layer-item:not(.active) .visibility-btn:hover:not(:disabled) {
+    .layer-item:not(.active) .visibility-btn:hover:not(:disabled),
+    .layer-item:not(.active) .lock-btn:hover:not(:disabled),
+    .layer-item:not(.active) .solo-btn:hover:not(:disabled) {
       filter: brightness(0.88);
     }
 
-    .visibility-btn.dim {
+    .visibility-btn.dim,
+    .lock-btn.dim {
       opacity: 0.72;
     }
 
-    .layer-item.active .visibility-btn:hover:not(:disabled) {
-      background: color-mix(in srgb, var(--inkwell-danger-contrast, #fff) 32%, transparent);
+    .layer-item.active .visibility-btn:hover:not(:disabled),
+    .layer-item.active .lock-btn:hover:not(:disabled),
+    .layer-item.active .solo-btn:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--inkwell-accent-contrast, #fff) 32%, transparent);
       filter: none;
+    }
+
+    .layer-item.active .solo-btn.on:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--inkwell-accent-contrast, #fff) 42%, transparent);
     }
   `;
 
@@ -793,7 +831,7 @@ export class InkwellLayersPanel extends FloatingPanel {
             >${phosphorIcon("arrows-left-right", 14)}</button>
             <button
               type="button"
-              class="frame-action-btn danger"
+              class="frame-action-btn negative"
               title="Delete keyframes"
               aria-label="Delete"
               @click=${() => this.onFrameActionDeleteClick()}
@@ -1229,6 +1267,16 @@ export class InkwellLayersPanel extends FloatingPanel {
     this.emit("layer-visibility-toggle", layerId);
   }
 
+  private toggleLock(layerId: string, e: Event) {
+    e.stopPropagation();
+    this.emit("layer-lock-toggle", layerId);
+  }
+
+  private toggleSolo(layerId: string, e: Event) {
+    e.stopPropagation();
+    this.emit("layer-solo-toggle", layerId);
+  }
+
   private deleteCurrentLayer() {
     const layerId = this.layers.value.activeLayerId;
     // Don't allow deleting the last regular layer (Stage doesn't count).
@@ -1592,7 +1640,7 @@ export class InkwellLayersPanel extends FloatingPanel {
   }
 
   render() {
-    const { layers, activeLayerId } = this.layers.value;
+    const { layers, activeLayerId, soloLayerId } = this.layers.value;
     const t = this.timeline.value;
     // Regular layers only, top layer first; the Stage layer stays in the
     // document as the fixed background but has no row in the panel.
@@ -1684,9 +1732,15 @@ export class InkwellLayersPanel extends FloatingPanel {
                     ${repeat(
                       displayLayers,
                       (layer) => layer.id,
-                      (layer, i) => html`
+                      (layer, i) => {
+                        const effectivelyVisible = isLayerEffectivelyVisible(
+                          layer,
+                          soloLayerId,
+                        );
+                        const soloOn = soloLayerId === layer.id;
+                        return html`
                         <div
-                          class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
+                          class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!effectivelyVisible ? "hidden" : ""} ${layer.locked ? "locked" : ""}"
                           data-layer-id=${layer.id}
                           data-interactive
                           @pointermove=${this.onRowMove}
@@ -1733,16 +1787,34 @@ export class InkwellLayersPanel extends FloatingPanel {
                                   >
                                 `}
                           </div>
-                          <button
-                            type="button"
-                            class="layer-control visibility-btn ${!layer.visible ? "dim" : ""}"
-                            @click=${(e: Event) => this.toggleVisibility(layer.id, e)}
-                            title="${layer.visible ? "Hide layer" : "Show layer"}"
-                          >
-                            ${phosphorIcon(layer.visible ? "eye" : "eye-slash", 14)}
-                          </button>
+                          <div class="layer-row-controls">
+                            <button
+                              type="button"
+                              class="layer-control solo-btn ${soloOn ? "on" : ""}"
+                              @click=${(e: Event) => this.toggleSolo(layer.id, e)}
+                              title="${soloOn ? "Exit solo" : "Solo layer"}"
+                              aria-pressed=${soloOn}
+                            >S</button>
+                            <button
+                              type="button"
+                              class="layer-control lock-btn ${layer.locked ? "dim" : ""}"
+                              @click=${(e: Event) => this.toggleLock(layer.id, e)}
+                              title="${layer.locked ? "Unlock layer" : "Lock layer"}"
+                            >
+                              ${phosphorIcon(layer.locked ? "lock" : "lock-open", 14)}
+                            </button>
+                            <button
+                              type="button"
+                              class="layer-control visibility-btn ${!layer.visible ? "dim" : ""}"
+                              @click=${(e: Event) => this.toggleVisibility(layer.id, e)}
+                              title="${layer.visible ? "Hide layer" : "Show layer"}"
+                            >
+                              ${phosphorIcon(layer.visible ? "eye" : "eye-slash", 14)}
+                            </button>
+                          </div>
                         </div>
-                      `
+                      `;
+                      }
                     )}
                   </div>
                 </div>
@@ -1754,7 +1826,7 @@ export class InkwellLayersPanel extends FloatingPanel {
                         (layer) => layer.id,
                         (layer) => html`
                           <div
-                            class="strip-row ${layer.id === activeLayerId ? "active" : ""} ${!layer.visible ? "hidden" : ""}"
+                            class="strip-row ${layer.id === activeLayerId ? "active" : ""} ${!isLayerEffectivelyVisible(layer, soloLayerId) ? "hidden" : ""} ${layer.locked ? "locked" : ""}"
                             data-layer-id=${layer.id}
                           >
                             ${this.renderFrameStrip(
