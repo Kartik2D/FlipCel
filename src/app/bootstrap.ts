@@ -30,6 +30,7 @@ import { SelectionController } from "../editing/object-select";
 import { DirectSelectController } from "../editing/direct-select";
 import { MagnetController } from "../editing/magnet";
 import { MagicMoveController } from "../editing/magic-move";
+import { MagicMorphController } from "../editing/magic-morph";
 import { HistoryManager } from "../document/history";
 import {
   DocumentManager,
@@ -58,6 +59,7 @@ import type {
   InkwellWheelPanel,
   InkwellFunctionsPanel,
   InkwellMagicMovePopup,
+  InkwellMagicMorphPopup,
 } from "../ui/register";
 import "../ui/register"; // Register Lit components
 import {
@@ -119,6 +121,7 @@ class App {
   private directSelectController: DirectSelectController;
   private magnetController: MagnetController;
   private magicMoveController: MagicMoveController;
+  private magicMorphController: MagicMorphController;
   private historyManager: HistoryManager;
   private documentManager: DocumentManager;
   private readonly scheduleAutosave = debounce(() => {
@@ -137,6 +140,7 @@ class App {
   private wheelPanel: InkwellWheelPanel;
   private functionsPanel: InkwellFunctionsPanel;
   private magicMovePopup: InkwellMagicMovePopup;
+  private magicMorphPopup: InkwellMagicMorphPopup;
   private camera: Camera;
   private isInitialized = false;
   private pixelResScale = 2;
@@ -240,11 +244,18 @@ class App {
       this.camera,
       this.chromeLayer,
     );
+    this.magicMorphController = new MagicMorphController(
+      this.paperRenderer,
+      this.camera,
+      this.chromeLayer,
+    );
     this.documentManager = new DocumentManager(this.paperRenderer);
     this.historyManager = new HistoryManager(this.documentManager);
     this.historyManager.setOnChange(() => this.scheduleAutosave());
     this.magicMoveController.setDocumentManager(this.documentManager);
     this.magicMoveController.setHistoryManager(this.historyManager);
+    this.magicMorphController.setDocumentManager(this.documentManager);
+    this.magicMorphController.setHistoryManager(this.historyManager);
     this.selectionController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.selectionController.setLiveEditStartCallback(() =>
       this.documentManager.refreshOnionSkin(),
@@ -286,12 +297,16 @@ class App {
     this.magicMovePopup = document.getElementById(
       "magic-move-popup",
     ) as InkwellMagicMovePopup;
+    this.magicMorphPopup = document.getElementById(
+      "magic-morph-popup",
+    ) as InkwellMagicMorphPopup;
     this.timelineSession = new TimelineSession({
       documentManager: this.documentManager,
       historyManager: this.historyManager,
       selectionController: this.selectionController,
       directSelectController: this.directSelectController,
       magicMoveController: this.magicMoveController,
+      magicMorphController: this.magicMorphController,
       paperRenderer: this.paperRenderer,
       layersPanel: this.layersPanel,
       closeFunctionsPanelHidden: () => this.functionsPanel.close("hidden"),
@@ -309,6 +324,15 @@ class App {
     };
     this.toolsPanel.addEventListener("magic-move-apply", onMagicMoveApply);
     this.magicMovePopup.addEventListener("magic-move-apply", onMagicMoveApply);
+    const onMagicMorphApply = () => {
+      const result = this.magicMorphController.apply();
+      if (!result.ok) {
+        console.warn("Magic Morph:", result.error);
+      }
+      this.requestRedraw();
+    };
+    this.toolsPanel.addEventListener("magic-morph-apply", onMagicMorphApply);
+    this.magicMorphPopup.addEventListener("magic-morph-apply", onMagicMorphApply);
     window.addEventListener("pointerup", this.globalDuplicateDragEndHandler);
     window.addEventListener("pointercancel", this.globalDuplicateDragEndHandler);
     window.addEventListener("blur", this.globalDuplicateDragEndHandler);
@@ -366,6 +390,7 @@ class App {
       directSelectController: this.directSelectController,
       magnetController: this.magnetController,
       magicMoveController: this.magicMoveController,
+      magicMorphController: this.magicMorphController,
       paperRenderer: this.paperRenderer,
       pixelCanvasManager: this.pixelCanvasManager,
       feedbackLayer: this.feedbackLayer,
@@ -730,6 +755,10 @@ class App {
       this.magicMoveController.drawUI();
       return;
     }
+    if (currentTool === "magic-morph" && this.magicMorphController.hasTransientUI()) {
+      this.magicMorphController.drawUI();
+      return;
+    }
     this.chromeLayer.clear();
   }
 
@@ -879,6 +908,9 @@ class App {
     if (currentTool === "magic-move" && this.magicMoveController.hasTransientUI()) {
       this.redrawActiveSelectionUI();
     }
+    if (currentTool === "magic-morph" && this.magicMorphController.hasTransientUI()) {
+      this.redrawActiveSelectionUI();
+    }
   }
 
   // ============================================================
@@ -896,6 +928,9 @@ class App {
     }
     if (tool !== "magic-move") {
       this.magicMoveController.deactivate();
+    }
+    if (tool !== "magic-morph") {
+      this.magicMorphController.deactivate();
     }
     if (tool !== "magnet" && this.magnetController.hasActiveStroke()) {
       this.magnetController.handleCancel();

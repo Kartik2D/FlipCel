@@ -8,7 +8,7 @@ import { brush } from "./brush";
 import { lasso } from "./lasso";
 import { rect } from "./rect";
 import { circle } from "./circle";
-import { select, directSelect, magnet, magicMove, pan, eyedropper } from "./stubs";
+import { select, directSelect, magnet, magicMove, magicMorph, pan, eyedropper } from "./stubs";
 
 export type {
   ToggleSetting,
@@ -25,7 +25,7 @@ export { brush } from "./brush";
 export { lasso } from "./lasso";
 export { rect } from "./rect";
 export { circle } from "./circle";
-export { select, directSelect, magnet, magicMove, pan, eyedropper } from "./stubs";
+export { select, directSelect, magnet, magicMove, magicMorph, pan, eyedropper } from "./stubs";
 
 // ============================================================
 // Tool Registry
@@ -40,6 +40,7 @@ export const tools = [
   directSelect,
   magnet,
   magicMove,
+  magicMorph,
   pan,
   eyedropper,
 ] as const;

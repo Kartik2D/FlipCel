@@ -259,3 +259,69 @@ export function scalesForSamples(
     return a + (b - a) * t;
   });
 }
+
+/**
+ * Dedouze pose-to-pose morph ratios from a timing chart.
+ *
+ * Intermediate samples (ticks + Divisions) between the first and last tick,
+ * remapped to t ∈ (0, 1) along the trajectory arc. Endpoints excluded.
+ */
+export function morphRatiosFromChart(
+  strokes: ChartStroke[],
+  divisions: number,
+): { ok: true; ratios: number[] } | { ok: false; error: string } {
+  const parsed = parseTimingChart(strokes, divisions);
+  if (!parsed.ok) return parsed;
+  const { samples } = parsed;
+  if (samples.length < 3) {
+    return {
+      ok: false,
+      error:
+        "Need intermediate timing ticks (or Divisions > 1) between the first and last tick.",
+    };
+  }
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  const span = last.offset - first.offset;
+  if (Math.abs(span) < 1e-6) {
+    return { ok: false, error: "Timing ticks are too close together." };
+  }
+  const ratios: number[] = [];
+  for (let i = 1; i < samples.length - 1; i++) {
+    const t = (samples[i].offset - first.offset) / span;
+    ratios.push(Math.max(0, Math.min(1, t)));
+  }
+  if (ratios.length === 0) {
+    return {
+      ok: false,
+      error:
+        "Need intermediate timing ticks (or Divisions > 1) between the first and last tick.",
+    };
+  }
+  return { ok: true, ratios };
+}
+
+/**
+ * Evenly space `count` integer frames strictly between `start` and `end`
+ * (Dedouze pose-to-pose frame packing).
+ */
+export function evenFramesBetween(
+  start: number,
+  end: number,
+  count: number,
+): number[] {
+  if (count <= 0 || end - start < 2) return [];
+  const frames: number[] = [];
+  const range = end - start;
+  for (let i = 1; i <= count; i++) {
+    let frame = Math.round(start + (range * i) / (count + 1));
+    if (frame <= start) frame = start + 1;
+    if (frame >= end) frame = end - 1;
+    if (frames.length > 0 && frame <= frames[frames.length - 1]) {
+      frame = frames[frames.length - 1] + 1;
+    }
+    if (frame >= end) break;
+    frames.push(frame);
+  }
+  return frames;
+}

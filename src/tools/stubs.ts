@@ -162,6 +162,64 @@ export const magicMove: ToolDefinition<typeof magicMoveSettings> = {
 };
 
 // ============================================================
+// Magic Morph Tool
+// ============================================================
+
+const magicMorphSettings = {
+  scope: {
+    type: "toggle",
+    options: ["active", "all"] as const,
+    default: "all",
+    label: "Layers",
+  },
+  divisions: {
+    type: "range",
+    min: 1,
+    max: 12,
+    step: 1,
+    default: 1,
+    label: "Divisions",
+  },
+  density: {
+    type: "range",
+    min: 1,
+    max: 3,
+    step: 0.25,
+    default: 1,
+    label: "Density",
+  },
+  stickiness: {
+    type: "range",
+    min: 0,
+    max: 1,
+    step: 0.1,
+    default: 1,
+    label: "Corner Stick",
+  },
+  smoothness: {
+    type: "range",
+    min: 1,
+    max: 2,
+    step: 0.1,
+    default: 1,
+    label: "Smoothness",
+  },
+} as const satisfies SettingsSchema;
+
+export const magicMorph: ToolDefinition<typeof magicMorphSettings> = {
+  id: "magic-morph",
+  name: "Magic Morph",
+  hotkey: "t",
+  settings: magicMorphSettings,
+
+  onStart() {},
+  onMove() {},
+  onEnd() {
+    return null;
+  },
+};
+
+// ============================================================
 // Pan Tool
 // ============================================================
 

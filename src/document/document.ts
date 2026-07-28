@@ -620,6 +620,47 @@ export class DocumentManager {
     return this.content.get(kf.contentId) ?? "";
   }
 
+  /**
+   * Magic Morph span: covering hold at `frame` → next non-blank keyframe.
+   * Requires an explicit hold and at least one free frame between poses
+   * (`endFrame - startFrame >= 2`).
+   */
+  getMagicMorphSpan(
+    layerId: string,
+    frame?: number,
+  ): {
+    startFrame: number;
+    endFrame: number;
+    startJson: string;
+    endJson: string;
+  } | null {
+    const track = this.getTrack(layerId);
+    if (!track) return null;
+    const at = this.clampFrame(frame ?? this.currentFrame);
+    const covering = this.coveringKeyframe(track, at);
+    if (!covering || covering.contentId === EMPTY_CONTENT_ID) return null;
+    if (covering.holdUntil <= covering.frameIndex) return null;
+
+    const next = track.keyframes.find(
+      (k) =>
+        k.frameIndex > covering.frameIndex &&
+        k.contentId !== EMPTY_CONTENT_ID,
+    );
+    if (!next) return null;
+    if (next.frameIndex - covering.frameIndex < 2) return null;
+
+    const startJson = this.content.get(covering.contentId) ?? "";
+    const endJson = this.content.get(next.contentId) ?? "";
+    if (!startJson || !endJson) return null;
+
+    return {
+      startFrame: covering.frameIndex,
+      endFrame: next.frameIndex,
+      startJson,
+      endJson,
+    };
+  }
+
   private insertKeyframe(track: LayerTrack, keyframe: Keyframe): void {
     const at = track.keyframes.findIndex(
       (k) => k.frameIndex >= keyframe.frameIndex,

@@ -813,6 +813,7 @@ export class UnifiedInputManager {
       case "select":
       case "direct-select":
       case "magic-move":
+      case "magic-morph":
         this.canvas.style.cursor = "default";
         break;
       case "eyedropper":

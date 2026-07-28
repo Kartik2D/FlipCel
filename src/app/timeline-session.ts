@@ -16,6 +16,7 @@ import type { HistoryManager } from "../document/history";
 import type { SelectionController } from "../editing/object-select";
 import type { DirectSelectController } from "../editing/direct-select";
 import type { MagicMoveController } from "../editing/magic-move";
+import type { MagicMorphController } from "../editing/magic-morph";
 import type { PaperRenderer } from "../render/paper-renderer";
 import type { InkwellLayersPanel } from "../ui/register";
 import type { ToolId } from "../tools/registry";
@@ -62,6 +63,7 @@ export interface TimelineSessionDeps {
   selectionController: SelectionController;
   directSelectController: DirectSelectController;
   magicMoveController: MagicMoveController;
+  magicMorphController: MagicMorphController;
   paperRenderer: PaperRenderer;
   layersPanel: InkwellLayersPanel;
   switchTool: (tool: ToolId) => void;
@@ -134,6 +136,7 @@ export class TimelineSession {
       selectionController,
       directSelectController,
       magicMoveController,
+      magicMorphController,
       paperRenderer,
       switchTool,
       requestRedraw,
@@ -160,11 +163,13 @@ export class TimelineSession {
         isSameFrame &&
         (selectionController.hasSelection() ||
           directSelectController.hasSelection() ||
-          magicMoveController.hasSelection())
+          magicMoveController.hasSelection() ||
+          magicMorphController.hasTransientUI())
       ) {
         selectionController.confirmAndClearSelection();
         directSelectController.confirmAndClearSelection();
         magicMoveController.deactivate();
+        magicMorphController.deactivate();
         closeFunctionsPanelHidden();
         return;
       }
@@ -175,6 +180,7 @@ export class TimelineSession {
     selectionController.confirmAndClearSelection();
     directSelectController.confirmAndClearSelection();
     magicMoveController.deactivate();
+    magicMorphController.deactivate();
     closeFunctionsPanelHidden();
     this.commitLiveEdits();
 
@@ -254,6 +260,7 @@ export class TimelineSession {
     selectionController.clearSelection();
     directSelectController.clearSelection();
     this.deps.magicMoveController.deactivate();
+    this.deps.magicMorphController.deactivate();
     this.commitLiveEdits();
     if (documentManager.isEditMultipleFrames()) {
       documentManager.setEditMultipleFrames(false);
@@ -493,6 +500,7 @@ export class TimelineSession {
       selectionController.confirmAndClearSelection();
       directSelectController.confirmAndClearSelection();
       this.deps.magicMoveController.deactivate();
+      this.deps.magicMorphController.deactivate();
       this.commitLiveEdits();
       closeFunctionsPanelHidden();
       this.playbackAccumulatorMs = 0;
@@ -585,6 +593,7 @@ export class TimelineSession {
     selectionController.discardSelection();
     directSelectController.clearSelection();
     this.deps.magicMoveController.deactivate();
+    this.deps.magicMorphController.deactivate();
     closeFunctionsPanelHidden();
 
     stageStore.set({ ...doc.stage });

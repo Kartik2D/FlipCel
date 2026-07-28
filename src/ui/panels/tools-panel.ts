@@ -7,6 +7,7 @@ import {
   modifiersStore,
   toolSettingsStore,
   magicMoveUiStore,
+  magicMorphUiStore,
   StoreController,
 } from "../../state";
 import { FloatingPanel } from "../primitives/floating-panel";
@@ -23,10 +24,11 @@ export class InkwellToolsPanel extends FloatingPanel {
   private modifiers = new StoreController(this, modifiersStore);
   private settings = new StoreController(this, toolSettingsStore);
   private magicMoveUi = new StoreController(this, magicMoveUiStore);
+  private magicMorphUi = new StoreController(this, magicMorphUiStore);
 
   /** Panel tool order; pan is dock-only and omitted here. */
   private static readonly TOOL_GROUPS: ToolId[][] = [
-    ["select", "direct-select", "magic-move"],
+    ["select", "direct-select", "magic-move", "magic-morph"],
     ["brush", "lasso", "rect", "circle"],
     ["magnet", "eyedropper"],
   ];
@@ -255,6 +257,22 @@ export class InkwellToolsPanel extends FloatingPanel {
               stretch
               ?disabled=${!this.magicMoveUi.value.canApply}
               @click=${() => this.emit("magic-move-apply")}
+              >Apply</blocky-button
+            >
+          `
+        : ""}
+      ${currentToolId === "magic-morph"
+        ? html`
+            <p class="hint">
+              Playhead on a hold, then draw a trajectory with crossing timing
+              ticks. Apply morphs to the next keyframe using chart ratios.
+            </p>
+            <blocky-button
+              flat
+              accent
+              stretch
+              ?disabled=${!this.magicMorphUi.value.canApply}
+              @click=${() => this.emit("magic-morph-apply")}
               >Apply</blocky-button
             >
           `

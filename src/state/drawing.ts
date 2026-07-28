@@ -53,3 +53,18 @@ export const magicMoveUiStore = new Store<MagicMoveUiState>({
   popupX: 0,
   popupY: 0,
 });
+
+/** Magic Morph panel: Apply availability + floating Apply popup. */
+export interface MagicMorphUiState {
+  canApply: boolean;
+  popupOpen: boolean;
+  popupX: number;
+  popupY: number;
+}
+
+export const magicMorphUiStore = new Store<MagicMorphUiState>({
+  canApply: false,
+  popupOpen: false,
+  popupX: 0,
+  popupY: 0,
+});

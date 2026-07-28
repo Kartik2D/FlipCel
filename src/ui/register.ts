@@ -17,6 +17,7 @@ import "./panels/layers-panel";
 import "./panels/jog-wheel";
 import "./panels/contextual-actions-panel";
 import "./panels/magic-move-popup";
+import "./panels/magic-morph-popup";
 
 export { Block } from "./primitives/block";
 export { BlockyButton } from "./primitives/block-button";
@@ -37,6 +38,7 @@ export { InkwellLayersPanel } from "./panels/layers-panel";
 export { InkwellWheelPanel } from "./panels/jog-wheel";
 export { InkwellFunctionsPanel } from "./panels/contextual-actions-panel";
 export { InkwellMagicMovePopup } from "./panels/magic-move-popup";
+export { InkwellMagicMorphPopup } from "./panels/magic-morph-popup";
 
 declare global {
   interface HTMLElementTagNameMap {
@@ -56,5 +58,6 @@ declare global {
     "inkwell-wheel-panel": import("./panels/jog-wheel").InkwellWheelPanel;
     "inkwell-functions-panel": import("./panels/contextual-actions-panel").InkwellFunctionsPanel;
     "inkwell-magic-move-popup": import("./panels/magic-move-popup").InkwellMagicMovePopup;
+    "inkwell-magic-morph-popup": import("./panels/magic-morph-popup").InkwellMagicMorphPopup;
   }
 }
