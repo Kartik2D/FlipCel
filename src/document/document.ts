@@ -778,6 +778,38 @@ export class DocumentManager {
   }
 
   /**
+   * Extend the keyframe at `frame` so it holds through `throughFrame`
+   * (inclusive), never past the next keyframe on the track or the timeline end.
+   */
+  extendKeyframeHoldThrough(
+    layerId: string,
+    frame: number,
+    throughFrame: number,
+    options: { publish?: boolean } = {},
+  ): void {
+    const track = this.getTrack(layerId);
+    if (!track) return;
+    frame = this.clampFrame(Math.max(0, Math.round(frame)));
+    throughFrame = Math.max(0, Math.round(throughFrame));
+    if (throughFrame >= this.duration) {
+      this.setDuration(throughFrame + 1);
+    }
+    throughFrame = this.clampFrame(throughFrame);
+
+    const kf = track.keyframes.find((k) => k.frameIndex === frame);
+    if (!kf || kf.contentId === EMPTY_CONTENT_ID) return;
+
+    const nextOnTrack = track.keyframes.find((k) => k.frameIndex > frame);
+    const maxUntil = nextOnTrack
+      ? nextOnTrack.frameIndex - 1
+      : this.duration - 1;
+    const until = Math.min(throughFrame, maxUntil);
+    if (until > kf.holdUntil) kf.holdUntil = until;
+
+    if (options.publish !== false) this.publish();
+  }
+
+  /**
    * Empty frames `start..end` on a layer (same semantics as removeFrameRange)
    * without reloading Paper. Used to clear a Magic Move bake range before
    * writing new keys. Extends duration when `end` is past the timeline.

@@ -1,12 +1,11 @@
 /**
  * Magic Move Controller
  *
- * Two-phase tool:
- * 1. Lasso-select artwork (dense dashed preview + soft accent glow)
- * 2. Draw timing-chart strokes (stroke-only + glow), then Apply via popup
- *
- * Apply bakes position keyframes along the Paper trajectory between ticks,
- * with Divisions subdividing each tick interval along the path arc.
+ * Multi-group tool:
+ * 1. Lasso-select artwork (first lasso via marquee)
+ * 2. Draw timing-chart strokes for that lasso
+ * 3. Draw an almost-circle stroke to start another lasso (color-coded)
+ * 4. Apply bakes each lasso along its own chart
  */
 import type { Point, CanvasConfig } from "../geometry/types";
 import type { PaperRenderer } from "../render/paper-renderer";
@@ -32,6 +31,7 @@ import {
 type Phase = "select" | "chart";
 
 interface MagicMoveSettings {
+  scope: "active" | "all";
   timing: "step" | "duration";
   step: number;
   duration: number;
@@ -40,11 +40,78 @@ interface MagicMoveSettings {
   orient: "fixed" | "direction";
 }
 
+/** One lasso selection + its timing chart, sharing a chrome color. */
+interface MagicMoveGroup {
+  color: string;
+  items: paper.PathItem[];
+  chartStrokesWorldPts: Point[][];
+  /** Closed lasso outline in world space (for color-coded chrome). */
+  lassoWorldPts: Point[] | null;
+}
+
+const GROUP_COLORS = [
+  "#4d73d7",
+  "#e07a3d",
+  "#3daa7a",
+  "#c44d8a",
+  "#8b6bc7",
+  "#d4a017",
+] as const;
+
 function readAccentColor(): string {
   const value = getComputedStyle(document.documentElement)
     .getPropertyValue("--inkwell-accent")
     .trim();
-  return value || "#4d73d7";
+  return value || GROUP_COLORS[0];
+}
+
+function groupColorAt(index: number): string {
+  return GROUP_COLORS[index % GROUP_COLORS.length] ?? GROUP_COLORS[0];
+}
+
+function strokeLength(points: Point[]): number {
+  let len = 0;
+  for (let i = 1; i < points.length; i++) {
+    len += Math.hypot(
+      points[i].x - points[i - 1].x,
+      points[i].y - points[i - 1].y,
+    );
+  }
+  return len;
+}
+
+/**
+ * Near-closed, roughly circular stroke → treat as a new Magic Move lasso
+ * (viewport/screen space). Short ticks and open trajectories stay charts.
+ */
+function isAlmostCircleStroke(points: Point[]): boolean {
+  if (points.length < 10) return false;
+  const perim = strokeLength(points);
+  if (perim < 48) return false;
+
+  const start = points[0];
+  const end = points[points.length - 1];
+  const gap = Math.hypot(end.x - start.x, end.y - start.y);
+  if (gap / perim > 0.22) return false;
+
+  let cx = 0;
+  let cy = 0;
+  for (const p of points) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= points.length;
+  cy /= points.length;
+
+  const radii = points.map((p) => Math.hypot(p.x - cx, p.y - cy));
+  const mean = radii.reduce((a, b) => a + b, 0) / radii.length;
+  if (mean < 14) return false;
+
+  let variance = 0;
+  for (const r of radii) variance += (r - mean) ** 2;
+  variance /= radii.length;
+  const cv = Math.sqrt(variance) / mean;
+  return cv < 0.28;
 }
 
 /** Path tangent at sample index (forward difference, last uses backward). */
@@ -98,7 +165,9 @@ function sampleAtFrame(
   if (frames.length === 0) return { ...samples[0] };
   if (frame <= frames[0] || samples.length === 1) return { ...samples[0] };
   const last = frames.length - 1;
-  if (frame >= frames[last]) return { ...samples[Math.min(last, samples.length - 1)] };
+  if (frame >= frames[last]) {
+    return { ...samples[Math.min(last, samples.length - 1)] };
+  }
 
   let i = 0;
   while (i < last - 1 && frames[i + 1] < frame) i++;
@@ -146,14 +215,12 @@ export class MagicMoveController {
   private historyManager: HistoryManager | null = null;
 
   private phase: Phase = "select";
-  private selectedItems: paper.PathItem[] = [];
+  private groups: MagicMoveGroup[] = [];
   private pendingExtractionSnapshot: Map<string, paper.PathItem[]> | null =
     null;
   private selectionNeedsPlacement = false;
 
   private marquee = new MarqueeTracker();
-  /** Committed chart strokes in world/stage space. */
-  private chartStrokesWorldPts: Point[][] = [];
   /** Live stroke being drawn in chart phase (viewport space). */
   private liveChartStroke: Point[] | null = null;
 
@@ -180,27 +247,53 @@ export class MagicMoveController {
     this.historyManager = hm;
   }
 
+  private liveItems(group: MagicMoveGroup): paper.PathItem[] {
+    return group.items.filter((item) => item.parent);
+  }
+
+  private allLiveItems(): paper.PathItem[] {
+    const out: paper.PathItem[] = [];
+    for (const group of this.groups) {
+      out.push(...this.liveItems(group));
+    }
+    return out;
+  }
+
+  private activeGroup(): MagicMoveGroup | null {
+    return this.groups.length > 0 ? this.groups[this.groups.length - 1] : null;
+  }
+
+  private syncSelectionStore(): void {
+    selectionStore.set({ items: [...this.allLiveItems()] });
+  }
+
   hasSelection(): boolean {
-    return this.selectedItems.some((item) => item.parent);
+    return this.allLiveItems().length > 0;
   }
 
   hasTransientUI(): boolean {
     return (
       this.hasSelection() ||
       this.marquee.isTracking() ||
-      this.chartStrokesWorldPts.length > 0 ||
+      this.groups.some((g) => g.chartStrokesWorldPts.length > 0) ||
       this.liveChartStroke !== null
     );
   }
 
-  canApply(): boolean {
-    if (!this.hasSelection() || this.phase !== "chart") return false;
-    if (this.chartStrokesWorldPts.length < 2) return false;
-    const settings = this.readSettings();
-    const strokes: ChartStroke[] = this.chartStrokesWorldPts.map((points) => ({
+  private groupChartOk(group: MagicMoveGroup, divisions: number): boolean {
+    if (this.liveItems(group).length === 0) return false;
+    const strokes: ChartStroke[] = group.chartStrokesWorldPts.map((points) => ({
       points,
     }));
-    return parseTimingChart(strokes, settings.divisions).ok;
+    return parseTimingChart(strokes, divisions).ok;
+  }
+
+  canApply(): boolean {
+    if (this.phase !== "chart" || this.groups.length === 0) return false;
+    const settings = this.readSettings();
+    const withItems = this.groups.filter((g) => this.liveItems(g).length > 0);
+    if (withItems.length === 0) return false;
+    return withItems.every((g) => this.groupChartOk(g, settings.divisions));
   }
 
   private publishUi(opts?: { openPopup?: boolean }): void {
@@ -225,7 +318,7 @@ export class MagicMoveController {
   }
 
   /**
-   * Union of selection + chart strokes in client (fixed) coordinates, padded
+   * Union of selections + chart strokes in client (fixed) coordinates, padded
    * so the Apply popup can sit outside the artwork.
    */
   private contentAvoidRectClient(): {
@@ -250,7 +343,7 @@ export class MagicMoveController {
     };
 
     const sel = this.paperRenderer.getSelectionFrameScreenBounds(
-      this.selectedItems.filter((item) => item.parent),
+      this.allLiveItems(),
     );
     if (sel) {
       includeScreen(sel.x, sel.y);
@@ -261,8 +354,13 @@ export class MagicMoveController {
       for (const p of pts) includeScreen(p.x, p.y);
     };
 
-    for (const stroke of this.chartStrokesWorldPts) {
-      includeViewportStroke(this.worldStrokeToViewport(stroke));
+    for (const group of this.groups) {
+      if (group.lassoWorldPts) {
+        includeViewportStroke(this.worldStrokeToViewport(group.lassoWorldPts));
+      }
+      for (const stroke of group.chartStrokesWorldPts) {
+        includeViewportStroke(this.worldStrokeToViewport(stroke));
+      }
     }
     if (this.liveChartStroke) {
       includeViewportStroke(this.liveChartStroke);
@@ -292,22 +390,18 @@ export class MagicMoveController {
     const vh = window.innerHeight;
 
     const candidates: Array<{ x: number; y: number }> = [
-      // Below center
       {
         x: (avoid.left + avoid.right) / 2,
         y: avoid.bottom + gap,
       },
-      // Above center
       {
         x: (avoid.left + avoid.right) / 2,
         y: avoid.top - gap - popupH,
       },
-      // Right middle
       {
         x: avoid.right + gap + popupW / 2,
         y: (avoid.top + avoid.bottom) / 2 - popupH / 2,
       },
-      // Left middle
       {
         x: avoid.left - gap - popupW / 2,
         y: (avoid.top + avoid.bottom) / 2 - popupH / 2,
@@ -342,7 +436,6 @@ export class MagicMoveController {
       if (fits(c.x, c.y) && !overlapsAvoid(c.x, c.y)) return c;
     }
 
-    // Fallback: clamp preferred-below into the viewport, even if slightly tight.
     let x = (avoid.left + avoid.right) / 2;
     let y = avoid.bottom + gap;
     x = Math.min(Math.max(x, margin + popupW / 2), vw - margin - popupW / 2);
@@ -359,18 +452,14 @@ export class MagicMoveController {
 
     if (this.phase === "select" || !this.hasSelection()) {
       this.phase = "select";
-      this.clearChart();
-      this.revertPendingSelection();
-      this.selectedItems = [];
-      this.selectionNeedsPlacement = false;
-      selectionStore.set({ items: [] });
+      this.resetGroups();
       this.marquee.start(viewportPoint);
       this.drawUI();
       this.publishUi();
       return;
     }
 
-    // Chart phase: start a new open stroke
+    // Chart phase: start a free stroke (chart tick/path, or almost-circle lasso).
     magicMoveUiStore.update((s) => ({ ...s, popupOpen: false }));
     this.liveChartStroke = [viewportPoint];
     this.drawUI();
@@ -395,33 +484,9 @@ export class MagicMoveController {
     if (this.marquee.isTracking()) {
       const lassoPoints = this.marquee.getLassoPoints();
       if (this.marquee.hasActiveMarquee("lasso") && lassoPoints.length >= 3) {
-        this.pendingExtractionSnapshot =
-          this.paperRenderer.captureSelectableLayersSnapshot("all");
-        this.selectedItems = this.paperRenderer.extractSelectionFromScreenLasso(
-          lassoPoints,
-          "all",
-          this.activeFrameItemFilter(),
-        );
-        this.selectionNeedsPlacement = this.selectedItems.length > 0;
-        if (!this.selectionNeedsPlacement) {
-          this.pendingExtractionSnapshot = null;
-          this.phase = "select";
-        } else {
-          this.phase = "chart";
-          const layerId = this.paperRenderer.getTopmostSelectedLayerId(
-            this.selectedItems,
-          );
-          if (layerId) {
-            this.paperRenderer.setActiveLayer(layerId);
-            layerStore.update((s) => ({ ...s, activeLayerId: layerId }));
-          }
-        }
-        selectionStore.set({ items: [...this.selectedItems] });
+        this.beginGroupFromLasso(lassoPoints);
       } else {
-        this.selectedItems = [];
-        this.pendingExtractionSnapshot = null;
-        this.selectionNeedsPlacement = false;
-        selectionStore.set({ items: [] });
+        this.resetGroups();
         this.phase = "select";
       }
       this.marquee.reset();
@@ -431,15 +496,23 @@ export class MagicMoveController {
     }
 
     if (this.liveChartStroke) {
-      if (this.liveChartStroke.length >= 2) {
-        this.chartStrokesWorldPts.push(
-          this.liveChartStroke.map((p) => {
-            const w = this.camera.screenToWorld(p.x, p.y);
-            return { x: w.x, y: w.y };
-          }),
-        );
-      }
+      const viewportStroke = this.liveChartStroke;
       this.liveChartStroke = null;
+
+      if (viewportStroke.length >= 10 && isAlmostCircleStroke(viewportStroke)) {
+        this.beginGroupFromLasso(viewportStroke);
+      } else if (viewportStroke.length >= 2) {
+        const active = this.activeGroup();
+        if (active) {
+          active.chartStrokesWorldPts.push(
+            viewportStroke.map((p) => {
+              const w = this.camera.screenToWorld(p.x, p.y);
+              return { x: w.x, y: w.y };
+            }),
+          );
+        }
+      }
+
       this.drawUI();
       this.publishUi({ openPopup: this.canApply() });
     }
@@ -458,50 +531,51 @@ export class MagicMoveController {
       this.publishUi();
       return;
     }
-    if (this.chartStrokesWorldPts.length > 0) {
-      this.clearChart();
+    const active = this.activeGroup();
+    if (active && active.chartStrokesWorldPts.length > 0) {
+      active.chartStrokesWorldPts = [];
+      this.drawUI();
+      this.publishUi();
+      return;
+    }
+    if (this.groups.length > 1) {
+      // Drop the newest lasso group; keep earlier ones.
+      this.groups.pop();
+      this.selectionNeedsPlacement = this.groups.length > 0;
+      this.pendingExtractionSnapshot = null;
+      this.syncSelectionStore();
       this.drawUI();
       this.publishUi();
       return;
     }
     if (this.hasSelection()) {
       this.revertPendingSelection();
-      this.selectedItems = [];
-      this.selectionNeedsPlacement = false;
-      selectionStore.set({ items: [] });
+      this.resetGroups();
       this.phase = "select";
       this.drawUI();
       this.publishUi();
     }
   }
 
-  /** Leave the tool: place or revert selection, clear chart. */
+  /** Leave the tool: place or revert selection, clear charts. */
   deactivate(): void {
-    this.clearChart();
+    this.liveChartStroke = null;
     if (this.selectionNeedsPlacement && this.hasSelection()) {
       this.placeSelection();
     } else if (this.selectionNeedsPlacement) {
       this.revertPendingSelection();
     }
-    this.selectedItems = [];
-    this.selectionNeedsPlacement = false;
-    this.pendingExtractionSnapshot = null;
+    this.resetGroups();
     this.marquee.reset();
-    this.liveChartStroke = null;
     this.phase = "select";
-    selectionStore.set({ items: [] });
     this.chromeLayer.clear();
     this.publishUi();
   }
 
   discardSelection(): void {
     this.revertPendingSelection();
-    this.selectedItems = [];
-    this.selectionNeedsPlacement = false;
-    this.pendingExtractionSnapshot = null;
-    this.clearChart();
+    this.resetGroups();
     this.phase = "select";
-    selectionStore.set({ items: [] });
     this.drawUI();
     this.publishUi();
   }
@@ -522,7 +596,92 @@ export class MagicMoveController {
     this.documentManager.commitDirtyLayerContent();
 
     const settings = this.readSettings();
-    const strokes: ChartStroke[] = this.chartStrokesWorldPts.map((points) => ({
+    const bakeGroups = this.groups.filter((g) => this.liveItems(g).length > 0);
+    if (bakeGroups.length === 0) {
+      return { ok: false, error: "Lasso a selection first." };
+    }
+
+    const layerIds = new Set<string>();
+    type BakeResult = {
+      layerIds: string[];
+      lastFrame: number;
+      exactPosition: boolean;
+      finalSample: { x: number; y: number };
+      finalRelativeDelta: { x: number; y: number };
+      finalRotateDeg: number;
+      childIndicesByLayer: Map<string, number[]>;
+    };
+    const bakeResults: BakeResult[] = [];
+
+    for (let gi = 0; gi < bakeGroups.length; gi++) {
+      const group = bakeGroups[gi];
+      const result = this.bakeGroup(group, settings, {
+        publish: false,
+      });
+      if (!result.ok) {
+        return {
+          ok: false,
+          error:
+            bakeGroups.length > 1
+              ? `Lasso ${gi + 1}: ${result.error}`
+              : result.error,
+        };
+      }
+      for (const id of result.layerIds) layerIds.add(id);
+      bakeResults.push(result);
+    }
+
+    // Shorter lassos hold their final pose through the longest group's end.
+    const maxLastFrame = bakeResults.reduce(
+      (max, r) => Math.max(max, r.lastFrame),
+      0,
+    );
+    if (maxLastFrame >= this.documentManager.getDuration()) {
+      this.documentManager.setDuration(maxLastFrame + 1);
+    }
+    for (const result of bakeResults) {
+      if (result.lastFrame >= maxLastFrame) continue;
+      this.holdGroupFinalPoseThrough(result, maxLastFrame);
+    }
+
+    this.selectionNeedsPlacement = false;
+    this.pendingExtractionSnapshot = null;
+    this.resetGroups();
+    this.phase = "select";
+
+    for (const layerId of layerIds) {
+      this.documentManager.invalidateLoadedLayer(layerId);
+    }
+    this.documentManager.reloadVisibleFrame();
+    this.historyManager.snapshot();
+
+    this.drawUI();
+    this.publishUi();
+    return { ok: true };
+  }
+
+  private bakeGroup(
+    group: MagicMoveGroup,
+    settings: MagicMoveSettings,
+    options: { publish: boolean },
+  ):
+    | {
+        ok: true;
+        layerIds: string[];
+        lastFrame: number;
+        exactPosition: boolean;
+        finalSample: { x: number; y: number };
+        finalRelativeDelta: { x: number; y: number };
+        finalRotateDeg: number;
+        childIndicesByLayer: Map<string, number[]>;
+      }
+    | { ok: false; error: string } {
+    if (!this.documentManager) {
+      return { ok: false, error: "Magic Move is not wired up." };
+    }
+
+    const selectedItems = this.liveItems(group);
+    const strokes: ChartStroke[] = group.chartStrokesWorldPts.map((points) => ({
       points,
     }));
     const parsed = parseTimingChart(strokes, settings.divisions);
@@ -548,14 +707,12 @@ export class MagicMoveController {
       this.documentManager.setDuration(lastFrame + 1);
     }
 
-    const bounds = this.paperRenderer.getCombinedBounds(this.selectedItems);
+    const bounds = this.paperRenderer.getCombinedBounds(selectedItems);
     if (!bounds) {
       return { ok: false, error: "Selection has no bounds." };
     }
 
     const sample0 = samples[0];
-    // Relative: offset from the first path sample. Exact snaps each frame’s
-    // selected-content center onto the sample (ignores hand-drawn spacing).
     const relativeDeltas = samples.map((s) => ({
       x: s.x - sample0.x,
       y: s.y - sample0.y,
@@ -566,7 +723,7 @@ export class MagicMoveController {
       : samples.map(() => 0);
 
     const byLayer = new Map<string, paper.PathItem[]>();
-    for (const item of this.selectedItems) {
+    for (const item of selectedItems) {
       if (!item.parent) continue;
       const layerId = this.paperRenderer.getLayerIdForPathItem(item);
       if (!layerId) continue;
@@ -582,9 +739,8 @@ export class MagicMoveController {
     const firstFrame = frames[0] ?? startFrame;
     const exactPosition = settings.position === "exact";
     const sampleFrameSet = new Set(frames);
+    const childIndicesByLayer = new Map<string, number[]>();
 
-    // Per layer: selection indices, playhead baseline, and every existing
-    // keyframe in the bake range (samples + keys that will sit in hold gaps).
     const layerBake = new Map<
       string,
       {
@@ -598,6 +754,7 @@ export class MagicMoveController {
       const layerItems = byLayer.get(layerId) ?? [];
       const childIndices =
         this.paperRenderer.getEmfBucketChildIndices(layerItems);
+      childIndicesByLayer.set(layerId, childIndices);
       const sourceJson = this.documentManager.getLayerContentAtFrame(
         layerId,
         startFrame,
@@ -635,8 +792,6 @@ export class MagicMoveController {
       );
     };
 
-    // Write Magic Move sample keys. Existing keys keep their artwork; only
-    // position is updated. Do not clear the range — keys in hold gaps stay.
     for (let i = 0; i < samples.length; i++) {
       const sample = samples[i];
       const frame = frames[i];
@@ -658,8 +813,6 @@ export class MagicMoveController {
       }
     }
 
-    // Keyframes that sit inside a Magic Move hold span: keep content, only
-    // move them onto the interpolated path position for that frame.
     for (const layerId of layerIds) {
       const bake = layerBake.get(layerId)!;
       for (const [frame, existing] of bake.existingInRange) {
@@ -683,30 +836,83 @@ export class MagicMoveController {
       }
     }
 
-    // Hold each Magic Move step through the next sample, stopping before any
-    // keyframe that remains in the gap.
     for (let i = 0; i < layerIds.length; i++) {
+      const isLast = i === layerIds.length - 1;
       this.documentManager.bridgeKeyframeHolds(layerIds[i], frames, {
-        publish: i === layerIds.length - 1,
+        publish: options.publish && isLast,
       });
     }
 
-    this.selectionNeedsPlacement = false;
-    this.pendingExtractionSnapshot = null;
-    this.selectedItems = [];
-    selectionStore.set({ items: [] });
-    this.clearChart();
-    this.phase = "select";
+    const lastIdx = samples.length - 1;
+    return {
+      ok: true,
+      layerIds,
+      lastFrame,
+      exactPosition,
+      finalSample: samples[lastIdx] ?? sample0,
+      finalRelativeDelta: relativeDeltas[lastIdx] ?? { x: 0, y: 0 },
+      finalRotateDeg: orientRotations[lastIdx] ?? 0,
+      childIndicesByLayer,
+    };
+  }
 
-    for (const layerId of layerIds) {
-      this.documentManager.invalidateLoadedLayer(layerId);
+  /**
+   * Keep a shorter lasso’s final pose through `throughFrame`: extend the last
+   * sample’s hold, and patch any later keyframes (e.g. from a longer lasso on
+   * the same layer) so this group’s shapes stay put.
+   */
+  private holdGroupFinalPoseThrough(
+    result: {
+      layerIds: string[];
+      lastFrame: number;
+      exactPosition: boolean;
+      finalSample: { x: number; y: number };
+      finalRelativeDelta: { x: number; y: number };
+      finalRotateDeg: number;
+      childIndicesByLayer: Map<string, number[]>;
+    },
+    throughFrame: number,
+  ): void {
+    if (!this.documentManager) return;
+
+    for (const layerId of result.layerIds) {
+      this.documentManager.extendKeyframeHoldThrough(
+        layerId,
+        result.lastFrame,
+        throughFrame,
+        { publish: false },
+      );
+
+      const childIndices = result.childIndicesByLayer.get(layerId) ?? [];
+      if (childIndices.length === 0) continue;
+
+      const laterKeys = this.documentManager.getKeyframeFramesInRange(
+        layerId,
+        result.lastFrame + 1,
+        throughFrame,
+      );
+      for (const frame of laterKeys) {
+        const existing =
+          this.documentManager.getExactKeyframeContentAtFrame(layerId, frame);
+        if (existing === null || !existing) continue;
+        const json = this.paperRenderer.transformLayerJsonChildren(
+          existing,
+          childIndices,
+          result.exactPosition
+            ? {
+                moveCenterTo: result.finalSample,
+                rotateDeg: result.finalRotateDeg,
+              }
+            : {
+                delta: result.finalRelativeDelta,
+                rotateDeg: result.finalRotateDeg,
+              },
+        );
+        this.documentManager.writeLayerContentAtFrame(layerId, frame, json, {
+          publish: false,
+        });
+      }
     }
-    this.documentManager.reloadVisibleFrame();
-    this.historyManager.snapshot();
-
-    this.drawUI();
-    this.publishUi();
-    return { ok: true };
   }
 
   // ============================================================
@@ -715,33 +921,66 @@ export class MagicMoveController {
 
   drawUI(): void {
     this.chromeLayer.clear();
-    const accent = readAccentColor();
+    const nextColor = groupColorAt(this.groups.length);
 
-    if (this.hasSelection()) {
-      this.paperRenderer.drawAccentSelectionOutline(
-        this.selectedItems,
-        this.chromeCtx,
-        accent,
-      );
+    for (const group of this.groups) {
+      const items = this.liveItems(group);
+      if (items.length > 0) {
+        this.paperRenderer.drawAccentSelectionOutline(
+          items,
+          this.chromeCtx,
+          group.color,
+        );
+      }
+      if (group.lassoWorldPts && group.lassoWorldPts.length >= 3) {
+        this.chromeLayer.drawLassoPreview(
+          this.worldStrokeToViewport(group.lassoWorldPts),
+          {
+            denseDash: true,
+            fill: true,
+            closed: true,
+            strokeColor: group.color,
+            fillColor: group.color,
+            glow: true,
+          },
+        );
+      }
+      for (const stroke of group.chartStrokesWorldPts) {
+        this.chromeLayer.drawChartStroke(
+          this.worldStrokeToViewport(stroke),
+          group.color,
+        );
+      }
     }
 
-    for (const stroke of this.chartStrokesWorldPts) {
-      this.chromeLayer.drawChartStroke(
-        this.worldStrokeToViewport(stroke),
-        accent,
-      );
-    }
     if (this.liveChartStroke && this.liveChartStroke.length >= 2) {
-      this.chromeLayer.drawChartStroke(this.liveChartStroke, accent);
+      const active = this.activeGroup();
+      const liveIsLasso = isAlmostCircleStroke(this.liveChartStroke);
+      const color = liveIsLasso
+        ? nextColor
+        : (active?.color ?? readAccentColor());
+      if (liveIsLasso) {
+        this.chromeLayer.drawLassoPreview(this.liveChartStroke, {
+          denseDash: true,
+          fill: true,
+          closed: true,
+          strokeColor: color,
+          fillColor: color,
+          glow: true,
+        });
+      } else {
+        this.chromeLayer.drawChartStroke(this.liveChartStroke, color);
+      }
     }
 
     if (this.marquee.isTracking()) {
+      const color = groupColorAt(0);
       this.chromeLayer.drawLassoPreview(this.marquee.getLassoPoints(), {
         denseDash: true,
         fill: true,
         closed: true,
-        strokeColor: accent,
-        fillColor: accent,
+        strokeColor: color,
+        fillColor: color,
         glow: true,
       });
     }
@@ -750,6 +989,60 @@ export class MagicMoveController {
   // ============================================================
   // Internals
   // ============================================================
+
+  private beginGroupFromLasso(lassoViewportPts: Point[]): void {
+    // Commit prior group carves before cutting a new selection.
+    if (this.selectionNeedsPlacement && this.hasSelection()) {
+      this.placeSelection();
+      this.documentManager?.commitDirtyLayerContent();
+    }
+
+    const scope = this.readSettings().scope;
+    this.pendingExtractionSnapshot =
+      this.paperRenderer.captureSelectableLayersSnapshot(scope);
+    const items = this.paperRenderer.extractSelectionFromScreenLasso(
+      lassoViewportPts,
+      scope,
+      this.activeFrameItemFilter(),
+    );
+
+    if (items.length === 0) {
+      this.pendingExtractionSnapshot = null;
+      if (this.groups.length === 0) this.phase = "select";
+      this.syncSelectionStore();
+      return;
+    }
+
+    const color = groupColorAt(this.groups.length);
+    const lassoWorldPts = lassoViewportPts.map((p) => {
+      const w = this.camera.screenToWorld(p.x, p.y);
+      return { x: w.x, y: w.y };
+    });
+
+    this.groups.push({
+      color,
+      items,
+      chartStrokesWorldPts: [],
+      lassoWorldPts,
+    });
+    this.selectionNeedsPlacement = true;
+    this.phase = "chart";
+
+    const layerId = this.paperRenderer.getTopmostSelectedLayerId(items);
+    if (layerId) {
+      this.paperRenderer.setActiveLayer(layerId);
+      layerStore.update((s) => ({ ...s, activeLayerId: layerId }));
+    }
+    this.syncSelectionStore();
+  }
+
+  private resetGroups(): void {
+    this.groups = [];
+    this.selectionNeedsPlacement = false;
+    this.pendingExtractionSnapshot = null;
+    this.liveChartStroke = null;
+    selectionStore.set({ items: [] });
+  }
 
   /**
    * While EMF is on, Magic Move may only lasso the active (playhead) frame’s
@@ -782,6 +1075,7 @@ export class MagicMoveController {
           ? raw.steps
           : 1;
     return {
+      scope: raw.scope === "active" ? "active" : "all",
       timing: raw.timing === "duration" ? "duration" : "step",
       step: typeof raw.step === "number" ? raw.step : 1,
       duration: typeof raw.duration === "number" ? raw.duration : 48,
@@ -798,13 +1092,8 @@ export class MagicMoveController {
     });
   }
 
-  private clearChart(): void {
-    this.chartStrokesWorldPts = [];
-    this.liveChartStroke = null;
-  }
-
   private placeSelection(): void {
-    for (const item of this.selectedItems) {
+    for (const item of this.allLiveItems()) {
       if (item.parent) this.paperRenderer.placeSelection(item);
     }
     this.selectionNeedsPlacement = false;

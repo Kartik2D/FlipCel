@@ -1,12 +1,15 @@
 /**
  * Magnet Controller
  *
- * Soft-drag brush. On pointer down, every segment on the active layer whose
- * screen-space anchor falls within the brush radius is captured with a
- * distance-based falloff weight (smooth raised cosine: 1 at center, 0 at the
- * edge). Each pointer move translates those anchors by the pointer's world
- * delta scaled by their individual weights, producing a soft "magnetic"
- * deformation similar to Moho's magnet tool.
+ * Soft-drag brush. On pointer down, every segment anchor and bezier handle tip
+ * on the active layer whose screen-space position falls within the brush radius
+ * is captured with a distance-based falloff weight (smooth raised cosine: 1 at
+ * center, 0 at the edge). Each pointer move translates those points by the
+ * pointer's world delta scaled by their individual weights.
+ *
+ * Anchors and handle tips are weighted independently from their own screen
+ * positions, so curves deform with the field instead of leaving stale handle
+ * directions behind (a common “weird curve” failure mode).
  *
  * Unlike direct-select there is no on-screen vertex display; the only visible
  * feedback is the brush ring owned by FeedbackLayer.
@@ -26,6 +29,15 @@ interface CapturedAnchor {
   weight: number;
 }
 
+interface CapturedHandle {
+  item: paper.PathItem;
+  path: paper.Path;
+  segment: paper.Segment;
+  side: "in" | "out";
+  /** Falloff from the handle tip’s screen position. */
+  weight: number;
+}
+
 export class MagnetController {
   private config: CanvasConfig;
   private paperRenderer: PaperRenderer;
@@ -37,7 +49,8 @@ export class MagnetController {
   /** Brush diameter in viewport/screen pixels. */
   private size = 120;
 
-  private captured: CapturedAnchor[] = [];
+  private capturedAnchors: CapturedAnchor[] = [];
+  private capturedHandles: CapturedHandle[] = [];
   private affectedItems: Set<paper.PathItem> = new Set();
   private lastWorldPoint: Point | null = null;
   private didMove = false;
@@ -99,23 +112,65 @@ export class MagnetController {
     const radius = this.size / 2;
     const r2 = radius * radius;
 
-    this.captured = [];
+    this.capturedAnchors = [];
+    this.capturedHandles = [];
     this.affectedItems = new Set();
+
+    const weightAt = (worldX: number, worldY: number): number | null => {
+      const screen = this.camera.worldToScreen(worldX, worldY);
+      const dx = screen.x - viewportPoint.x;
+      const dy = screen.y - viewportPoint.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > r2) return null;
+      const t = Math.sqrt(d2) / radius;
+      // Raised cosine falloff: smooth, 1 at center, 0 at edge.
+      return 0.5 * (1 + Math.cos(Math.PI * t));
+    };
 
     for (const item of this.paperRenderer.getAllPaths()) {
       const paths = this.paperRenderer.getChildPaths(item);
       for (const path of paths) {
         for (const seg of path.segments) {
-          const screen = this.camera.worldToScreen(seg.point.x, seg.point.y);
-          const dx = screen.x - viewportPoint.x;
-          const dy = screen.y - viewportPoint.y;
-          const d2 = dx * dx + dy * dy;
-          if (d2 > r2) continue;
-          const t = Math.sqrt(d2) / radius;
-          // Raised cosine falloff: smooth, 1 at center, 0 at edge.
-          const weight = 0.5 * (1 + Math.cos(Math.PI * t));
-          this.captured.push({ item, path, segment: seg, weight });
-          this.affectedItems.add(item);
+          const anchorWeight = weightAt(seg.point.x, seg.point.y);
+          if (anchorWeight !== null) {
+            this.capturedAnchors.push({
+              item,
+              path,
+              segment: seg,
+              weight: anchorWeight,
+            });
+            this.affectedItems.add(item);
+          }
+
+          if (!seg.handleIn.isZero()) {
+            const tip = seg.point.add(seg.handleIn);
+            const handleWeight = weightAt(tip.x, tip.y);
+            if (handleWeight !== null) {
+              this.capturedHandles.push({
+                item,
+                path,
+                segment: seg,
+                side: "in",
+                weight: handleWeight,
+              });
+              this.affectedItems.add(item);
+            }
+          }
+
+          if (!seg.handleOut.isZero()) {
+            const tip = seg.point.add(seg.handleOut);
+            const handleWeight = weightAt(tip.x, tip.y);
+            if (handleWeight !== null) {
+              this.capturedHandles.push({
+                item,
+                path,
+                segment: seg,
+                side: "out",
+                weight: handleWeight,
+              });
+              this.affectedItems.add(item);
+            }
+          }
         }
       }
     }
@@ -126,7 +181,11 @@ export class MagnetController {
   }
 
   handleMove(point: Point): void {
-    if (!this.isActive || this.captured.length === 0 || !this.lastWorldPoint) {
+    if (
+      !this.isActive ||
+      (this.capturedAnchors.length === 0 && this.capturedHandles.length === 0) ||
+      !this.lastWorldPoint
+    ) {
       return;
     }
     const viewportPoint = pixelToViewport(point, this.config);
@@ -136,15 +195,41 @@ export class MagnetController {
     const dy = worldPoint.y - this.lastWorldPoint.y;
     if (dx === 0 && dy === 0) return;
 
-    for (const c of this.captured) {
+    // Anchor weights for the same segment — used so handle tips move by their
+    // own weight in absolute space after the anchor has already moved.
+    const anchorWeightBySegment = new Map<paper.Segment, number>();
+    for (const c of this.capturedAnchors) {
       if (c.weight <= 0) continue;
-      const wx = dx * c.weight;
-      const wy = dy * c.weight;
+      anchorWeightBySegment.set(c.segment, c.weight);
       c.segment.point = new paper.Point(
-        c.segment.point.x + wx,
-        c.segment.point.y + wy,
+        c.segment.point.x + dx * c.weight,
+        c.segment.point.y + dy * c.weight,
       );
     }
+
+    for (const c of this.capturedHandles) {
+      if (c.weight <= 0) continue;
+      const anchorWeight = anchorWeightBySegment.get(c.segment) ?? 0;
+      // Absolute tip should move by handleWeight * delta. Moving the anchor
+      // already carried the tip by anchorWeight * delta, so adjust relative
+      // handles by the difference.
+      const extra = c.weight - anchorWeight;
+      if (extra === 0) continue;
+      const hx = dx * extra;
+      const hy = dy * extra;
+      if (c.side === "in") {
+        c.segment.handleIn = new paper.Point(
+          c.segment.handleIn.x + hx,
+          c.segment.handleIn.y + hy,
+        );
+      } else {
+        c.segment.handleOut = new paper.Point(
+          c.segment.handleOut.x + hx,
+          c.segment.handleOut.y + hy,
+        );
+      }
+    }
+
     paper.view.update();
 
     this.lastWorldPoint = { x: worldPoint.x, y: worldPoint.y };
@@ -173,15 +258,11 @@ export class MagnetController {
   }
 
   private resetStroke(): void {
-    this.captured = [];
+    this.capturedAnchors = [];
+    this.capturedHandles = [];
     this.affectedItems = new Set();
     this.lastWorldPoint = null;
     this.didMove = false;
     this.isActive = false;
   }
-
-  // ============================================================
-  // Helpers
-  // ============================================================
-
 }

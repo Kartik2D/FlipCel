@@ -91,6 +91,12 @@ export const magnet: ToolDefinition<typeof magnetSettings> = {
 // ============================================================
 
 const magicMoveSettings = {
+  scope: {
+    type: "toggle",
+    options: ["active", "all"] as const,
+    default: "all",
+    label: "Layers",
+  },
   timing: {
     type: "toggle",
     options: ["step", "duration"] as const,

@@ -26,9 +26,9 @@ export class InkwellToolsPanel extends FloatingPanel {
 
   /** Panel tool order; pan is dock-only and omitted here. */
   private static readonly TOOL_GROUPS: ToolId[][] = [
-    ["select", "direct-select"],
+    ["select", "direct-select", "magic-move"],
     ["brush", "lasso", "rect", "circle"],
-    ["magnet", "magic-move", "eyedropper"],
+    ["magnet", "eyedropper"],
   ];
 
   static styles = css`
