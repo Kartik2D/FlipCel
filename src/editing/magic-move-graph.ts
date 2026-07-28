@@ -24,7 +24,16 @@ export interface PathSample {
 }
 
 export type GraphParseResult =
-  | { ok: true; samples: PathSample[]; tickCount: number }
+  | {
+      ok: true;
+      samples: PathSample[];
+      tickCount: number;
+      /**
+       * Uniform scale at each timing tick, relative to the first tick’s length
+       * (tickScales[0] === 1). Used when Magic Move Scale is on.
+       */
+      tickScales: number[];
+    }
   | { ok: false; error: string };
 
 function strokeLength(points: Point[]): number {
@@ -77,7 +86,7 @@ export function parseTimingChart(
   }
 
   const trajectory = pathFromPoints(usable[trajIndex].points);
-  const tickOffsets: number[] = [];
+  const tickHits: Array<{ offset: number; length: number }> = [];
 
   try {
     for (let i = 0; i < usable.length; i++) {
@@ -99,25 +108,28 @@ export function parseTimingChart(
             best = hit;
           }
         }
-        tickOffsets.push(best.offset);
+        tickHits.push({
+          offset: best.offset,
+          length: Math.max(1e-6, strokeLength(usable[i].points)),
+        });
       } finally {
         tick.remove();
       }
     }
 
-    if (tickOffsets.length < 2) {
+    if (tickHits.length < 2) {
       return {
         ok: false,
         error: "Need at least two timing ticks intersecting the trajectory.",
       };
     }
 
-    tickOffsets.sort((a, b) => a - b);
-    // Deduplicate near-identical offsets
-    const unique: number[] = [tickOffsets[0]];
-    for (let i = 1; i < tickOffsets.length; i++) {
-      if (tickOffsets[i] - unique[unique.length - 1] > 1e-4) {
-        unique.push(tickOffsets[i]);
+    tickHits.sort((a, b) => a.offset - b.offset);
+    // Deduplicate near-identical offsets (keep the first tick’s length).
+    const unique: Array<{ offset: number; length: number }> = [tickHits[0]];
+    for (let i = 1; i < tickHits.length; i++) {
+      if (tickHits[i].offset - unique[unique.length - 1].offset > 1e-4) {
+        unique.push(tickHits[i]);
       }
     }
     if (unique.length < 2) {
@@ -126,6 +138,9 @@ export function parseTimingChart(
         error: "Need at least two distinct timing ticks on the trajectory.",
       };
     }
+
+    const baseLen = unique[0].length;
+    const tickScales = unique.map((t) => t.length / baseLen);
 
     const subdiv = Math.max(1, Math.round(steps));
     const samples: PathSample[] = [];
@@ -142,17 +157,17 @@ export function parseTimingChart(
       });
     };
 
-    pushAt(unique[0], 0, 0);
+    pushAt(unique[0].offset, 0, 0);
     for (let t = 0; t < unique.length - 1; t++) {
-      const oA = unique[t];
-      const oB = unique[t + 1];
+      const oA = unique[t].offset;
+      const oB = unique[t + 1].offset;
       for (let k = 1; k <= subdiv; k++) {
         const offset = oA + ((oB - oA) * k) / subdiv;
         pushAt(offset, t, k);
       }
     }
 
-    return { ok: true, samples, tickCount: unique.length };
+    return { ok: true, samples, tickCount: unique.length, tickScales };
   } finally {
     trajectory.remove();
   }
@@ -211,4 +226,26 @@ export function mapSamplesToFrames(
   }
 
   return frames.slice(0, sampleCount);
+}
+
+/**
+ * Per-sample uniform scale from tick lengths. First tick is 1; later ticks are
+ * length_i / length_0. Subdivided samples lerp between neighboring ticks.
+ */
+export function scalesForSamples(
+  samples: PathSample[],
+  tickScales: number[],
+  steps: number,
+): number[] {
+  if (samples.length === 0) return [];
+  if (tickScales.length === 0) return samples.map(() => 1);
+  const subdiv = Math.max(1, Math.round(steps));
+  return samples.map((s) => {
+    const a = tickScales[Math.min(s.tickInterval, tickScales.length - 1)] ?? 1;
+    const b =
+      tickScales[Math.min(s.tickInterval + 1, tickScales.length - 1)] ?? a;
+    if (subdiv <= 0) return a;
+    const t = Math.max(0, Math.min(1, s.stepIndex / subdiv));
+    return a + (b - a) * t;
+  });
 }

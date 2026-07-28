@@ -25,6 +25,7 @@ import { MarqueeTracker } from "./marquee";
 import {
   parseTimingChart,
   mapSamplesToFrames,
+  scalesForSamples,
   type ChartStroke,
 } from "./magic-move-graph";
 
@@ -36,7 +37,8 @@ interface MagicMoveSettings {
   step: number;
   duration: number;
   divisions: number;
-  position: "relative" | "exact";
+  position: "off" | "relative" | "exact";
+  scale: "off" | "on";
   orient: "fixed" | "direction";
 }
 
@@ -203,6 +205,28 @@ function rotationAtFrame(
   const r1 = rotations[Math.min(i + 1, rotations.length - 1)];
   const span = Math.max(1, f1 - f0);
   return lerpAngleDeg(r0, r1, (frame - f0) / span);
+}
+
+function scaleAtFrame(
+  frame: number,
+  frames: number[],
+  scales: number[],
+): number {
+  if (scales.length === 0) return 1;
+  if (frames.length === 0) return scales[0];
+  if (frame <= frames[0] || scales.length === 1) return scales[0];
+  const last = frames.length - 1;
+  if (frame >= frames[last]) {
+    return scales[Math.min(last, scales.length - 1)];
+  }
+  let i = 0;
+  while (i < last - 1 && frames[i + 1] < frame) i++;
+  const f0 = frames[i];
+  const f1 = frames[i + 1];
+  const s0 = scales[Math.min(i, scales.length - 1)];
+  const s1 = scales[Math.min(i + 1, scales.length - 1)];
+  const span = Math.max(1, f1 - f0);
+  return s0 + (s1 - s0) * ((frame - f0) / span);
 }
 
 export class MagicMoveController {
@@ -605,11 +629,15 @@ export class MagicMoveController {
     type BakeResult = {
       layerIds: string[];
       lastFrame: number;
-      exactPosition: boolean;
+      positionMode: "off" | "relative" | "exact";
       finalSample: { x: number; y: number };
       finalRelativeDelta: { x: number; y: number };
       finalRotateDeg: number;
+      finalScale: number;
       childIndicesByLayer: Map<string, number[]>;
+      frame1JsonByLayer: Map<string, string>;
+      frame1SizeByLayer: Map<string, number>;
+      scaleEnabled: boolean;
     };
     const bakeResults: BakeResult[] = [];
 
@@ -669,11 +697,15 @@ export class MagicMoveController {
         ok: true;
         layerIds: string[];
         lastFrame: number;
-        exactPosition: boolean;
+        positionMode: "off" | "relative" | "exact";
         finalSample: { x: number; y: number };
         finalRelativeDelta: { x: number; y: number };
         finalRotateDeg: number;
+        finalScale: number;
         childIndicesByLayer: Map<string, number[]>;
+        frame1JsonByLayer: Map<string, string>;
+        frame1SizeByLayer: Map<string, number>;
+        scaleEnabled: boolean;
       }
     | { ok: false; error: string } {
     if (!this.documentManager) {
@@ -687,7 +719,7 @@ export class MagicMoveController {
     const parsed = parseTimingChart(strokes, settings.divisions);
     if (!parsed.ok) return parsed;
 
-    const { samples, tickCount } = parsed;
+    const { samples, tickCount, tickScales } = parsed;
     const framesPerTick =
       settings.timing === "duration"
         ? Math.max(1, Math.ceil(settings.duration / Math.max(1, tickCount - 1)))
@@ -721,6 +753,10 @@ export class MagicMoveController {
     const orientRotations = orientToDirection
       ? orientRotationsDeg(samples)
       : samples.map(() => 0);
+    const scaleEnabled = settings.scale === "on";
+    const sampleScales = scaleEnabled
+      ? scalesForSamples(samples, tickScales, settings.divisions)
+      : samples.map(() => 1);
 
     const byLayer = new Map<string, paper.PathItem[]>();
     for (const item of selectedItems) {
@@ -737,7 +773,9 @@ export class MagicMoveController {
 
     const layerIds = [...byLayer.keys()];
     const firstFrame = frames[0] ?? startFrame;
-    const exactPosition = settings.position === "exact";
+    const positionMode = settings.position;
+    const exactPosition = positionMode === "exact";
+    const positionEnabled = positionMode !== "off";
     const sampleFrameSet = new Set(frames);
     const childIndicesByLayer = new Map<string, number[]>();
 
@@ -745,8 +783,11 @@ export class MagicMoveController {
       string,
       {
         childIndices: number[];
+        /** Artwork at the first Magic Move sample (scale baseline). */
+        frame1Json: string;
         sourceJson: string;
         existingInRange: Map<number, string>;
+        frame1Size: number;
       }
     >();
 
@@ -771,7 +812,24 @@ export class MagicMoveController {
         );
         if (exact !== null) existingInRange.set(frame, exact);
       }
-      layerBake.set(layerId, { childIndices, sourceJson, existingInRange });
+      const frame1Json =
+        existingInRange.get(firstFrame) ??
+        this.documentManager.getExactKeyframeContentAtFrame(
+          layerId,
+          firstFrame,
+        ) ??
+        sourceJson;
+      const frame1Size = this.paperRenderer.getLayerJsonChildrenSize(
+        frame1Json,
+        childIndices,
+      );
+      layerBake.set(layerId, {
+        childIndices,
+        frame1Json,
+        sourceJson,
+        existingInRange,
+        frame1Size,
+      });
     }
 
     const positionedJson = (
@@ -780,15 +838,31 @@ export class MagicMoveController {
       sample: { x: number; y: number },
       relativeDelta: { x: number; y: number },
       rotateDeg: number,
+      tickScale: number,
+      frame1Size: number,
     ): string => {
       if (!baseJson) return "";
       if (childIndices.length === 0) return baseJson;
+      // Tick scale is relative to frame 1: targetSize = frame1Size * tickScale.
+      // Convert to a multiplier on whatever artwork we're transforming now.
+      let scale = tickScale;
+      if (scaleEnabled && frame1Size > 1e-6) {
+        const currentSize = this.paperRenderer.getLayerJsonChildrenSize(
+          baseJson,
+          childIndices,
+        );
+        if (currentSize > 1e-6) {
+          scale = (frame1Size * tickScale) / currentSize;
+        }
+      }
       return this.paperRenderer.transformLayerJsonChildren(
         baseJson,
         childIndices,
-        exactPosition
-          ? { moveCenterTo: sample, rotateDeg }
-          : { delta: relativeDelta, rotateDeg },
+        !positionEnabled
+          ? { rotateDeg, scale }
+          : exactPosition
+            ? { moveCenterTo: sample, rotateDeg, scale }
+            : { delta: relativeDelta, rotateDeg, scale },
       );
     };
 
@@ -798,14 +872,23 @@ export class MagicMoveController {
 
       for (const layerId of layerIds) {
         const bake = layerBake.get(layerId)!;
+        // Scale is always relative to frame 1 artwork. With scale on, bake from
+        // frame 1 content so later ticks don't compound off other keyframes.
+        // Position-only (scale off) still preserves per-frame existing art.
         const existing = bake.existingInRange.get(frame);
-        const baseJson = existing !== undefined ? existing : bake.sourceJson;
+        const baseJson = scaleEnabled
+          ? bake.frame1Json
+          : existing !== undefined
+            ? existing
+            : bake.sourceJson;
         const json = positionedJson(
           baseJson,
           bake.childIndices,
           sample,
           relativeDeltas[i],
           orientRotations[i] ?? 0,
+          sampleScales[i] ?? 1,
+          bake.frame1Size,
         );
         this.documentManager.writeLayerContentAtFrame(layerId, frame, json, {
           publish: false,
@@ -823,12 +906,16 @@ export class MagicMoveController {
           x: sample.x - sample0.x,
           y: sample.y - sample0.y,
         };
+        const tickScale = scaleAtFrame(frame, frames, sampleScales);
+        const baseJson = scaleEnabled ? bake.frame1Json : existing;
         const json = positionedJson(
-          existing,
+          baseJson,
           bake.childIndices,
           sample,
           relativeDelta,
           rotationAtFrame(frame, frames, orientRotations),
+          tickScale,
+          bake.frame1Size,
         );
         this.documentManager.writeLayerContentAtFrame(layerId, frame, json, {
           publish: false,
@@ -848,11 +935,19 @@ export class MagicMoveController {
       ok: true,
       layerIds,
       lastFrame,
-      exactPosition,
+      positionMode,
       finalSample: samples[lastIdx] ?? sample0,
       finalRelativeDelta: relativeDeltas[lastIdx] ?? { x: 0, y: 0 },
       finalRotateDeg: orientRotations[lastIdx] ?? 0,
+      finalScale: sampleScales[lastIdx] ?? 1,
       childIndicesByLayer,
+      frame1JsonByLayer: new Map(
+        [...layerBake.entries()].map(([id, b]) => [id, b.frame1Json]),
+      ),
+      frame1SizeByLayer: new Map(
+        [...layerBake.entries()].map(([id, b]) => [id, b.frame1Size]),
+      ),
+      scaleEnabled,
     };
   }
 
@@ -865,11 +960,15 @@ export class MagicMoveController {
     result: {
       layerIds: string[];
       lastFrame: number;
-      exactPosition: boolean;
+      positionMode: "off" | "relative" | "exact";
       finalSample: { x: number; y: number };
       finalRelativeDelta: { x: number; y: number };
       finalRotateDeg: number;
+      finalScale: number;
       childIndicesByLayer: Map<string, number[]>;
+      frame1JsonByLayer: Map<string, string>;
+      frame1SizeByLayer: Map<string, number>;
+      scaleEnabled: boolean;
     },
     throughFrame: number,
   ): void {
@@ -895,18 +994,39 @@ export class MagicMoveController {
         const existing =
           this.documentManager.getExactKeyframeContentAtFrame(layerId, frame);
         if (existing === null || !existing) continue;
+        const frame1Json = result.frame1JsonByLayer.get(layerId) ?? existing;
+        const frame1Size = result.frame1SizeByLayer.get(layerId) ?? 0;
+        const baseJson = result.scaleEnabled ? frame1Json : existing;
+        let scale = result.finalScale;
+        if (result.scaleEnabled && frame1Size > 1e-6) {
+          const currentSize = this.paperRenderer.getLayerJsonChildrenSize(
+            baseJson,
+            childIndices,
+          );
+          if (currentSize > 1e-6) {
+            scale = (frame1Size * result.finalScale) / currentSize;
+          }
+        }
+        const positionEnabled = result.positionMode !== "off";
         const json = this.paperRenderer.transformLayerJsonChildren(
-          existing,
+          baseJson,
           childIndices,
-          result.exactPosition
+          !positionEnabled
             ? {
-                moveCenterTo: result.finalSample,
                 rotateDeg: result.finalRotateDeg,
+                scale,
               }
-            : {
-                delta: result.finalRelativeDelta,
-                rotateDeg: result.finalRotateDeg,
-              },
+            : result.positionMode === "exact"
+              ? {
+                  moveCenterTo: result.finalSample,
+                  rotateDeg: result.finalRotateDeg,
+                  scale,
+                }
+              : {
+                  delta: result.finalRelativeDelta,
+                  rotateDeg: result.finalRotateDeg,
+                  scale,
+                },
         );
         this.documentManager.writeLayerContentAtFrame(layerId, frame, json, {
           publish: false,
@@ -1080,7 +1200,13 @@ export class MagicMoveController {
       step: typeof raw.step === "number" ? raw.step : 1,
       duration: typeof raw.duration === "number" ? raw.duration : 48,
       divisions,
-      position: raw.position === "exact" ? "exact" : "relative",
+      position:
+        raw.position === "exact"
+          ? "exact"
+          : raw.position === "off"
+            ? "off"
+            : "relative",
+      scale: raw.scale === "on" ? "on" : "off",
       orient: raw.orient === "direction" ? "direction" : "fixed",
     };
   }

@@ -1827,9 +1827,39 @@ export class PaperRenderer {
   }
 
   /**
-   * Import layer JSON, optionally rotate selected children around their union
-   * center, then translate (relative delta or exact center snap). Does not
-   * touch the live layer.
+   * Characteristic size of selected top-level children in layer JSON
+   * (max of union width/height). Used so Magic Move scale stays relative to
+   * frame 1 even when later keyframes have different native sizes.
+   */
+  getLayerJsonChildrenSize(json: string, childIndices: number[]): number {
+    if (!json || childIndices.length === 0) return 0;
+    const scratch = new paper.Layer();
+    scratch.importJSON(json);
+    const unique = [...new Set(childIndices)].sort((a, b) => a - b);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let any = false;
+    for (const idx of unique) {
+      const child = scratch.children[idx];
+      if (!child) continue;
+      const b = child.bounds;
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.width);
+      maxY = Math.max(maxY, b.y + b.height);
+      any = true;
+    }
+    scratch.remove();
+    if (!any) return 0;
+    return Math.max(maxX - minX, maxY - minY);
+  }
+
+  /**
+   * Import layer JSON, optionally scale/rotate selected children around their
+   * union center, then translate (relative delta or exact center snap). Does
+   * not touch the live layer.
    */
   transformLayerJsonChildren(
     json: string,
@@ -1838,14 +1868,21 @@ export class PaperRenderer {
       delta?: { x: number; y: number };
       moveCenterTo?: { x: number; y: number };
       rotateDeg?: number;
+      /** Uniform scale about the selection center (1 = unchanged). */
+      scale?: number;
     },
   ): string {
     if (!json || childIndices.length === 0) return json;
     const rotateDeg = opts.rotateDeg ?? 0;
+    const scale =
+      typeof opts.scale === "number" && Number.isFinite(opts.scale)
+        ? opts.scale
+        : 1;
     const delta = opts.delta;
     const moveCenterTo = opts.moveCenterTo;
     if (
       rotateDeg === 0 &&
+      Math.abs(scale - 1) < 1e-9 &&
       !moveCenterTo &&
       (!delta || (delta.x === 0 && delta.y === 0))
     ) {
@@ -1879,6 +1916,14 @@ export class PaperRenderer {
       }
       return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
     };
+
+    if (Math.abs(scale - 1) >= 1e-9 && scale > 0) {
+      const pivot = centerOf();
+      const origin = new paper.Point(pivot.x, pivot.y);
+      for (const item of items) {
+        item.scale(scale, origin);
+      }
+    }
 
     if (rotateDeg !== 0) {
       const pivot = centerOf();

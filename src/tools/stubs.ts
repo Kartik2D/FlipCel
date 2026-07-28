@@ -129,9 +129,15 @@ const magicMoveSettings = {
   },
   position: {
     type: "toggle",
-    options: ["relative", "exact"] as const,
+    options: ["off", "relative", "exact"] as const,
     default: "relative",
     label: "Position",
+  },
+  scale: {
+    type: "toggle",
+    options: ["off", "on"] as const,
+    default: "off",
+    label: "Scale",
   },
   orient: {
     type: "toggle",
