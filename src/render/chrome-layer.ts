@@ -155,6 +155,50 @@ export class ChromeLayer {
     });
   }
 
+  /**
+   * Short hash marks perpendicular to the trajectory at Magic Move division
+   * samples (viewport space). Lighter than user-drawn timing ticks.
+   */
+  drawChartDivisionMarks(
+    marks: Array<{ x: number; y: number; tx: number; ty: number }>,
+    strokeColor?: string,
+    opts: { halfLength?: number } = {},
+  ): void {
+    if (marks.length === 0) return;
+    const half = opts.halfLength ?? 5;
+    const color = strokeColor ?? "#000000";
+
+    this.ctx.save();
+    this.ctx.lineCap = "round";
+    this.ctx.lineJoin = "round";
+
+    for (const m of marks) {
+      const nx = -m.ty;
+      const ny = m.tx;
+      const nLen = Math.hypot(nx, ny) || 1;
+      const dx = (nx / nLen) * half;
+      const dy = (ny / nLen) * half;
+      const x0 = m.x - dx;
+      const y0 = m.y - dy;
+      const x1 = m.x + dx;
+      const y1 = m.y + dy;
+
+      this.ctx.beginPath();
+      this.ctx.moveTo(x0, y0);
+      this.ctx.lineTo(x1, y1);
+      this.ctx.strokeStyle = "#ffffff";
+      this.ctx.lineWidth = 3;
+      this.ctx.globalAlpha = 0.9;
+      this.ctx.stroke();
+      this.ctx.strokeStyle = color;
+      this.ctx.lineWidth = 1.25;
+      this.ctx.globalAlpha = 0.85;
+      this.ctx.stroke();
+    }
+
+    this.ctx.restore();
+  }
+
   /** Retina-sharp drawing in CSS pixel coordinates. */
   private syncResolution() {
     const dpr = window.devicePixelRatio || 1;

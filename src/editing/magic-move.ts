@@ -261,6 +261,11 @@ export class MagicMoveController {
     configStore.subscribe((config) => {
       this.config = config;
     });
+    toolSettingsStore.subscribe(() => {
+      if (!this.hasTransientUI()) return;
+      this.publishUi();
+      this.drawUI();
+    });
   }
 
   setDocumentManager(dm: DocumentManager): void {
@@ -1071,6 +1076,7 @@ export class MagicMoveController {
           group.color,
         );
       }
+      this.drawGroupDivisionMarks(group);
     }
 
     if (this.liveChartStroke && this.liveChartStroke.length >= 2) {
@@ -1104,6 +1110,37 @@ export class MagicMoveController {
         glow: true,
       });
     }
+  }
+
+  /** Short hashes on the trajectory for Divisions > 1 intermediates. */
+  private drawGroupDivisionMarks(group: MagicMoveGroup): void {
+    const divisions = Math.max(1, Math.round(this.readSettings().divisions));
+    if (divisions <= 1 || group.chartStrokesWorldPts.length < 2) return;
+
+    const strokes: ChartStroke[] = group.chartStrokesWorldPts.map((points) => ({
+      points,
+    }));
+    const parsed = parseTimingChart(strokes, divisions);
+    if (!parsed.ok) return;
+
+    const marks: Array<{ x: number; y: number; tx: number; ty: number }> = [];
+    for (const sample of parsed.samples) {
+      // Intermediate subdivision samples only (not the user-drawn tick hits).
+      if (sample.stepIndex <= 0 || sample.stepIndex >= divisions) continue;
+      const screen = this.camera.worldToScreen(sample.x, sample.y);
+      const tip = this.camera.worldToScreen(
+        sample.x + sample.tx,
+        sample.y + sample.ty,
+      );
+      let tx = tip.x - screen.x;
+      let ty = tip.y - screen.y;
+      const len = Math.hypot(tx, ty) || 1;
+      tx /= len;
+      ty /= len;
+      marks.push({ x: screen.x, y: screen.y, tx, ty });
+    }
+    if (marks.length === 0) return;
+    this.chromeLayer.drawChartDivisionMarks(marks, group.color);
   }
 
   // ============================================================

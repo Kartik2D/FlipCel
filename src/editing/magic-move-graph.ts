@@ -17,6 +17,9 @@ export interface PathSample {
   y: number;
   /** Arc offset along the trajectory. */
   offset: number;
+  /** Unit tangent at the sample (for chrome / orient). */
+  tx: number;
+  ty: number;
   /** Index of the timing-tick interval this sample ends (0-based). */
   tickInterval: number;
   /** 0..steps within that interval (steps means the end tick). */
@@ -148,10 +151,17 @@ export function parseTimingChart(
     const pushAt = (offset: number, tickInterval: number, stepIndex: number) => {
       const clamped = Math.max(0, Math.min(trajectory.length, offset));
       const pt = trajectory.getPointAt(clamped);
+      const tan =
+        trajectory.length > 1e-6
+          ? trajectory.getTangentAt(clamped)
+          : new paper.Point(1, 0);
+      const len = Math.hypot(tan.x, tan.y) || 1;
       samples.push({
         x: pt.x,
         y: pt.y,
         offset: clamped,
+        tx: tan.x / len,
+        ty: tan.y / len,
         tickInterval,
         stepIndex,
       });
