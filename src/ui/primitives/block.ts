@@ -51,20 +51,18 @@ export class Block extends LitElement {
 
   static styles = css`
     :host {
-      /* Design tokens */
-      --block-depth: 7px;
-      /* Corner resize hit zone (taller/wider than the visible depth lip). */
-      --block-resize-hit: 22px;
       --block-depth-color: var(--inkwell-panel-depth, #bcbcbc);
       --block-border: var(--inkwell-panel-border, #555555);
-      --block-radius: 10px;
+      --block-border-width: var(--inkwell-block-border-width, 0px);
+      --block-radius: var(--inkwell-block-radius);
       --block-face-bg: var(--inkwell-panel-surface, #ffffff);
-      --block-face-padding: 10px;
+      --block-face-padding: var(--inkwell-block-face-padding, 12px);
       --block-font: var(--inkwell-font, system-ui, sans-serif);
-      --block-font-size: 12px;
+      --block-font-size: var(--inkwell-block-font-size, 12px);
       --block-font-weight: 500;
       --block-font-color: var(--inkwell-text-secondary, #6b6b6b);
-      --scrollbar-size: 8px;
+      --block-resize-hit: var(--inkwell-block-resize-hit, 22px);
+      --scrollbar-size: var(--inkwell-scrollbar-size, 8px);
       --scrollbar-gutter: calc(var(--scrollbar-size) + 4px);
 
       display: block;
@@ -93,7 +91,7 @@ export class Block extends LitElement {
     .face-scrollbar {
       position: absolute;
       top: 8px;
-      bottom: calc(var(--block-depth) + 8px);
+      bottom: 8px;
       right: 4px;
       z-index: 30;
     }
@@ -113,10 +111,10 @@ export class Block extends LitElement {
 
     .block {
       box-sizing: border-box;
-      background: var(--block-depth-color);
-      border: 2px solid var(--block-border);
+      background: var(--block-face-bg);
+      border: var(--block-border-width) solid var(--block-border);
       border-radius: var(--block-radius);
-      padding: 0 0 var(--block-depth) 0;
+      padding: 0;
       height: 100%;
       box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
       position: relative;
@@ -127,7 +125,7 @@ export class Block extends LitElement {
       position: relative;
       box-sizing: border-box;
       background: var(--block-face-bg);
-      border-radius: calc(var(--block-radius) - 2px);
+      border-radius: calc(var(--block-radius) - var(--block-border-width));
       padding: var(--block-face-padding);
       height: 100%;
       /* Clip to radius only — do NOT use overflow:auto here. That makes every
@@ -140,8 +138,7 @@ export class Block extends LitElement {
     .resize-left,
     .resize-right {
       position: absolute;
-      /* Reach into the block depth lip below the face. */
-      bottom: calc(-1 * var(--block-depth));
+      bottom: 0;
       width: max(32px, 30%);
       height: var(--block-resize-hit);
       z-index: 1;
@@ -162,13 +159,13 @@ export class Block extends LitElement {
     .resize-left {
       left: 0;
       cursor: nesw-resize;
-      border-bottom-left-radius: calc(var(--block-radius) - 2px);
+      border-bottom-left-radius: calc(var(--block-radius) - var(--block-border-width));
     }
 
     .resize-right {
       right: 0;
       cursor: nwse-resize;
-      border-bottom-right-radius: calc(var(--block-radius) - 2px);
+      border-bottom-right-radius: calc(var(--block-radius) - var(--block-border-width));
     }
 
     /* Same timing breakpoints as .floating-close (0 / 55 / 78 / 100%) — overshoot + settle on translate */

@@ -8,7 +8,6 @@ import { anchorPanelBelowTrigger, raisePanelZIndex } from "../primitives/panel-a
 import {
   PANEL_VISIBILITY_DEFAULTS,
   TOP_BAR_PANEL_IDS,
-  dockColorDepthStripColor,
   type PanelVisibility,
   type ToggleablePanel,
 } from "./dock-chrome";
@@ -26,7 +25,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
   private tool = new StoreController(this, toolStore);
   private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
   private readonly panelVisibilityChangeHandler = (e: Event) =>
-    this.onPanelVisibilityChange(e as CustomEvent<{ id: string; visible: boolean }>);
+    this.onPanelVisibilityChange(
+      e as CustomEvent<{ id: string; visible: boolean; detached?: boolean }>,
+    );
 
   protected override usesFaceScrollbar(): boolean {
     return false;
@@ -52,15 +53,12 @@ export class InkwellTopBarPanel extends FloatingPanel {
       /* Panel row; icon / control column width. */
       --inkwell-dock-row-h: 44px;
       --inkwell-dock-control: 44px;
-      --inkwell-dock-face-pt: 6px;
-      --inkwell-dock-face-pb: 8px;
     }
 
     .face {
       overflow: hidden;
-      padding: var(--inkwell-dock-face-pt) 12px var(--inkwell-dock-face-pb);
       min-height: calc(
-        var(--inkwell-dock-row-h) + var(--inkwell-dock-face-pt) + var(--inkwell-dock-face-pb)
+        var(--inkwell-dock-row-h) + (2 * var(--inkwell-block-face-padding))
       );
     }
 
@@ -76,23 +74,62 @@ export class InkwellTopBarPanel extends FloatingPanel {
       box-sizing: border-box;
     }
 
-    .bar > blocky-button {
+    .dock-btn {
+      appearance: none;
+      margin: 0;
+      border: none;
+      border-radius: var(--inkwell-content-radius);
+      box-sizing: border-box;
       height: 100%;
       min-height: 0;
       align-self: stretch;
+      padding: 0 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      background: var(--inkwell-panel-depth, #070707);
+      color: var(--inkwell-panel-border, #8a8a8a);
+      font: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+      user-select: none;
     }
 
-    /* Let the tool label collapse with ellipsis when the bar hits max-width; 96px min was clipping. */
-    .bar > blocky-button.dock-btn-flex {
+    .dock-btn:hover {
+      filter: brightness(0.97);
+    }
+
+    .dock-btn[aria-pressed="true"] {
+      background: var(--inkwell-accent, #4a6fb5);
+      color: var(--inkwell-accent-contrast, #ffffff);
+      filter: none;
+    }
+
+    .dock-btn-flex {
       flex: 0 1 auto;
       min-width: 0;
     }
 
-    /* Icon-only and color: fixed size, never flex-shrink (avoids right-edge clip). */
-    .bar > blocky-button.dock-btn-icon {
+    .dock-btn-icon {
       flex: 0 0 var(--inkwell-dock-control);
       min-width: var(--inkwell-dock-control);
       max-width: var(--inkwell-dock-control);
+      padding: 0;
+    }
+
+    .dock-btn-color {
+      /* Ink swatch — background set inline from the color store. */
+      color: transparent;
+    }
+
+    .dock-btn-color[aria-pressed="true"] {
+      box-shadow: inset 0 0 0 2px var(--inkwell-accent-contrast, #ffffff);
+      color: transparent;
     }
 
     .btn-content {
@@ -110,9 +147,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
       box-sizing: border-box;
       padding: 0 4px;
       text-align: center;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.01em;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -142,19 +176,14 @@ export class InkwellTopBarPanel extends FloatingPanel {
     this.positionAllVisiblePanels();
   }
 
-  /** 3D chrome for dock color toggle: face = ink, depth strip = slightly offset for contrast. */
-  private dockColorBlockChromeStyle(): string {
-    const c = this.dockColor.value;
-    return `--block-face-bg: ${c}; --block-depth-color: ${dockColorDepthStripColor(c)};`;
-  }
-
   private initializeAllPanelsHidden() {
     this.panelVisibility = this.panelVisibility.map((panel) => {
       const el = document.getElementById(panel.id) as ToggleablePanel | null;
       if (el) {
         el.style.display = "none";
+        el.pinned = false;
       }
-      return { ...panel, visible: false };
+      return { ...panel, visible: false, detached: false };
     });
   }
 
@@ -171,12 +200,14 @@ export class InkwellTopBarPanel extends FloatingPanel {
     }
 
     this.panelVisibility.forEach((p) => {
-      if (p.id === id || !p.visible) return;
+      if (p.id === id || !p.visible || p.detached) return;
       const otherEl = document.getElementById(p.id) as ToggleablePanel | null;
       if (!otherEl || otherEl.pinned) return;
       otherEl.hidePanel();
     });
 
+    // Opening from the dock always re-docks the panel under the trigger.
+    el.pinned = false;
     el.style.display = "";
     await el.updateComplete;
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -185,15 +216,41 @@ export class InkwellTopBarPanel extends FloatingPanel {
     }
     raisePanelZIndex(el);
     this.panelVisibility = this.panelVisibility.map((p) =>
-      p.id === id ? { ...p, visible: true } : p,
+      p.id === id ? { ...p, visible: true, detached: false } : p,
     );
   }
 
-  private onPanelVisibilityChange(e: CustomEvent<{ id: string; visible: boolean }>) {
-    const { id, visible } = e.detail;
-    this.panelVisibility = this.panelVisibility.map((panel) =>
-      panel.id === id ? { ...panel, visible } : panel,
-    );
+  private onPanelVisibilityChange(
+    e: CustomEvent<{ id: string; visible: boolean; detached?: boolean }>,
+  ) {
+    const { id, visible, detached } = e.detail;
+    const prev = this.panelVisibility.find((p) => p.id === id);
+    if (!prev) return;
+
+    // Dropped back on the dock: restore the toggle and minimize the panel.
+    if (prev.detached && detached === false && visible) {
+      this.panelVisibility = this.panelVisibility.map((panel) =>
+        panel.id === id ? { ...panel, visible: false, detached: false } : panel,
+      );
+      const el = document.getElementById(id) as ToggleablePanel | null;
+      if (el) {
+        el.pinned = false;
+        el.style.display = "none";
+      }
+      return;
+    }
+
+    this.panelVisibility = this.panelVisibility.map((panel) => {
+      if (panel.id !== id) return panel;
+      if (detached === true) {
+        return { ...panel, visible: true, detached: true };
+      }
+      return {
+        ...panel,
+        visible,
+        detached: visible ? (detached ?? panel.detached) : false,
+      };
+    });
   }
 
   private closePanelsOnOutsideClick(e: PointerEvent) {
@@ -205,7 +262,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
     let changed = false;
     this.panelVisibility.forEach((panel) => {
-      if (!panel.visible) return;
+      if (!panel.visible || panel.detached) return;
       const el = document.getElementById(panel.id) as ToggleablePanel | null;
       if (!el) return;
       const isPopup = el.hasAttribute("data-popup");
@@ -219,9 +276,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   private positionAllVisiblePanels() {
     this.panelVisibility.forEach((panel) => {
-      if (!panel.visible) return;
+      if (!panel.visible || panel.detached) return;
       const trigger = this.renderRoot.querySelector<HTMLElement>(
-        `blocky-button[data-panel-trigger="${panel.id}"]`,
+        `[data-panel-trigger="${panel.id}"]`,
       );
       const panelEl = document.getElementById(panel.id) as ToggleablePanel | null;
       if (!panelEl || !trigger) return;
@@ -238,10 +295,11 @@ export class InkwellTopBarPanel extends FloatingPanel {
     return html`<span class="btn-content">${phosphorIcon(PANEL_ICON_MAP[panelId], 14)}</span>`;
   }
 
-  /** Panel toggle buttons in dock order. */
+  /** Panel toggle buttons in dock order (detached panels drop out until closed). */
   private visiblePanelTriggers(): PanelVisibility[] {
-    return TOP_BAR_PANEL_IDS.map((id) => this.panelVisibility.find((p) => p.id === id))
-      .filter((p): p is PanelVisibility => Boolean(p));
+    return TOP_BAR_PANEL_IDS.map((id) => this.panelVisibility.find((p) => p.id === id)).filter(
+      (p): p is PanelVisibility => p != null && !p.detached,
+    );
   }
 
   render() {
@@ -251,22 +309,32 @@ export class InkwellTopBarPanel extends FloatingPanel {
       <div class="block">
         <div class="face">
           <div class="bar">
-            ${panelTriggers.map(
-                (panel) => html`
-                  <blocky-button
-                    data-panel-trigger=${panel.id}
-                    class=${panel.id === "tools-panel" ? "dock-btn-flex" : "dock-btn-icon"}
-                    title=${panel.id === "tools-panel" ? currentToolName : panel.label}
-                    data-interactive
-                    stretch
-                    style=${panel.id === "color-panel" ? this.dockColorBlockChromeStyle() : nothing}
-                    ?active=${panel.visible}
-                    @click=${(e: Event) =>
-                      this.togglePanel(panel.id, e.currentTarget as HTMLElement)}
-                    >${this.renderPanelTriggerContent(panel.id)}</blocky-button
-                  >
-                `,
-              )}
+            ${panelTriggers.map((panel) => {
+              const isTools = panel.id === "tools-panel";
+              const isColor = panel.id === "color-panel";
+              const className = [
+                "dock-btn",
+                isTools ? "dock-btn-flex" : "dock-btn-icon",
+                isColor ? "dock-btn-color" : "",
+              ]
+                .filter(Boolean)
+                .join(" ");
+              return html`
+                <button
+                  type="button"
+                  data-panel-trigger=${panel.id}
+                  class=${className}
+                  title=${isTools ? currentToolName : panel.label}
+                  data-interactive
+                  aria-pressed=${panel.visible ? "true" : "false"}
+                  style=${isColor ? `background:${this.dockColor.value}` : nothing}
+                  @click=${(e: Event) =>
+                    this.togglePanel(panel.id, e.currentTarget as HTMLElement)}
+                >
+                  ${this.renderPanelTriggerContent(panel.id)}
+                </button>
+              `;
+            })}
           </div>
         </div>
       </div>

@@ -6,8 +6,8 @@
  * so changing the constants below actually changes framing.
  */
 
-/** Matches one dock row + `--inkwell-dock-face-pt` + `--inkwell-dock-face-pb` + slack. */
-const DOCK_ROW_BLOCK_PX = 44 + 6 + 8 + 10;
+/** Matches one dock row + 2× `--inkwell-block-face-padding` + slack. */
+const DOCK_ROW_BLOCK_PX = 44 + 10 + 10 + 10;
 
 /** Minimum `--panel-top` (see top-bar panel). */
 const DOCK_TOP_OFFSET_PX = 8;

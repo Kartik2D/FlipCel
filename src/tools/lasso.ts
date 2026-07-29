@@ -50,6 +50,7 @@ export const lasso: ToolDefinition<typeof lassoSettings> = {
   id: "lasso",
   name: "Lasso Fill",
   hotkey: "l",
+  icon: "selection-simplify",
   settings: lassoSettings,
   dockModeSetting: "mode",
 

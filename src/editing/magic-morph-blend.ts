@@ -5,17 +5,19 @@
  * 2. Factor out a shared per-item frame (centroid + size); everything below
  *    happens on the residual inside that frame, so fast moves don't shear
  *    contours apart
- * 3. Match contours in frame space (area + centroid)
+ * 3. Match contours in frame space (area + centroid), preferring same
+ *    fill/hole role (evenodd parity). Merge-normalized items only keep one
+ *    fill root + its holes in a compound — islands are separate layer items.
  * 4. Sample each matched pair at even arc length, align cyclically
  *    (phase-anchored so band edges share one phase), then pin matched
  *    corner features with soft falloff and lerp the residual
- * 5. Topology changes: an extra hole contained in a matched contour adopts
- *    it — the contour is bisected so regions split/merge smoothly; anything
- *    else resolves as birth/death (shrink out / grow in)
+ * 5. Topology changes: unmatched holes collapse in place about an interior
+ *    point; births grow from a speck seeded on the matched fill of A
  * 6. CompoundPath uses evenodd; fill only on the parent
  */
 import paper from "paper";
 import { getContainmentPoint } from "../render/paper/path-geometry";
+import { morphItemSdf } from "./magic-morph-sdf";
 
 const SAMPLE_MIN = 16;
 const SAMPLE_MAX = 64;
@@ -29,12 +31,15 @@ export interface MorphOptions {
   stickiness: number;
   /** Paper `Path.simplify` tolerance; 0 = off. */
   simplify: number;
+  /** Blend backend: vector contour morph, or SDF level-set morph. */
+  solver: "vector" | "sdf";
 }
 
 export const DEFAULT_MORPH_OPTIONS: MorphOptions = {
   density: 1,
   stickiness: 0,
   simplify: 0,
+  solver: "vector",
 };
 
 // ---------------------------------------------------------------------------
@@ -185,12 +190,16 @@ function matchItems(
  * Match contours inside each keyframe's item frame (translation/scale
  * removed) so a moving shape can't pair its holes by absolute position —
  * e.g. the regions above/below a teeth line stay with their counterparts.
+ * Same fill/hole role (evenodd parity) is heavily preferred — matches the
+ * merge system's outer+holes compound layout.
  */
 function matchContours(
   aPaths: paper.Path[],
   bPaths: paper.Path[],
   fA: Frame,
   fB: Frame,
+  aDepth: number[],
+  bDepth: number[],
 ): Array<{ a: paper.Path; b: paper.Path }> {
   const scores: Array<{ ai: number; bi: number; score: number }> = [];
   for (let ai = 0; ai < aPaths.length; ai++) {
@@ -201,10 +210,15 @@ function matchContours(
       const bArea = Math.max(1e-6, pathArea(bPaths[bi]) / (fB.s * fB.s));
       const dist = ac.getDistance(bc);
       const areaRatio = Math.min(aArea, bArea) / Math.max(aArea, bArea);
+      const base = areaRatio * 0.4 + (1 / (1 + dist)) * 0.6;
+      // Parity (fill vs hole), not exact depth: merge splits islands into
+      // separate items, so within one compound depth is usually 0 or 1.
+      const roleBoost =
+        aDepth[ai] % 2 === bDepth[bi] % 2 ? 1 : 0.08;
       scores.push({
         ai,
         bi,
-        score: areaRatio * 0.4 + (1 / (1 + dist)) * 0.6,
+        score: base * roleBoost,
       });
     }
   }
@@ -633,9 +647,10 @@ function morphContourSamples(
 }
 
 /**
- * Unmatched contour (topology birth/death): hold its normalized shape while
- * shrinking to a point (grow → 0) or growing from one (grow → 1) about its
- * own centroid, carried by the interpolated item frame.
+ * Unmatched contour (topology birth/death): uniformly scale about an
+ * *interior* point (never an exterior guessed point — that inverts the
+ * contour and self-intersects), then translate so the collapse point sits
+ * at `targetWorld` when provided.
  */
 function rideFrame(
   c: paper.Path,
@@ -643,123 +658,163 @@ function rideFrame(
   grow: number,
   cT: paper.Point,
   sT: number,
+  targetWorld?: paper.Point,
 ): paper.Path {
   const ns = normalize(sampleArc(c, 32), f);
-  let cx = 0;
-  let cy = 0;
-  for (const s of ns) {
-    cx += s.point.x;
-    cy += s.point.y;
-  }
-  cx /= Math.max(1, ns.length);
-  cy /= Math.max(1, ns.length);
+  // Interior shrink center — sample centroid can lie outside crescents/arcs.
+  const ip = getContainmentPoint(c) ?? c.bounds.center;
+  const ax = (ip.x - f.c.x) / f.s;
+  const ay = (ip.y - f.c.y) / f.s;
 
   const g = Math.max(0.02, grow);
+  const centerWorld = cT.add(new paper.Point(ax, ay).multiply(sT));
+  const dest = targetWorld ?? centerWorld;
+  const ox = dest.x - centerWorld.x;
+  const oy = dest.y - centerWorld.y;
+
   const out = new paper.Path();
   out.closed = !!c.closed;
   for (const s of ns) {
     const q = new paper.Point(
-      cx + (s.point.x - cx) * g,
-      cy + (s.point.y - cy) * g,
+      ax + (s.point.x - ax) * g,
+      ay + (s.point.y - ay) * g,
     );
-    out.add(cT.add(q.multiply(sT)));
+    out.add(cT.add(q.multiply(sT)).add(new paper.Point(ox, oy)));
   }
   finishHandles(out);
   clearContourStyle(out);
   return out;
 }
 
-/** Big rectangle covering the half-plane {(p - mid) . n >= 0}. */
-function halfPlane(
-  mid: paper.Point,
-  n: paper.Point,
-  reach: number,
-): paper.Path {
-  const d = new paper.Point(-n.y, n.x);
-  const p1 = mid.subtract(d.multiply(reach));
-  const p2 = mid.add(d.multiply(reach));
-  return new paper.Path({
-    segments: [p1, p2, p2.add(n.multiply(reach * 2)), p1.add(n.multiply(reach * 2))],
-    closed: true,
-    insert: false,
-  });
-}
+/**
+ * Containment parent tree + evenodd depths — same model as
+ * `PaperRenderer.splitDisconnectedItems`: tightest larger container is the
+ * parent; depth walks that chain. Under merge normalization a compound is
+ * one fill root (depth 0) plus its holes (depth 1); islands live as separate
+ * layer items, so morph never expects nested fills inside one compound.
+ */
+function contourNesting(paths: paper.Path[]): {
+  depths: number[];
+  parents: Array<paper.Path | null>;
+} {
+  const n = paths.length;
+  const parents: Array<paper.Path | null> = new Array(n).fill(null);
+  const parentIdx: Array<number | null> = new Array(n).fill(null);
+  const areas = paths.map((p) => pathArea(p));
+  const interiors = paths.map((p) =>
+    p.closed ? (getContainmentPoint(p) ?? p.bounds.center) : null,
+  );
 
-/** Largest Path inside a boolean result (drops tiny slivers). */
-function largestPath(item: paper.PathItem | null): paper.Path | null {
-  if (!item) return null;
-  if (item instanceof paper.Path) return item;
-  if (item instanceof paper.CompoundPath) {
-    let best: paper.Path | null = null;
-    let bestArea = -1;
-    for (const c of item.children) {
-      if (!(c instanceof paper.Path)) continue;
-      const ar = pathArea(c);
-      if (ar > bestArea) {
-        bestArea = ar;
-        best = c;
+  for (let i = 0; i < n; i++) {
+    if (!paths[i].closed || !interiors[i]) continue;
+    let best: number | null = null;
+    let bestArea = Infinity;
+    for (let j = 0; j < n; j++) {
+      if (i === j || areas[j] <= areas[i]) continue;
+      if (!paths[j].bounds.contains(paths[i].bounds)) continue;
+      try {
+        if (!paths[j].contains(interiors[i]!)) continue;
+      } catch {
+        continue;
+      }
+      if (areas[j] < bestArea) {
+        bestArea = areas[j];
+        best = j;
       }
     }
-    best?.remove();
-    item.remove();
-    return best;
+    parentIdx[i] = best;
+    parents[i] = best == null ? null : paths[best];
+  }
+
+  const depths = new Array(n).fill(0);
+  const computeDepth = (i: number): number => {
+    const p = parentIdx[i];
+    if (p == null) return 0;
+    const d = computeDepth(p) + 1;
+    depths[i] = d;
+    return d;
+  };
+  for (let i = 0; i < n; i++) computeDepth(i);
+
+  return { depths, parents };
+}
+
+/**
+ * Owning fill for a contour: nearest even-depth ancestor (the fill root that
+ * owns a hole), matching merge's `nearestEven` grouping.
+ */
+function owningFill(
+  p: paper.Path,
+  paths: paper.Path[],
+  depths: number[],
+  parents: Array<paper.Path | null>,
+): paper.Path | null {
+  const i = paths.indexOf(p);
+  if (i < 0) return null;
+  let cur: number | null = i;
+  while (cur != null) {
+    if (depths[cur] % 2 === 0) return paths[cur] === p ? null : paths[cur];
+    const ancestor: paper.Path | null = parents[cur];
+    cur = ancestor ? paths.indexOf(ancestor) : null;
   }
   return null;
 }
 
-/**
- * Cut a closed contour in two with a straight line through `mid`, with unit
- * normal `n`. Returns [piece on the -n side, piece on the +n side], or null
- * when the cut degenerates (empty piece, boolean failure).
- */
-function cutContour(
-  region: paper.Path,
-  mid: paper.Point,
-  n: paper.Point,
-): [paper.Path, paper.Path] | null {
-  const reach =
-    Math.hypot(region.bounds.width, region.bounds.height) * 4 + 64;
-
-  const rect1 = halfPlane(mid, n.multiply(-1), reach);
-  const rect2 = halfPlane(mid, n, reach);
-  let p1: paper.Path | null = null;
-  let p2: paper.Path | null = null;
-  try {
-    p1 = largestPath(region.intersect(rect1, { insert: false }));
-    p2 = largestPath(region.intersect(rect2, { insert: false }));
-  } catch {
-    // fall through to cleanup
-  }
-  rect1.remove();
-  rect2.remove();
-
-  if (!p1 || !p2 || pathArea(p1) < 1e-6 || pathArea(p2) < 1e-6) {
-    p1?.remove();
-    p2?.remove();
-    return null;
-  }
-  for (const p of [p1, p2]) {
-    p.closed = true;
-    p.clockwise = true;
-  }
-  return [p1, p2];
+/** Contour interior point in an item frame's normalized space. */
+function contourInteriorNorm(c: paper.Path, f: Frame): paper.Point {
+  const ip = getContainmentPoint(c) ?? c.bounds.center;
+  return ip.subtract(f.c).divide(f.s);
 }
 
-/** Hole-like = an interior point sits inside a bigger contour of the item. */
-function holeFlags(paths: paper.Path[]): boolean[] {
-  return paths.map((p, i) => {
-    if (!p.closed) return false;
-    const ip = getContainmentPoint(p) ?? p.bounds.center;
-    for (let j = 0; j < paths.length; j++) {
-      if (j === i || pathArea(paths[j]) <= pathArea(p)) continue;
-      try {
-        if (paths[j].contains(ip)) return true;
-      } catch {
-        // ignore
-      }
-    }
-    return false;
-  });
+/**
+ * World-space seed for an unmatched contour birth (B side only).
+ *
+ * Remaps the hole's interior through its owning fill onto the matched
+ * counterpart fill so the speck appears in the solid band — not in a void
+ * where evenodd would flip it into a filled island. Death collapses
+ * in-place (no translation); sliding a mid-sized hole into another hole
+ * crosses evenodd parity and self-intersects.
+ */
+function guessBirthWorld(
+  unmatched: paper.Path,
+  paths: paper.Path[],
+  depths: number[],
+  parents: Array<paper.Path | null>,
+  fSelf: Frame,
+  fOther: Frame,
+  pairs: Array<{ a: paper.Path; b: paper.Path }>,
+  t: number,
+): paper.Point {
+  const ownNorm = contourInteriorNorm(unmatched, fSelf);
+  const ownAbs = fSelf.c.add(ownNorm.multiply(fSelf.s));
+
+  const fill = owningFill(unmatched, paths, depths, parents);
+  if (!fill) return ownAbs;
+
+  const pair = pairs.find((p) => p.b === fill);
+  if (!pair) return ownAbs;
+
+  const fillSelfC = contourInteriorNorm(fill, fSelf);
+  const fillSelfS = Math.max(
+    1e-6,
+    Math.hypot(fill.bounds.width, fill.bounds.height) / (2 * fSelf.s),
+  );
+  const local = ownNorm.subtract(fillSelfC).divide(fillSelfS);
+
+  const fillOtherC = contourInteriorNorm(pair.a, fOther);
+  const fillOtherS = Math.max(
+    1e-6,
+    Math.hypot(pair.a.bounds.width, pair.a.bounds.height) / (2 * fOther.s),
+  );
+  const otherNorm = fillOtherC.add(local.multiply(fillOtherS));
+  const otherAbs = fOther.c.add(otherNorm.multiply(fOther.s));
+
+  // Speck starts on A (t→0), settles at B's own interior (t→1).
+  const w = 1 - t;
+  return new paper.Point(
+    ownAbs.x + (otherAbs.x - ownAbs.x) * w,
+    ownAbs.y + (otherAbs.y - ownAbs.y) * w,
+  );
 }
 
 function morphItem(
@@ -782,77 +837,18 @@ function morphItem(
   const fA = frameOf(aContours.map((p) => sampleArc(p, 24)));
   const fB = frameOf(bContours.map((p) => sampleArc(p, 24)));
 
-  const pairs = matchContours(aContours, bContours, fA, fB);
+  const aNest = contourNesting(aContours);
+  const bNest = contourNesting(bContours);
+  const pairs = matchContours(
+    aContours,
+    bContours,
+    fA,
+    fB,
+    aNest.depths,
+    bNest.depths,
+  );
   const usedA = new Set(pairs.map((p) => p.a));
   const usedB = new Set(pairs.map((p) => p.b));
-
-  // --- Topology repair -----------------------------------------------------
-  // A hole that exists in only one keyframe usually means a region split or
-  // merged (e.g. a pupil bridging to the eyelid divides the white of the eye
-  // in two). Adopt the extra hole into the nearest hole↔hole pair — chosen
-  // in the extra's OWN keyframe, since positions don't transfer between
-  // shapes whose proportions change — and cut that pair's counterpart
-  // through its own center so both sides have identical counts. Only the cut
-  // *direction* crosses keyframes (directions survive the frame's uniform
-  // scale; positions don't). Runs once per extra, so 1→3 resolves by
-  // sequential cuts.
-  const aHole = holeFlags(aContours);
-  const bHole = holeFlags(bContours);
-  const nearestHolePair = (
-    center: paper.Point,
-    side: "a" | "b",
-    contours: paper.Path[],
-    flags: boolean[],
-  ): { a: paper.Path; b: paper.Path } | null => {
-    let best: { a: paper.Path; b: paper.Path } | null = null;
-    let bestD = Infinity;
-    for (const p of pairs) {
-      const idx = contours.indexOf(p[side]);
-      if (idx < 0 || !flags[idx]) continue;
-      const d = p[side].bounds.center.getDistance(center);
-      if (d < bestD) {
-        bestD = d;
-        best = p;
-      }
-    }
-    return best;
-  };
-  const unitBetween = (from: paper.Point, to: paper.Point): paper.Point | null => {
-    const v = to.subtract(from);
-    const len = Math.hypot(v.x, v.y);
-    return len < 1e-6 ? null : v.divide(len);
-  };
-
-  // Extra B holes: split the A-side host (region splits as t increases).
-  for (let bi = 0; bi < bContours.length; bi++) {
-    const cb = bContours[bi];
-    if (usedB.has(cb) || !bHole[bi]) continue;
-    const host = nearestHolePair(cb.bounds.center, "b", bContours, bHole);
-    if (!host) continue;
-    const dir = unitBetween(host.b.bounds.center, cb.bounds.center);
-    if (!dir) continue;
-    const cut = cutContour(host.a, host.a.bounds.center, dir);
-    if (!cut) continue;
-    host.a = cut[0];
-    pairs.push({ a: cut[1], b: cb });
-    usedB.add(cb);
-  }
-
-  // Extra A holes: split the B-side host (regions merge as t increases).
-  for (let ai = 0; ai < aContours.length; ai++) {
-    const ca = aContours[ai];
-    if (usedA.has(ca) || !aHole[ai]) continue;
-    const host = nearestHolePair(ca.bounds.center, "a", aContours, aHole);
-    if (!host) continue;
-    const dir = unitBetween(host.a.bounds.center, ca.bounds.center);
-    if (!dir) continue;
-    const cut = cutContour(host.b, host.b.bounds.center, dir);
-    if (!cut) continue;
-    host.b = cut[0];
-    pairs.push({ a: ca, b: cut[1] });
-    usedA.add(ca);
-  }
-  // -------------------------------------------------------------------------
 
   // Density scales generated vertex counts (0.5 = coarse, 2 = fine).
   const maxSamples = Math.round(SAMPLE_MAX * opts.density);
@@ -881,9 +877,9 @@ function morphItem(
     children.push(morphContourSamples(na, nb, closed, t, fA, fB, opts));
   }
 
-  // Topology birth/death: an unmatched contour shrinks to a point (A side)
-  // or grows from one (B side) inside the interpolated frame, instead of
-  // holding forever or popping in at the last frame.
+  // Topology birth/death: always scale about an interior point.
+  // Death collapses in place (keeps the hole in the fill band). Birth seeds
+  // a speck on the matched fill of A, then grows into B's hole.
   const cT = fA.c.add(fB.c.subtract(fA.c).multiply(t));
   const sT = fA.s + (fB.s - fA.s) * t;
   for (const c of aContours) {
@@ -893,7 +889,17 @@ function morphItem(
   }
   for (const c of bContours) {
     if (!usedB.has(c)) {
-      children.push(rideFrame(c, fB, t, cT, sT));
+      const target = guessBirthWorld(
+        c,
+        bContours,
+        bNest.depths,
+        bNest.parents,
+        fB,
+        fA,
+        pairs,
+        t,
+      );
+      children.push(rideFrame(c, fB, t, cT, sT, target));
     }
   }
 
@@ -935,11 +941,20 @@ export function morphLayerJson(
     for (const a of aItems) {
       const pair = pairs.find((p) => p.a === a);
       if (pair) {
-        result.addChild(morphItem(pair.a, pair.b, t, opts));
+        let blended: paper.PathItem | null = null;
+        if (opts.solver === "sdf") {
+          blended = morphItemSdf(pair.a, pair.b, t, opts);
+        }
+        result.addChild(blended ?? morphItem(pair.a, pair.b, t, opts));
       } else {
-        // Item death: shrink out instead of freezing until the last frame.
+        // Item death: shrink about an interior point (bounds center can lie
+        // outside crescents and invert the path).
         const gone = a.clone();
-        gone.scale(Math.max(0.02, 1 - t), gone.bounds.center);
+        const pivot =
+          a instanceof paper.Path
+            ? (getContainmentPoint(a) ?? a.bounds.center)
+            : a.bounds.center;
+        gone.scale(Math.max(0.02, 1 - t), pivot);
         result.addChild(gone);
       }
     }
@@ -948,7 +963,11 @@ export function morphLayerJson(
     for (const b of bItems) {
       if (usedB.has(b)) continue;
       const born = b.clone();
-      born.scale(Math.max(0.02, t), born.bounds.center);
+      const pivot =
+        b instanceof paper.Path
+          ? (getContainmentPoint(b) ?? b.bounds.center)
+          : b.bounds.center;
+      born.scale(Math.max(0.02, t), pivot);
       result.addChild(born);
     }
 

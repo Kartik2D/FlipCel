@@ -15,7 +15,6 @@ export interface ContextualActionContext {
 export interface ContextualActionMenuItem {
   id: string;
   name: string;
-  icon: string;
   negative?: boolean;
   draggable?: boolean;
 }
@@ -38,7 +37,6 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "duplicate",
     name: "Duplicate",
-    icon: "copy",
     draggable: true,
     isAvailable: (context) => context.tool === "select" && context.items.length > 0,
     run: (context, services) => {
@@ -52,7 +50,6 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "flip-horizontal",
     name: "Flip Horizontal",
-    icon: "flip-horizontal",
     isAvailable: (context) => context.tool === "select" && context.items.length > 0,
     run: (context, services) => {
       services.paperRenderer.flipItemsInViewSpace(context.items, "horizontal");
@@ -62,7 +59,6 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "flip-vertical",
     name: "Flip Vertical",
-    icon: "flip-vertical",
     isAvailable: (context) => context.tool === "select" && context.items.length > 0,
     run: (context, services) => {
       services.paperRenderer.flipItemsInViewSpace(context.items, "vertical");
@@ -72,7 +68,6 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "simplify",
     name: "Simplify",
-    icon: "selection-simplify",
     isAvailable: (context) => context.tool === "select" && context.items.length > 0,
     run: (context, services) => {
       services.paperRenderer.simplifyItems(context.items);
@@ -82,7 +77,6 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "delete",
     name: "Delete",
-    icon: "trash",
     negative: true,
     isAvailable: (context) => context.tool === "select" && context.items.length > 0,
     run: (context, services) => {
@@ -98,7 +92,6 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "point-corner",
     name: "Corner",
-    icon: "point-corner",
     isAvailable: (context) =>
       context.tool === "direct-select"
       && context.items.length > 0
@@ -110,7 +103,6 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "point-mirrored",
     name: "Mirrored",
-    icon: "point-mirrored",
     isAvailable: (context) =>
       context.tool === "direct-select"
       && context.items.length > 0
@@ -121,8 +113,7 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   },
   {
     id: "delete-vertices",
-    name: "Delete Vertices",
-    icon: "trash",
+    name: "Delete",
     negative: true,
     isAvailable: (context) =>
       context.tool === "direct-select"
@@ -138,7 +129,7 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
 export function getAvailableContextualActions(context: ContextualActionContext): ContextualActionMenuItem[] {
   return CONTEXTUAL_ACTION_REGISTRY
     .filter((fn) => fn.isAvailable(context))
-    .map(({ id, name, icon, negative, draggable }) => ({ id, name, icon, negative, draggable }));
+    .map(({ id, name, negative, draggable }) => ({ id, name, negative, draggable }));
 }
 
 export function runContextualAction(

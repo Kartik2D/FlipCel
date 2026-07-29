@@ -3,7 +3,6 @@
  *
  * Extracted from App so bootstrap stays focused on wiring; behavior is unchanged.
  */
-import paper from "paper";
 import type { Camera } from "../render/camera";
 import type { FeedbackLayer } from "../render/feedback-layer";
 import type { PaperRenderer } from "../render/paper-renderer";
@@ -178,12 +177,7 @@ export class ToolSession {
       return;
     }
 
-    if (
-      tool === "brush" ||
-      tool === "lasso" ||
-      tool === "rect" ||
-      tool === "circle"
-    ) {
+    if (tool === "brush" || tool === "lasso") {
       if (getEffectiveMode(tool) === "inside") {
         const hit = deps.paperRenderer.hitTest(viewportPoint);
         this.insideClipForStroke = deps.paperRenderer.hitToClipPathItem(hit);
@@ -316,37 +310,6 @@ export class ToolSession {
     this.insideClipForStroke = undefined;
     const effectiveMode = getEffectiveMode(tool);
 
-    // Shape primitives bypass the potrace raster-trace step entirely and
-    // commit a native paper.js Path (Rectangle / Ellipse) built directly
-    // from the stroke anchors. This keeps the final geometry crisp and
-    // parametrically clean.
-    if (tool === "rect" || tool === "circle") {
-      const toolSettings = settings[tool] as { from?: string };
-      const fromCenter = toolSettings.from === "center";
-      const shape = buildPrimitiveShape(deps.getConfig(), tool, stroke.points, fromCenter);
-      if (!shape) {
-        deps.pixelCanvasManager.clear();
-        return;
-      }
-
-      if (effectiveMode === "add") {
-        const color = colorStore.get();
-        deps.paperRenderer.addShape(shape, color);
-      } else if (effectiveMode === "subtract") {
-        deps.paperRenderer.subtractShape(shape);
-      } else {
-        const color = colorStore.get();
-        deps.paperRenderer.addShapeIntersectClip(
-          shape,
-          color,
-          clipForInside ?? null,
-        );
-      }
-      deps.pixelCanvasManager.clear();
-      deps.historyManager.snapshot();
-      return;
-    }
-
     try {
       const svg = await deps.tracer.trace(deps.getPixelCanvas());
       if (!svg) {
@@ -422,57 +385,6 @@ export class ToolSession {
     deps.pixelCanvasManager.endTool(tool, settings);
     deps.pixelCanvasManager.clear();
   }
-}
-
-/**
- * Build a native paper.js Path (rectangle or ellipse) from the tool's
- * pointer anchors. Returns the unattached path in viewport (screen)
- * coordinates; the paper-renderer's shape pipeline is responsible for
- * reparenting it into world space and merging it into the layer.
- */
-export function buildPrimitiveShape(
-  config: CanvasConfig,
-  tool: "rect" | "circle",
-  pixelPoints: Point[],
-  fromCenter: boolean,
-): paper.PathItem | null {
-  if (pixelPoints.length < 2) return null;
-
-  const a = pixelToViewport(pixelPoints[0], config);
-  const b = pixelToViewport(pixelPoints[pixelPoints.length - 1], config);
-
-  let x: number;
-  let y: number;
-  let w: number;
-  let h: number;
-
-  if (fromCenter) {
-    const rx = Math.abs(b.x - a.x);
-    const ry = Math.abs(b.y - a.y);
-    x = a.x - rx;
-    y = a.y - ry;
-    w = rx * 2;
-    h = ry * 2;
-  } else {
-    x = Math.min(a.x, b.x);
-    y = Math.min(a.y, b.y);
-    w = Math.abs(b.x - a.x);
-    h = Math.abs(b.y - a.y);
-  }
-
-  if (w < 0.5 || h < 0.5) return null;
-
-  const rect = new paper.Rectangle(
-    new paper.Point(x, y),
-    new paper.Size(w, h),
-  );
-
-  const path =
-    tool === "rect"
-      ? new paper.Path.Rectangle({ rectangle: rect, insert: false })
-      : new paper.Path.Ellipse({ rectangle: rect, insert: false });
-
-  return path;
 }
 
 export function getEffectiveMode(tool: ToolId): "add" | "subtract" | "inside" {

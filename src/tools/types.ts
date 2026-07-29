@@ -52,6 +52,8 @@ export interface ToolDefinition<T extends SettingsSchema = SettingsSchema> {
   id: string;
   name: string;
   hotkey: string;
+  /** Phosphor icon key for the tools rail (omit for dock-only tools). */
+  icon?: string;
   settings: T;
   /** Settings key (must be a toggle) surfaced in the dock "mode" widget. */
   dockModeSetting?: string;

@@ -45,15 +45,12 @@ export class InkwellShortcutsPanel extends FloatingPanel {
       --inkwell-shadow-panel: var(--inkwell-dock-shadow);
       --inkwell-dock-row-h: 44px;
       --inkwell-dock-control: 44px;
-      --inkwell-dock-face-pt: 6px;
-      --inkwell-dock-face-pb: 8px;
     }
 
     .face {
       overflow: hidden;
-      padding: var(--inkwell-dock-face-pt) 12px var(--inkwell-dock-face-pb);
       min-height: calc(
-        var(--inkwell-dock-row-h) + var(--inkwell-dock-face-pt) + var(--inkwell-dock-face-pb)
+        var(--inkwell-dock-row-h) + (2 * var(--inkwell-block-face-padding))
       );
     }
 

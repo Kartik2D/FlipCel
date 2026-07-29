@@ -1,14 +1,18 @@
 /**
  * Centralized tool registry — metadata + pixel paint tools + stub tools.
- * Controllers (select / magnet / etc.) live under editing/; stubs only
- * register hotkeys and settings schemas for the UI.
+ * Controllers (select / magnet / etc.) live under editing/; tool modules
+ * register hotkeys, icons, and settings schemas for the UI.
  */
 import type { ToolDefinition, InferSettings } from "./types";
 import { brush } from "./brush";
 import { lasso } from "./lasso";
-import { rect } from "./rect";
-import { circle } from "./circle";
-import { select, directSelect, magnet, magicMove, magicMorph, pan, eyedropper } from "./stubs";
+import { select } from "./select";
+import { directSelect } from "./direct-select";
+import { magnet } from "./magnet";
+import { magicMove } from "./magic-move";
+import { magicMorph } from "./magic-morph";
+import { pan } from "./pan";
+import { eyedropper } from "./eyedropper";
 
 export type {
   ToggleSetting,
@@ -23,9 +27,13 @@ export type {
 
 export { brush } from "./brush";
 export { lasso } from "./lasso";
-export { rect } from "./rect";
-export { circle } from "./circle";
-export { select, directSelect, magnet, magicMove, magicMorph, pan, eyedropper } from "./stubs";
+export { select } from "./select";
+export { directSelect } from "./direct-select";
+export { magnet } from "./magnet";
+export { magicMove } from "./magic-move";
+export { magicMorph } from "./magic-morph";
+export { pan } from "./pan";
+export { eyedropper } from "./eyedropper";
 
 // ============================================================
 // Tool Registry
@@ -34,8 +42,6 @@ export { select, directSelect, magnet, magicMove, magicMorph, pan, eyedropper } 
 export const tools = [
   brush,
   lasso,
-  rect,
-  circle,
   select,
   directSelect,
   magnet,
@@ -102,5 +108,3 @@ export function buildDefaultSettings(): Record<ToolId, Record<string, unknown>> 
 export type AllToolSettings = {
   [K in ToolId]: InferSettings<Extract<(typeof tools)[number], { id: K }>["settings"]>;
 };
-
-

@@ -51,6 +51,7 @@ import type {
   InkwellColorPanel,
   InkwellColorPopup,
   InkwellToolsPanel,
+  InkwellToolSettingsPanel,
   InkwellUniversalPanel,
   InkwellStartupPanel,
   InkwellViewPanel,
@@ -133,6 +134,7 @@ class App {
   private colorPanel: InkwellColorPanel;
   private colorPopup: InkwellColorPopup;
   private toolsPanel: InkwellToolsPanel;
+  private toolSettingsPanel: InkwellToolSettingsPanel;
   private universalPanel: InkwellUniversalPanel;
   private startupPanel: InkwellStartupPanel;
   private viewPanel: InkwellViewPanel;
@@ -289,6 +291,9 @@ class App {
     this.colorPanel = document.getElementById("color-panel") as InkwellColorPanel;
     this.colorPopup = document.getElementById("color-popup") as InkwellColorPopup;
     this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
+    this.toolSettingsPanel = document.getElementById(
+      "tool-settings-panel",
+    ) as InkwellToolSettingsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
     this.startupPanel = document.getElementById("startup-panel") as InkwellStartupPanel;
     this.viewPanel = document.getElementById("view-panel") as InkwellViewPanel;
@@ -327,7 +332,7 @@ class App {
       }
       this.requestRedraw();
     };
-    this.toolsPanel.addEventListener("magic-move-apply", onMagicMoveApply);
+    this.toolSettingsPanel.addEventListener("magic-move-apply", onMagicMoveApply);
     this.magicMovePopup.addEventListener("magic-move-apply", onMagicMoveApply);
     const onMagicMorphApply = () => {
       const result = this.magicMorphController.apply();
@@ -336,7 +341,7 @@ class App {
       }
       this.requestRedraw();
     };
-    this.toolsPanel.addEventListener("magic-morph-apply", onMagicMorphApply);
+    this.toolSettingsPanel.addEventListener("magic-morph-apply", onMagicMorphApply);
     this.magicMorphPopup.addEventListener("magic-morph-apply", onMagicMorphApply);
     this.autoMorphPopup.addEventListener("auto-morph-apply", (e: Event) => {
       const d = (
@@ -464,6 +469,7 @@ class App {
       colorPanel: this.colorPanel,
       colorPopup: this.colorPopup,
       toolsPanel: this.toolsPanel,
+      toolSettingsPanel: this.toolSettingsPanel,
       universalPanel: this.universalPanel,
       viewPanel: this.viewPanel,
       shortcutsPanel: this.shortcutsPanel,

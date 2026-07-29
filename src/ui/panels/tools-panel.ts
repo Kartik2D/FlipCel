@@ -1,49 +1,109 @@
 import { html, css, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
-import { type ToolId, type SettingsSchema, type SettingDef, getTool } from "../../tools/registry";
-import { paintModeAccent } from "../../tools/paint-mode";
-import {
-  toolStore,
-  modifiersStore,
-  toolSettingsStore,
-  magicMoveUiStore,
-  magicMorphUiStore,
-  StoreController,
-} from "../../state";
+import { type ToolId, getTool } from "../../tools/registry";
+import { toolStore, StoreController } from "../../state";
 import { FloatingPanel } from "../primitives/floating-panel";
+import { phosphorIcon } from "../icons/phosphor";
+import type { InkwellToolSettingsPanel } from "./tool-settings-panel";
 
 // ============================================================
-// Tools Panel
+// Tools Panel — compact icon rail (not a titled floating panel)
 // ============================================================
+
+const DOUBLE_TAP_MS = 350;
 
 @customElement("inkwell-tools-panel")
 export class InkwellToolsPanel extends FloatingPanel {
-  @property({ type: Number }) pixelRes = 2;
+  @property({ type: Boolean, reflect: true }) override masonry = false;
 
   private tool = new StoreController(this, toolStore);
-  private modifiers = new StoreController(this, modifiersStore);
-  private settings = new StoreController(this, toolSettingsStore);
-  private magicMoveUi = new StoreController(this, magicMoveUiStore);
-  private magicMorphUi = new StoreController(this, magicMorphUiStore);
+
+  /** Last tool icon tap, for touch double-tap → open settings. */
+  private lastTap: { toolId: ToolId; time: number } | null = null;
 
   /** Panel tool order; pan is dock-only and omitted here. */
-  private static readonly TOOL_GROUPS: ToolId[][] = [
-    ["select", "direct-select", "magic-move", "magic-morph"],
-    ["brush", "lasso", "rect", "circle"],
-    ["magnet", "eyedropper"],
+  private static readonly TOOLS: ToolId[] = [
+    "select",
+    "direct-select",
+    "magic-move",
+    "magic-morph",
+    "brush",
+    "lasso",
+    "magnet",
+    "eyedropper",
   ];
+
+  connectedCallback() {
+    super.connectedCallback();
+    this.showPinnedClose = false;
+  }
+
+  protected override showsDragHandlePill(): boolean {
+    return false;
+  }
 
   static styles = css`
     ${FloatingPanel.styles}
 
     :host {
-      --panel-width: 280px;
+      --panel-width: 56px;
+      --panel-min-width: 48px;
+    }
+
+    .panel-body > .face {
+      border-radius: calc(var(--block-radius) - var(--block-border-width, 0px));
+    }
+
+    .tools-shell {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .tools-drag {
+      align-self: center;
+      width: 2.5rem;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--block-border, #555555);
+      flex-shrink: 0;
+      cursor: grab;
+    }
+
+    :host([dragging]) .tools-drag {
+      cursor: grabbing;
+    }
+
+    .tools-rail {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .tools-rail .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 6px;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .tools-rail .tool-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 0;
+    }
+
+    .tools-rail .tool-icon svg {
+      display: block;
     }
   `;
 
   private emit(name: string, detail?: unknown) {
     this.dispatchEvent(
-      new CustomEvent(name, { detail, bubbles: true, composed: true })
+      new CustomEvent(name, { detail, bubbles: true, composed: true }),
     );
   }
 
@@ -52,248 +112,80 @@ export class InkwellToolsPanel extends FloatingPanel {
     this.emit("tool-change", tool);
   }
 
-  private updateSetting(toolId: ToolId, key: string, value: unknown) {
-    this.settings.update((s) => ({
-      ...s,
-      [toolId]: { ...s[toolId], [key]: value },
-    }));
-    this.emit("settings-change", this.settings.value);
+  private openToolSettings() {
+    const panel = document.getElementById(
+      "tool-settings-panel",
+    ) as InkwellToolSettingsPanel | null;
+    if (!panel) return;
+    void panel.showNear(this);
   }
 
-  private renderPixelRes() {
-    // NOTE: pixel-res-change is intentionally emitted on `change` (release)
-    // rather than `input` (every tick). Each emit triggers a full canvas
-    // reconfiguration (writes to pixelCanvas.width, uiCanvas.width,
-    // chromeCanvas.width, etc.). Firing that on every input tick during a
-    // slider drag causes rapid canvas resets mid-touch-gesture which, on
-    // some mobile browsers, leaves the ui-canvas unable to receive further
-    // pointer/touch input -- breaking drawing and therefore tracing.
-    return html`
-      <label>
-        <span>Pixel Resolution: ${this.pixelRes}x</span>
-        <input
-          type="range"
-          min="1"
-          max="8"
-          step="1"
-          .value=${String(this.pixelRes)}
-          @input=${(e: Event) => {
-            this.pixelRes = parseInt((e.target as HTMLInputElement).value);
-          }}
-          @change=${(e: Event) => {
-            this.pixelRes = parseInt((e.target as HTMLInputElement).value);
-            this.emit("pixel-res-change", this.pixelRes);
-          }}
-        />
-      </label>
-    `;
-  }
+  private onToolActivate(toolId: ToolId) {
+    const now = performance.now();
+    const prev = this.lastTap;
+    const isDouble =
+      prev !== null &&
+      prev.toolId === toolId &&
+      now - prev.time <= DOUBLE_TAP_MS;
 
-  private renderSetting(
-    toolId: ToolId,
-    key: string,
-    def: SettingDef,
-    currentValue: unknown
-  ): TemplateResult {
-    const hint =
-      key === "mode" &&
-      this.modifiers.value.shift
-        ? "(Shift toggled)"
-        : "";
-    const label = def.label ?? this.formatLabel(key);
+    this.setTool(toolId);
 
-    if (def.type === "toggle") {
-      return html`
-        <label>
-          <span>${label} ${hint}</span>
-          <div class="row">
-            ${def.options.map((opt) => {
-              const modeAccent = key === "mode" ? paintModeAccent(opt) : null;
-              return html`
-                <blocky-button
-                  flat
-                  ?active=${currentValue === opt}
-                  ?positive=${modeAccent === "positive"}
-                  ?negative=${modeAccent === "negative"}
-                  ?neutral=${modeAccent === "neutral"}
-                  @click=${() => this.updateSetting(toolId, key, opt)}
-                  >${this.formatLabel(opt)}</blocky-button
-                >
-              `;
-            })}
-          </div>
-        </label>
-      `;
+    if (isDouble) {
+      this.lastTap = null;
+      this.openToolSettings();
+      return;
     }
 
-    if (def.type === "range") {
-      const valueLabel =
-        def.maxLabel !== undefined && Number(currentValue) >= def.max
-          ? def.maxLabel
-          : currentValue;
-      return html`
-        <label>
-          <span>${label}: ${valueLabel}</span>
-          <input
-            type="range"
-            min=${def.min}
-            max=${def.max}
-            step=${def.step}
-            .value=${String(currentValue)}
-            @input=${(e: Event) =>
-              this.updateSetting(
-                toolId,
-                key,
-                parseFloat((e.target as HTMLInputElement).value)
-              )}
-          />
-        </label>
-      `;
-    }
-
-    if (def.type === "color") {
-      return html`
-        <label>
-          <span>${label}</span>
-          <input
-            type="color"
-            .value=${String(currentValue)}
-            @input=${(e: Event) =>
-              this.updateSetting(toolId, key, (e.target as HTMLInputElement).value)}
-          />
-        </label>
-      `;
-    }
-
-    return html``;
-  }
-
-  private formatLabel(key: string): string {
-    return key
-      .replace(/([A-Z])/g, " $1")
-      .replace(/^./, (str) => str.toUpperCase())
-      .trim();
+    this.lastTap = { toolId, time: now };
   }
 
   private renderToolButton(toolId: ToolId): TemplateResult {
     const t = getTool(toolId);
+    const icon = t.icon ?? "paint-brush";
     return html`
       <blocky-button
         flat
+        title=${`${t.name} (double-tap for settings)`}
+        aria-label=${t.name}
         ?active=${this.tool.value === toolId}
-        @click=${() => this.setTool(toolId)}
-        >${t.name}</blocky-button
+        @click=${() => this.onToolActivate(toolId)}
       >
+        <span class="tool-icon">${phosphorIcon(icon, 18)}</span>
+      </blocky-button>
     `;
   }
 
-  private renderToolGroups(): TemplateResult[] {
-    return InkwellToolsPanel.TOOL_GROUPS.map(
-      (group) => html`
-        <inkwell-panel-section data-interactive>
-          <div class="grid">
-            ${group.map((toolId) => this.renderToolButton(toolId))}
-          </div>
-        </inkwell-panel-section>
-      `,
-    );
-  }
-
-  private renderToolSettings(): TemplateResult {
-    const currentToolId = this.tool.value;
-    const currentTool = getTool(currentToolId);
-    const toolSettings = this.settings.value[currentToolId] as Record<string, unknown>;
-    const schema = currentTool.settings as SettingsSchema;
-
-    let schemaKeys = Object.keys(schema);
-    // Pixel resolution only affects tools that rasterize through the pixel
-    // canvas before tracing; vector tools (select, direct-select, magnet,
-    // pan, eyedropper) don't touch it and shouldn't advertise the setting.
-    const showsPixelRes = currentToolId === "brush" || currentToolId === "lasso" || currentToolId === "rect" || currentToolId === "circle";
-
-    if (currentToolId === "magic-move") {
-      const timing = toolSettings.timing === "duration" ? "duration" : "step";
-      schemaKeys = schemaKeys.filter((key) => {
-        if (key === "step") return timing === "step";
-        if (key === "duration") return timing === "duration";
-        return true;
-      });
-    }
-
-    if (schemaKeys.length === 0) {
-      if (currentToolId === "select") {
-        return html`<p class="hint">Click to select, drag to move.</p>`;
-      }
-      if (currentToolId === "pan") {
-        return html`<p class="hint">Drag to pan, scroll to zoom.</p>`;
-      }
-      if (currentToolId === "eyedropper") {
-        return html`<p class="hint">Click artwork to pick its color.</p>`;
-      }
-      if (currentToolId === "direct-select") {
-        return html`<p class="hint">Drag a rectangle or lasso to select vertices on the active layer.</p>`;
-      }
-      return showsPixelRes ? html`${this.renderPixelRes()}` : html``;
-    }
-
+  /** Title-less shell: grab pill + body only (no close control). */
+  private renderToolsBlock(content: TemplateResult) {
     return html`
-      ${schemaKeys.map((key) =>
-        this.renderSetting(
-          currentToolId,
-          key,
-          schema[key],
-          toolSettings[key]
-        )
-      )}
-      ${currentToolId === "select"
-        ? html`<p class="hint">Drag a rectangle or freeform lasso to extract a selection. “All” selects across unlocked visible layers.</p>`
-        : ""}
-      ${currentToolId === "magic-move"
-        ? html`
-            <p class="hint">
-              Lasso a selection, then draw a trajectory with crossing timing
-              ticks. When the chart is valid, an Apply popup appears. Esc clears
-              the chart, then the selection.
-            </p>
-            <blocky-button
-              flat
-              accent
-              stretch
-              ?disabled=${!this.magicMoveUi.value.canApply}
-              @click=${() => this.emit("magic-move-apply")}
-              >Apply</blocky-button
-            >
-          `
-        : ""}
-      ${currentToolId === "magic-morph"
-        ? html`
-            <p class="hint">
-              Playhead on a hold, then draw a trajectory with crossing timing
-              ticks. Apply morphs to the next keyframe using chart ratios.
-            </p>
-            <blocky-button
-              flat
-              accent
-              stretch
-              ?disabled=${!this.magicMorphUi.value.canApply}
-              @click=${() => this.emit("magic-morph-apply")}
-              >Apply</blocky-button
-            >
-          `
-        : ""}
-      ${showsPixelRes ? this.renderPixelRes() : ""}
+      <div class="block">
+        <div class="panel-body">
+          <div class="face">
+            ${this.renderResizeHandles()}
+            <div class="panel-form">
+              <div class="tools-shell">
+                <div
+                  class="tools-drag"
+                  data-drag-handle
+                  title="Drag to move"
+                  aria-hidden="true"
+                ></div>
+                ${content}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     `;
   }
 
   render() {
-    return this.renderFloatingBlock(
-      "Tools",
-      html`
-            ${this.renderToolGroups()}
-            <inkwell-panel-section title="Tool Settings" data-interactive>
-              ${this.renderToolSettings()}
-            </inkwell-panel-section>
-      `,
-    );
+    return this.renderToolsBlock(html`
+      <div class="tools-rail" data-interactive>
+        <div class="grid">
+          ${InkwellToolsPanel.TOOLS.map((toolId) => this.renderToolButton(toolId))}
+        </div>
+      </div>
+    `);
   }
 }

@@ -17,8 +17,8 @@ export class InkwellScrollStrip extends LitElement {
   @property({ type: Boolean, reflect: true, attribute: "center-label" })
   centerLabel = false;
   /**
-   * Bleed to cancel parent inset padding (10px) so the track is flush with
-   * the group edge; header keeps matching inset padding.
+   * Bleed to cancel parent `--inkwell-block-face-padding` so the track is flush
+   * with the group edge; header keeps matching inset padding.
    */
   @property({ type: Boolean, reflect: true }) flush = false;
 
@@ -64,8 +64,8 @@ export class InkwellScrollStrip extends LitElement {
     }
 
     :host([flush]) {
-      width: calc(100% + 20px);
-      margin-inline: -10px;
+      width: calc(100% + (2 * var(--inkwell-block-face-padding, 12px)));
+      margin-inline: calc(-1 * var(--inkwell-block-face-padding, 12px));
     }
 
     .shell {
@@ -87,7 +87,7 @@ export class InkwellScrollStrip extends LitElement {
     }
 
     :host([flush]) .header {
-      padding-inline: 10px;
+      padding-inline: var(--inkwell-block-face-padding, 12px);
     }
 
     .header-label {
@@ -160,7 +160,7 @@ export class InkwellScrollStrip extends LitElement {
       box-sizing: border-box;
       align-items: stretch;
       /* Inset chips from the flush viewport edges; scrolls with content. */
-      padding-inline: 10px;
+      padding-inline: var(--inkwell-block-face-padding, 12px);
     }
 
     :host([rows="1"]) .track {

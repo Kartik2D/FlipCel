@@ -60,8 +60,9 @@ export class InkwellUniversalPanel extends FloatingPanel {
       flex: 0 0 28px;
       margin-left: auto;
       padding: 0;
-      border-radius: var(--panel-control-radius, 8px);
-      border: 2px solid var(--block-border, #555555);
+      border-radius: var(--inkwell-content-radius);
+      border: var(--block-border-width, var(--inkwell-block-border-width, 2px)) solid
+        var(--block-border, #555555);
       box-sizing: border-box;
       cursor: pointer;
     }
@@ -108,7 +109,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
       padding: 5px 6px;
       margin: 0;
       border: none;
-      border-radius: var(--panel-control-radius, 8px);
+      border-radius: var(--inkwell-content-radius);
       background-color: var(--block-depth-color, #bcbcbc);
       color: var(--block-border, #555555);
       text-align: right;

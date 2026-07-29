@@ -106,13 +106,12 @@ export class InkwellWheelPanel extends FloatingPanel {
       --panel-min-width: 0;
       --chamber-size: 19px;
       --chamber-outer-inset: 9px;
-      height: calc(var(--panel-size) + var(--block-depth));
-      min-height: calc(var(--panel-size) + var(--block-depth));
-      max-height: calc(var(--panel-size) + var(--block-depth));
+      height: var(--panel-size);
+      min-height: var(--panel-size);
+      max-height: var(--panel-size);
     }
 
-    /* Stadium-shaped block: circle stretched vertically by the depth.
-       overflow: visible so the outer barrel ring isn't clipped. */
+    /* Stadium / circle panel shell. */
     .block {
       border-radius: calc(var(--panel-size) / 2);
       overflow: visible;
@@ -291,6 +290,8 @@ export class InkwellWheelPanel extends FloatingPanel {
 
   connectedCallback() {
     super.connectedCallback();
+    // Custom chrome has no header X (close via dock toggle after re-docking).
+    this.showPinnedClose = false;
     this.resizable = false;
     this.blockWidth = null;
     this.blockHeight = null;

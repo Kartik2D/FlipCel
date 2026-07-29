@@ -13,6 +13,7 @@ export {
   InkwellColorPanel,
   InkwellColorPopup,
   InkwellToolsPanel,
+  InkwellToolSettingsPanel,
   InkwellTopBarPanel,
   InkwellShortcutsPanel,
   InkwellViewPanel,

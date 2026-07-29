@@ -1,7 +1,6 @@
-import { LitElement, html, css, type PropertyValues } from "lit";
+import { LitElement, html, css, nothing, type PropertyValues } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import type { ContextualActionMenuItem } from "../../editing/contextual-actions";
-import { phosphorIcon } from "../icons/phosphor";
 
 // ============================================================
 // Functions Panel (appears on selection)
@@ -49,9 +48,9 @@ export class InkwellFunctionsPanel extends LitElement {
 
     .fn-shell {
       background: var(--inkwell-panel-depth, #bcbcbc);
-      border: 2px solid var(--inkwell-panel-border, #555555);
-      border-radius: 10px;
-      padding: 0 0 7px 0;
+      border: var(--inkwell-block-border-width, 0px) solid var(--inkwell-panel-border, #555555);
+      border-radius: var(--inkwell-block-radius);
+      padding: 0;
       box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
       position: relative;
       overflow: hidden;
@@ -66,27 +65,35 @@ export class InkwellFunctionsPanel extends LitElement {
 
     .fn-face {
       background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
-      border-radius: 8px;
-      padding: 6px;
+      border-radius: calc(
+        var(--inkwell-block-radius) - var(--inkwell-block-border-width, 0px)
+      );
+      padding: 4px;
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 2px;
     }
 
     .fn-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 34px;
-      height: 34px;
-      padding: 0;
+      gap: 3px;
+      min-height: 28px;
+      padding: 5px 8px;
       border: none;
       border-radius: 6px;
       background: transparent;
       color: var(--inkwell-text-primary, #1a1a1a);
       font: inherit;
+      line-height: 1;
+      white-space: nowrap;
       cursor: pointer;
       transition: background 80ms ease;
+    }
+
+    .fn-btn.draggable {
+      cursor: grab;
     }
 
     .fn-btn:hover {
@@ -95,6 +102,13 @@ export class InkwellFunctionsPanel extends LitElement {
 
     .fn-btn.negative { color: var(--inkwell-negative, #af5b5b); }
     .fn-btn.negative:hover { background: var(--inkwell-panel-active-negative, rgba(255, 122, 122, 0.58)); }
+
+    .fn-drag-hint {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      opacity: 0.55;
+    }
   `;
 
   connectedCallback() {
@@ -255,8 +269,8 @@ export class InkwellFunctionsPanel extends LitElement {
             (fn) => html`
               <button
                 type="button"
-                class="fn-btn ${fn.negative ? "negative" : ""}"
-                title=${fn.name}
+                class="fn-btn ${fn.negative ? "negative" : ""} ${fn.draggable ? "draggable" : ""}"
+                title=${fn.draggable ? `${fn.name} (drag to place)` : fn.name}
                 aria-label=${fn.name}
                 @pointerdown=${(e: PointerEvent) => this.onFunctionPointerDown(fn, e)}
                 @pointermove=${(e: PointerEvent) => this.onFunctionPointerMove(fn, e)}
@@ -264,7 +278,10 @@ export class InkwellFunctionsPanel extends LitElement {
                 @pointercancel=${(e: PointerEvent) => this.onFunctionPointerCancel(fn, e)}
                 @click=${() => this.onFunction(fn.id)}
               >
-                ${phosphorIcon(fn.icon, 16)}
+                <span>${fn.name}</span>
+                ${fn.draggable
+                  ? html`<span class="fn-drag-hint" aria-hidden="true">↔↕</span>`
+                  : nothing}
               </button>
             `
           )}

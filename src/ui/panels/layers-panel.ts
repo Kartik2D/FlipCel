@@ -835,7 +835,7 @@ export class InkwellLayersPanel extends FloatingPanel {
           <div class="frame-actions-face">
             <button
               type="button"
-              class="frame-action-btn"
+              class="frame-action-btn draggable"
               title="Duplicate (drag to place)"
               aria-label="Duplicate"
               @pointerdown=${this.onFrameActionDuplicateDown}
@@ -847,7 +847,7 @@ export class InkwellLayersPanel extends FloatingPanel {
                 if (this.frameActionDrag) return;
                 this.onFrameActionDuplicateClick();
               }}
-            >${phosphorIcon("copy", 14)}</button>
+            ><span>Duplicate</span><span class="frame-action-drag-hint" aria-hidden="true">↔</span></button>
             <button
               type="button"
               class="frame-action-btn"
@@ -855,7 +855,7 @@ export class InkwellLayersPanel extends FloatingPanel {
               aria-label="Reverse"
               ?disabled=${len < 2 || this.reverseAnimation !== null}
               @click=${() => this.onFrameActionReverseClick()}
-            >${phosphorIcon("arrows-left-right", 14)}</button>
+            >Reverse</button>
             <button
               type="button"
               class="frame-action-btn"
@@ -863,14 +863,14 @@ export class InkwellLayersPanel extends FloatingPanel {
               aria-label="Auto morph"
               @click=${(e: Event) =>
                 this.onFrameActionAutoMorphClick(e.currentTarget as HTMLElement)}
-            >${phosphorIcon("magic-wand", 14)}</button>
+            >Morph</button>
             <button
               type="button"
               class="frame-action-btn negative"
               title="Delete keyframes"
               aria-label="Delete"
               @click=${() => this.onFrameActionDeleteClick()}
-            >${phosphorIcon("trash", 14)}</button>
+            >Delete</button>
           </div>
         </div>
       </div>

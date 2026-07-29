@@ -93,30 +93,24 @@ export const viewOverlayStore = new Store<ViewOverlaySettings>(
 );
 
 export type ThemeMode =
-  | "light"
-  | "dark"
+  | "slab"
+  | "light-slab"
   | "bubblegum"
-  | "neon"
   | "notebook"
-  | "ocean"
-  | "matcha"
-  | "twilight"
-  | "synth"
-  | "banana";
+  | "velvet"
+  | "lagoon"
+  | "neon";
 
 export const THEME_STORAGE_KEY = "inkwell.theme";
 
 export const THEME_OPTIONS: readonly ThemeMode[] = [
-  "dark",
-  "light",
-  "notebook",
-  "ocean",
-  "matcha",
-  "twilight",
-  "neon",
-  "banana",
+  "slab",
+  "light-slab",
   "bubblegum",
-  "synth",
+  "notebook",
+  "velvet",
+  "lagoon",
+  "neon",
 ];
 
 /** Compact palette used by the settings theme preview glyph. */
@@ -136,26 +130,26 @@ export interface ThemeInfo {
 }
 
 export const THEMES: Record<ThemeMode, ThemeInfo> = {
-  light: {
-    id: "light",
-    label: "Light",
-    colorScheme: "light",
-    preview: {
-      app: "#9a9a9a",
-      panel: "#e6e6e6",
-      border: "#484848",
-      accent: "#4d73d7",
-    },
-  },
-  dark: {
-    id: "dark",
-    label: "Dark",
+  slab: {
+    id: "slab",
+    label: "Slab",
     colorScheme: "dark",
     preview: {
       app: "#121212",
       panel: "#383838",
       border: "#8a8a8a",
       accent: "#7c9eff",
+    },
+  },
+  "light-slab": {
+    id: "light-slab",
+    label: "Light Slab",
+    colorScheme: "light",
+    preview: {
+      app: "#9a9a9a",
+      panel: "#e6e6e6",
+      border: "#484848",
+      accent: "#4d73d7",
     },
   },
   bubblegum: {
@@ -169,6 +163,39 @@ export const THEMES: Record<ThemeMode, ThemeInfo> = {
       accent: "#e23d8b",
     },
   },
+  notebook: {
+    id: "notebook",
+    label: "Notebook",
+    colorScheme: "light",
+    preview: {
+      app: "#6e6458",
+      panel: "#fffdf6",
+      border: "#3d4f7a",
+      accent: "#2f4f9a",
+    },
+  },
+  velvet: {
+    id: "velvet",
+    label: "Velvet",
+    colorScheme: "dark",
+    preview: {
+      app: "#120a10",
+      panel: "#2a1822",
+      border: "#c890a0",
+      accent: "#e8a0b8",
+    },
+  },
+  lagoon: {
+    id: "lagoon",
+    label: "Lagoon",
+    colorScheme: "dark",
+    preview: {
+      app: "#071214",
+      panel: "#162a30",
+      border: "#6a9aa8",
+      accent: "#3ecfbf",
+    },
+  },
   neon: {
     id: "neon",
     label: "Neon",
@@ -180,72 +207,22 @@ export const THEMES: Record<ThemeMode, ThemeInfo> = {
       accent: "#39ff9a",
     },
   },
-  notebook: {
-    id: "notebook",
-    label: "Notebook",
-    colorScheme: "light",
-    preview: {
-      app: "#c9bfb0",
-      panel: "#f4efe6",
-      border: "#6e6458",
-      accent: "#7a8f6b",
-    },
-  },
-  ocean: {
-    id: "ocean",
-    label: "Ocean",
-    colorScheme: "light",
-    preview: {
-      app: "#8fb4c4",
-      panel: "#e8f2f6",
-      border: "#3d5f70",
-      accent: "#3d8ea0",
-    },
-  },
-  matcha: {
-    id: "matcha",
-    label: "Matcha",
-    colorScheme: "light",
-    preview: {
-      app: "#9bb58a",
-      panel: "#eef5e8",
-      border: "#4a5e3f",
-      accent: "#6a8f5a",
-    },
-  },
-  twilight: {
-    id: "twilight",
-    label: "Twilight",
-    colorScheme: "dark",
-    preview: {
-      app: "#1a1630",
-      panel: "#2a2550",
-      border: "#f0b060",
-      accent: "#7b8cff",
-    },
-  },
-  synth: {
-    id: "synth",
-    label: "Synth",
-    colorScheme: "dark",
-    preview: {
-      app: "#1c1218",
-      panel: "#3a2834",
-      border: "#7dffc8",
-      accent: "#ff6b9d",
-    },
-  },
-  banana: {
-    id: "banana",
-    label: "Banana",
-    colorScheme: "light",
-    preview: {
-      app: "#a8a090",
-      panel: "#f7f0c8",
-      border: "#3f3018",
-      accent: "#c4891a",
-    },
-  },
+};
+
+/** Map retired theme ids onto the current set. */
+const THEME_MIGRATIONS: Record<string, ThemeMode> = {
+  berry: "neon",
+  dark: "slab",
+  light: "light-slab",
+  twilight: "neon",
+  synth: "neon",
+  banana: "notebook",
+  matcha: "notebook",
+  ocean: "lagoon",
+  bamboo: "notebook",
+  mist: "lagoon",
+  ink: "lagoon",
+  ember: "velvet",
 };
 
 export function isThemeMode(value: unknown): value is ThemeMode {
@@ -255,12 +232,12 @@ export function isThemeMode(value: unknown): value is ThemeMode {
 export function readStoredTheme(): ThemeMode {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
-    if (stored === "berry") return "synth";
     if (isThemeMode(stored)) return stored;
+    if (stored && stored in THEME_MIGRATIONS) return THEME_MIGRATIONS[stored];
   } catch {
     // ignore quota / privacy mode
   }
-  return "dark";
+  return "slab";
 }
 
 export function persistTheme(mode: ThemeMode) {

@@ -385,6 +385,7 @@ export const timelinePanelStyles = css`
     z-index: 2100;
     transform: translate(-50%, -100%);
     pointer-events: auto;
+    font-family: var(--inkwell-font, system-ui, sans-serif);
     animation: frame-actions-pop-in 180ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
   }
 
@@ -395,16 +396,18 @@ export const timelinePanelStyles = css`
 
   .frame-actions-shell {
     background: var(--inkwell-panel-depth, #bcbcbc);
-    border: 2px solid var(--inkwell-panel-border, #555555);
-    border-radius: 10px;
-    padding: 0 0 5px 0;
+    border: var(--inkwell-block-border-width, 0px) solid var(--inkwell-panel-border, #555555);
+    border-radius: var(--inkwell-block-radius);
+    padding: 0;
     box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
     overflow: hidden;
   }
 
   .frame-actions-face {
     background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
-    border-radius: 8px;
+    border-radius: calc(
+      var(--inkwell-block-radius) - var(--inkwell-block-border-width, 0px)
+    );
     padding: 4px;
     display: flex;
     align-items: center;
@@ -415,16 +418,24 @@ export const timelinePanelStyles = css`
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
-    padding: 0;
+    gap: 3px;
+    min-height: 28px;
+    padding: 5px 8px;
     border: none;
     border-radius: 6px;
     background: transparent;
     color: var(--inkwell-text-primary, #1a1a1a);
     font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
     cursor: pointer;
     touch-action: none;
+  }
+
+  .frame-action-btn.draggable {
+    cursor: grab;
   }
 
   .frame-action-btn:hover {
@@ -453,6 +464,13 @@ export const timelinePanelStyles = css`
   .frame-action-btn.active:hover {
     background: color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 88%, #000);
     color: #fff;
+  }
+
+  .frame-action-drag-hint {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+    opacity: 0.55;
   }
 
   /* Edit Multiple Frames: keep the range tint unmistakably accented while on. */

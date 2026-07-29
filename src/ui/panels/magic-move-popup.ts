@@ -37,9 +37,9 @@ export class InkwellMagicMovePopup extends LitElement {
 
     .shell {
       background: var(--inkwell-panel-depth, #bcbcbc);
-      border: 2px solid var(--inkwell-panel-border, #555555);
-      border-radius: 10px;
-      padding: 0 0 7px 0;
+      border: var(--inkwell-block-border-width, 0px) solid var(--inkwell-panel-border, #555555);
+      border-radius: var(--inkwell-block-radius);
+      padding: 0;
       box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
       min-width: 120px;
       animation: mm-pop-in 180ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
@@ -58,8 +58,10 @@ export class InkwellMagicMovePopup extends LitElement {
 
     .face {
       background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
-      border-radius: 8px;
-      padding: 8px;
+      border-radius: calc(
+        var(--inkwell-block-radius) - var(--inkwell-block-border-width, 2px)
+      );
+      padding: var(--inkwell-block-face-padding, 12px);
       display: flex;
       flex-direction: column;
       gap: 6px;

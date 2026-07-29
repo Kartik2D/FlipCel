@@ -92,7 +92,7 @@ const colorPickerSharedStyles = css`
     height: var(--picker-slider-width);
     flex: 0 0 var(--picker-slider-width);
     padding: 0;
-    border-radius: var(--panel-control-radius, 8px);
+    border-radius: var(--inkwell-content-radius);
     border: var(--picker-border-width) solid var(--picker-border-color);
     box-sizing: border-box;
     overflow: hidden;
@@ -104,8 +104,7 @@ const colorPickerSharedStyles = css`
   }
 
   .swatch[active] {
-    outline: 2px solid var(--panel-accent);
-    outline-offset: 1px;
+    box-shadow: inset 0 0 0 3px var(--panel-accent);
   }
 `;
 

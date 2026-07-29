@@ -1,6 +1,6 @@
 /**
- * Shared motion tokens — bounce timing/easing for floating UI (pinned close control,
- * panel snap-back when a drag does not commit, etc.).
+ * Shared motion tokens — bounce timing/easing for floating UI (panel snap-back
+ * when a drag does not commit, etc.).
  *
  * Registers CSS custom properties on `:root` so Lit `css` templates can use the same values.
  */

@@ -5,52 +5,23 @@ export interface PanelVisibility {
   id: string;
   label: string;
   visible: boolean;
+  /**
+   * Detached from the top dock (user dragged it free). Dock toggle is hidden
+   * until the panel is closed, or dragged back onto the dock (which also
+   * minimizes the panel).
+   */
+  detached: boolean;
 }
 
 export type ToggleablePanel = FloatingPanel & HTMLElement;
 
-export function parseHexRgb(hex: string): { r: number; g: number; b: number } | null {
-  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
-  if (!m) return null;
-  let s = m[1];
-  if (s.length === 3) {
-    s = [...s].map((c) => c + c).join("");
-  }
-  const n = parseInt(s, 16);
-  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
-}
-
-/** WCAG relative luminance for sRGB hex (0 = black, 1 = white). */
-export function hexRelativeLuminance(hex: string): number | null {
-  const rgb = parseHexRgb(hex);
-  if (!rgb) return null;
-  const lin = (u: number) => {
-    u /= 255;
-    return u <= 0.03928 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4;
-  };
-  const R = lin(rgb.r);
-  const G = lin(rgb.g);
-  const B = lin(rgb.b);
-  return 0.2126 * R + 0.7152 * G + 0.0722 * B;
-}
-
-/** 3D depth strip: mix toward black on light colors, toward white on dark colors. */
-export function dockColorDepthStripColor(faceCss: string): string {
-  const lum = hexRelativeLuminance(faceCss);
-  const darkInkMaxLuminance = 0.1;
-  if (lum !== null && lum < darkInkMaxLuminance) {
-    return `color-mix(in srgb, ${faceCss} 76%, #ffffff)`;
-  }
-  return `color-mix(in srgb, ${faceCss} 76%, #000000)`;
-}
-
 export const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
-  { id: "universal-panel", label: "Settings", visible: false },
-  { id: "layers-panel", label: "Layers", visible: false },
-  { id: "wheel-panel", label: "Wheel", visible: false },
-  { id: "view-panel", label: "View", visible: false },
-  { id: "tools-panel", label: "Brush", visible: false },
-  { id: "color-panel", label: "Color", visible: false },
+  { id: "universal-panel", label: "Settings", visible: false, detached: false },
+  { id: "layers-panel", label: "Layers", visible: false, detached: false },
+  { id: "wheel-panel", label: "Wheel", visible: false, detached: false },
+  { id: "view-panel", label: "View", visible: false, detached: false },
+  { id: "tools-panel", label: "Brush", visible: false, detached: false },
+  { id: "color-panel", label: "Color", visible: false, detached: false },
 ];
 
 export const TOP_BAR_PANEL_IDS = [

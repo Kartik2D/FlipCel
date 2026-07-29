@@ -19,7 +19,7 @@ export class InkwellPanelSection extends LitElement {
       width: 100%;
       min-width: 0;
       box-sizing: border-box;
-      border-radius: var(--panel-control-radius, 8px);
+      border-radius: var(--inkwell-content-radius);
       background: var(
         --inkwell-panel-inset-bg,
         color-mix(

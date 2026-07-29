@@ -28,6 +28,7 @@ import { timelineStore, layerJsonEquals } from "../document/document";
 
 interface Settings {
   scope: "active" | "all";
+  solver: "vector" | "sdf";
   divisions: number;
   density: number;
   stickiness: number;
@@ -37,7 +38,7 @@ interface Settings {
 /**
  * Divisions slider max — at this value, Apply fills every frame of the span
  * (like Auto Morph's "Every frame") instead of packing `divisions` inbetweens.
- * Keep in sync with the `divisions` range max in `tools/stubs.ts`.
+ * Keep in sync with the `divisions` range max in `tools/magic-morph.ts`.
  */
 const EVERY_FRAME_DIVISIONS = 12;
 
@@ -181,8 +182,9 @@ export class MagicMorphController {
 
     this.documentManager.commitDirtyLayerContent();
 
-    const { divisions, density, stickiness, simplify } = this.readSettings();
-    const morphOpts = { density, stickiness, simplify };
+    const { divisions, density, stickiness, simplify, solver } =
+      this.readSettings();
+    const morphOpts = { density, stickiness, simplify, solver };
     const ratioResult = morphRatiosFromChart(this.chartStrokes(), divisions);
     if (!ratioResult.ok) return ratioResult;
 
@@ -286,8 +288,8 @@ export class MagicMorphController {
     }
     this.documentManager.commitDirtyLayerContent();
 
-    const { density, stickiness, simplify } = this.readSettings();
-    const morphOpts = { density, stickiness, simplify };
+    const { density, stickiness, simplify, solver } = this.readSettings();
+    const morphOpts = { density, stickiness, simplify, solver };
     // Snapshot before writing: morph inbetweens insert keyframes, and we
     // only want to process the holds that existed at click time.
     const tracks = timelineStore.get().tracks;
@@ -394,6 +396,7 @@ export class MagicMorphController {
       settings["shape-tween"]) as Partial<Settings>;
     return {
       scope: raw?.scope === "active" ? "active" : "all",
+      solver: raw?.solver === "sdf" ? "sdf" : "vector",
       divisions: typeof raw?.divisions === "number" ? raw.divisions : 1,
       density: typeof raw?.density === "number" ? raw.density : 1,
       stickiness: typeof raw?.stickiness === "number" ? raw.stickiness : 0,

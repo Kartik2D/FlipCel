@@ -36,7 +36,7 @@ export const sliderColumnStyles = css`
   .color-preview {
     width: 100%;
     aspect-ratio: 1;
-    border-radius: var(--panel-control-radius, 8px);
+    border-radius: var(--inkwell-content-radius);
     border: var(--picker-border-width) solid var(--picker-border-color);
     box-sizing: border-box;
     overflow: hidden;
@@ -49,7 +49,7 @@ export const sliderColumnStyles = css`
   .s-slider {
     flex: 1;
     position: relative;
-    border-radius: var(--panel-control-radius, 8px);
+    border-radius: var(--inkwell-content-radius);
     overflow: hidden;
     border: var(--picker-border-width) solid var(--picker-border-color);
     box-sizing: border-box;

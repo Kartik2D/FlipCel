@@ -9,6 +9,7 @@ import type {
   InkwellColorPanel,
   InkwellColorPopup,
   InkwellToolsPanel,
+  InkwellToolSettingsPanel,
   InkwellUniversalPanel,
   InkwellViewPanel,
   InkwellShortcutsPanel,
@@ -33,6 +34,7 @@ export type PanelBridgeDeps = {
   colorPanel: InkwellColorPanel;
   colorPopup: InkwellColorPopup;
   toolsPanel: InkwellToolsPanel;
+  toolSettingsPanel: InkwellToolSettingsPanel;
   universalPanel: InkwellUniversalPanel;
   viewPanel: InkwellViewPanel;
   shortcutsPanel: InkwellShortcutsPanel;
@@ -167,13 +169,14 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     deps.switchTool(tool);
   });
 
-  // Tools panel also emits settings events (merged panel)
-  toolsPanel.addEventListener("settings-change", (e: Event) => {
+  // Tool settings panel (opened via double-tap on a tool icon; not dock-toggled)
+  const { toolSettingsPanel } = deps;
+  toolSettingsPanel.addEventListener("settings-change", (e: Event) => {
     const settings = (e as CustomEvent<AllToolSettings>).detail;
     deps.onToolSettingsChange(settings);
   });
 
-  toolsPanel.addEventListener("pixel-res-change", (e: Event) => {
+  toolSettingsPanel.addEventListener("pixel-res-change", (e: Event) => {
     deps.onPixelResChange((e as CustomEvent<number>).detail);
   });
 

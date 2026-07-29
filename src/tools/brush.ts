@@ -15,6 +15,7 @@ export const brush: ToolDefinition<typeof brushSettings> = {
   id: "brush",
   name: "Brush",
   hotkey: "b",
+  icon: "paint-brush",
   settings: brushSettings,
   dockModeSetting: "mode",
 

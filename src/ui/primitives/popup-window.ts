@@ -46,11 +46,10 @@ export class PopupWindow extends FloatingPanel {
       --panel-width: 220px;
       --panel-min-width: 160px;
       --panel-max-height: min(70vh, 420px);
-      --block-face-padding: 8px;
     }
 
     .panel-body > .face {
-      border-radius: calc(var(--block-radius) - 2px);
+      border-radius: calc(var(--block-radius) - var(--block-border-width, 2px));
     }
   `;
 

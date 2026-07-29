@@ -9,6 +9,7 @@ import { phosphorIcon } from "../icons/phosphor";
 
 export class FloatingPanel extends Block {
   @property({ type: Boolean, reflect: true }) pinned = false;
+  /** When true, the header always shows a close (X) control. */
   @property({ type: Boolean }) showPinnedClose = true;
   /**
    * Arrange `inkwell-panel-section` groups in a responsive masonry (multi-column)
@@ -39,7 +40,6 @@ export class FloatingPanel extends Block {
       overscroll-behavior: none;
 
       --block-font-color: var(--inkwell-text-primary, #1a1a1a);
-      --panel-control-radius: 8px;
       --panel-accent: var(--inkwell-accent, #4a6fb5);
       --panel-accent-hover: var(--inkwell-accent-hover, #3d5e9a);
       --panel-accent-muted: var(--inkwell-accent-muted, rgba(74, 111, 181, 0.35));
@@ -78,9 +78,8 @@ export class FloatingPanel extends Block {
     .panel-body > .face {
       flex: 1 1 auto;
       min-height: 0;
-      border-radius: 0 0 calc(var(--block-radius) - 2px) calc(var(--block-radius) - 2px);
-      /* Let corner resize zones reach the depth lip under the face. */
-      overflow-clip-margin: var(--block-depth);
+      border-radius: 0 0 calc(var(--block-radius) - var(--block-border-width, 0px))
+        calc(var(--block-radius) - var(--block-border-width, 0px));
     }
 
     .panel-body > .face-scrollbar {
@@ -188,11 +187,13 @@ export class FloatingPanel extends Block {
       flex-shrink: 0;
       box-sizing: border-box;
       margin: 0;
-      /* Stable chrome: do not derive from --block-face-padding (may be multi-value). */
-      min-height: calc(var(--panel-header-control-size) + 16px);
-      padding: 8px 10px;
+      min-height: calc(
+        var(--panel-header-control-size) + (2 * var(--inkwell-block-face-padding, 12px))
+      );
+      padding: var(--inkwell-block-face-padding, 12px);
       background: var(--block-face-bg);
-      border-radius: calc(var(--block-radius) - 2px) calc(var(--block-radius) - 2px) 0 0;
+      border-radius: calc(var(--block-radius) - var(--block-border-width, 2px))
+        calc(var(--block-radius) - var(--block-border-width, 2px)) 0 0;
     }
 
     .panel-header-slot {
@@ -244,21 +245,6 @@ export class FloatingPanel extends Block {
       cursor: grabbing;
     }
 
-    @keyframes panel-header-close-bounce-in {
-      0% {
-        transform: scale(0.55);
-      }
-      55% {
-        transform: scale(1.1);
-      }
-      78% {
-        transform: scale(0.96);
-      }
-      100% {
-        transform: scale(1);
-      }
-    }
-
     .panel-header-close {
       width: var(--panel-header-control-size, 18px);
       height: var(--panel-header-control-size, 18px);
@@ -273,9 +259,6 @@ export class FloatingPanel extends Block {
       cursor: pointer;
       padding: 0;
       margin: 0;
-      transform-origin: center center;
-      animation: panel-header-close-bounce-in var(--inkwell-motion-bounce-duration, 380ms)
-        var(--inkwell-motion-bounce-easing, cubic-bezier(0.34, 1.25, 0.64, 1)) both;
       -webkit-tap-highlight-color: transparent;
     }
 
@@ -351,7 +334,7 @@ export class FloatingPanel extends Block {
       padding: 6px 1.75rem 6px 10px;
       margin: 0;
       border: none;
-      border-radius: var(--panel-control-radius, 8px);
+      border-radius: var(--inkwell-content-radius);
       background-color: var(--block-depth-color, #bcbcbc);
       color: var(--block-border, #555555);
       cursor: pointer;
@@ -524,7 +507,54 @@ export class FloatingPanel extends Block {
   }
 
   protected onDragCommitted() {
-    this.pinned = true;
+    if (!this.pinned) {
+      // Pulling away from the dock — hide the dock toggle until closed or re-docked.
+      this.pinned = true;
+      this.dispatchPanelDockState({ visible: true, detached: true });
+      return;
+    }
+
+    // Already floating — dropping back onto the top dock reattaches it.
+    if (this.isOverTopDock()) {
+      this.pinned = false;
+      this.dispatchPanelDockState({ visible: true, detached: false });
+    }
+  }
+
+  private dispatchPanelDockState(detail: {
+    visible: boolean;
+    detached: boolean;
+  }) {
+    if (!this.id) return;
+    this.dispatchEvent(
+      new CustomEvent("panel-visibility-change", {
+        detail: { id: this.id, ...detail },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  /** Hit-test against the top dock (with a little slack below) for re-dock drops. */
+  protected isOverTopDock(): boolean {
+    const dock = document.querySelector<HTMLElement>("inkwell-top-bar-panel");
+    if (!dock || dock.style.display === "none") return false;
+
+    const dockRect = dock.getBoundingClientRect();
+    const panelRect = this.getBoundingClientRect();
+    const padX = 32;
+    const padBottom = 56;
+    const zoneLeft = dockRect.left - padX;
+    const zoneRight = dockRect.right + padX;
+    const zoneTop = 0;
+    const zoneBottom = dockRect.bottom + padBottom;
+
+    return !(
+      panelRect.right < zoneLeft ||
+      panelRect.left > zoneRight ||
+      panelRect.bottom < zoneTop ||
+      panelRect.top > zoneBottom
+    );
   }
 
   hidePanel() {
@@ -533,7 +563,7 @@ export class FloatingPanel extends Block {
     this.style.display = "none";
     this.dispatchEvent(
       new CustomEvent("panel-visibility-change", {
-        detail: { id: this.id, visible: false },
+        detail: { id: this.id, visible: false, detached: false },
         bubbles: true,
         composed: true,
       }),
@@ -581,13 +611,13 @@ export class FloatingPanel extends Block {
 
   /**
    * Title bar row: title (left), drag pill (center), close (right).
+   * Close is always shown when `showPinnedClose` is set (not gated on detach).
    */
   protected renderDragHandlePill(title?: string) {
-    const showClose = this.pinned && this.showPinnedClose;
+    const showClose = this.showPinnedClose;
     const showPill = this.draggable && this.showsDragHandlePill();
     const headerDraggable = this.draggable && this.headerActsAsDragHandle();
-    const reserveCloseSlot = this.showPinnedClose;
-    if (!showPill && !headerDraggable && !title && !showClose && !reserveCloseSlot) {
+    if (!showPill && !headerDraggable && !title && !showClose) {
       return html``;
     }
 
@@ -606,11 +636,7 @@ export class FloatingPanel extends Block {
             : nothing}
         </div>
         <div class="panel-header-slot panel-header-end">
-          ${showClose
-            ? this.renderPanelClose()
-            : reserveCloseSlot
-              ? html`<span class="panel-header-close-spacer" aria-hidden="true"></span>`
-              : nothing}
+          ${showClose ? this.renderPanelClose() : nothing}
         </div>
       </div>
     `;

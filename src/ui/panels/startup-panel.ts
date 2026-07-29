@@ -28,7 +28,6 @@ export class InkwellStartupPanel extends FloatingPanel {
     :host {
       --panel-width: 320px;
       --panel-max-height: none;
-      --block-face-padding: 14px 16px 16px;
       z-index: 1100;
     }
 
