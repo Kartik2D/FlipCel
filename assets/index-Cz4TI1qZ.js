@@ -986,6 +986,14 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       padding-right: 0;
     }
 
+    .panel-header.is-drag-handle {
+      cursor: grab;
+    }
+
+    :host([dragging]) .panel-header.is-drag-handle {
+      cursor: grabbing;
+    }
+
     /* Horizontal grab pill — flat, no shadow */
     .panel-drag-pill {
       width: 2.5rem;
@@ -994,12 +1002,8 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       background: var(--block-border, #555555);
       box-shadow: none;
       flex-shrink: 0;
-      cursor: grab;
+      cursor: inherit;
       pointer-events: auto;
-    }
-
-    :host([dragging]) .panel-drag-pill {
-      cursor: grabbing;
     }
 
     .panel-header-close {
@@ -1257,7 +1261,7 @@ return module.exports;`;var _=H.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
           </div>
         </div>
       </div>
-    `}showsDragHandlePill(){return!0}headerActsAsDragHandle(){return!1}renderDragHandlePill(e){let t=this.showPinnedClose,n=this.draggable&&this.showsDragHandlePill(),r=this.draggable&&this.headerActsAsDragHandle();return!n&&!r&&!e&&!t?X``:X`
+    `}showsDragHandlePill(){return!0}headerActsAsDragHandle(){return!1}_isWhitespaceTarget(e){let t=e.composedPath();for(let e of t){if(e===this)break;if(!(e instanceof HTMLElement))continue;if(e.hasAttribute(`data-interactive`))return!1;let t=e.tagName.toLowerCase();if(t===`button`||t===`input`||t===`blocky-button`)return!1;if(e.hasAttribute(`data-drag-handle`))return!0}return!1}renderDragHandlePill(e){let t=this.showPinnedClose,n=this.draggable&&this.showsDragHandlePill(),r=this.draggable&&(n||this.headerActsAsDragHandle());return!n&&!r&&!e&&!t?X``:X`
       <div
         class="panel-header ${e?`has-title`:``} ${t?`has-close`:``} ${r?`is-drag-handle`:``}"
         ?data-drag-handle=${r}
