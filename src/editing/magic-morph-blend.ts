@@ -27,14 +27,14 @@ export interface MorphOptions {
   density: number;
   /** Corner pinning strength: 0 = uniform correspondence, 1 = full pin. */
   stickiness: number;
-  /** Handle rounding: 1 = keep corners sharp, 2 = fully smooth beziers. */
-  smoothness: number;
+  /** Paper `Path.simplify` tolerance; 0 = off. */
+  simplify: number;
 }
 
 export const DEFAULT_MORPH_OPTIONS: MorphOptions = {
   density: 1,
-  stickiness: 1,
-  smoothness: 1,
+  stickiness: 0,
+  simplify: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -529,33 +529,27 @@ function normalize(samples: Sample[], f: Frame): Sample[] {
 /**
  * Map raw saliency to a handle-shortening factor. Smoothstep with a dead
  * zone below 0.45: gentle curvature keeps full bezier handles; only
- * genuinely sharp corners tighten. `smoothness` (1–2) fades that effect:
- * 1 = keep corners sharp, 2 = always round.
+ * genuinely sharp corners tighten slightly (never to zero).
  */
-function cornerPin(saliency: number, smoothness: number): number {
+function cornerPin(saliency: number): number {
   const u = Math.max(0, Math.min(1, (saliency - 0.45) / 0.4));
   const base = u * u * (3 - 2 * u);
-  // smoothness 1 → full pin, smoothness 2 → no pin
-  const pin = Math.max(0, 2 - smoothness);
-  return Math.min(1, base * pin);
+  return Math.min(1, base * 0.35);
 }
 
-function finishHandles(
-  out: paper.Path,
-  saliency?: number[],
-  smoothness = DEFAULT_MORPH_OPTIONS.smoothness,
-): void {
+function finishHandles(out: paper.Path, saliency?: number[]): void {
   const n = out.segments.length;
   for (let i = 0; i < n; i++) {
     if (!out.closed && (i === 0 || i === n - 1)) continue;
     const prev = out.segments[(i - 1 + n) % n].point;
     const next = out.segments[(i + 1) % n].point;
-    const pin = saliency ? cornerPin(saliency[i], smoothness) : 0;
-    const handle = next.subtract(prev).multiply(0.25 * (1 - pin));
+    const pin = saliency ? cornerPin(saliency[i]) : 0;
+    const handle = next.subtract(prev).multiply(0.28 * (1 - pin));
     out.segments[i].handleIn = handle.multiply(-1);
     out.segments[i].handleOut = handle;
   }
 }
+
 
 /**
  * Morph one contour pair inside the shared item frames: samples are
@@ -632,7 +626,8 @@ function morphContourSamples(
     }
   }
 
-  finishHandles(out, outSaliency, opts.smoothness);
+  finishHandles(out, outSaliency);
+  if (opts.simplify > 0) out.simplify(opts.simplify);
   clearContourStyle(out);
   return out;
 }

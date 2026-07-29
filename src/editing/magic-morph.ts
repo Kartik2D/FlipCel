@@ -31,7 +31,7 @@ interface Settings {
   divisions: number;
   density: number;
   stickiness: number;
-  smoothness: number;
+  simplify: number;
 }
 
 /**
@@ -181,8 +181,8 @@ export class MagicMorphController {
 
     this.documentManager.commitDirtyLayerContent();
 
-    const { divisions, density, stickiness, smoothness } = this.readSettings();
-    const morphOpts = { density, stickiness, smoothness };
+    const { divisions, density, stickiness, simplify } = this.readSettings();
+    const morphOpts = { density, stickiness, simplify };
     const ratioResult = morphRatiosFromChart(this.chartStrokes(), divisions);
     if (!ratioResult.ok) return ratioResult;
 
@@ -286,8 +286,8 @@ export class MagicMorphController {
     }
     this.documentManager.commitDirtyLayerContent();
 
-    const { density, stickiness, smoothness } = this.readSettings();
-    const morphOpts = { density, stickiness, smoothness };
+    const { density, stickiness, simplify } = this.readSettings();
+    const morphOpts = { density, stickiness, simplify };
     // Snapshot before writing: morph inbetweens insert keyframes, and we
     // only want to process the holds that existed at click time.
     const tracks = timelineStore.get().tracks;
@@ -396,8 +396,8 @@ export class MagicMorphController {
       scope: raw?.scope === "active" ? "active" : "all",
       divisions: typeof raw?.divisions === "number" ? raw.divisions : 1,
       density: typeof raw?.density === "number" ? raw.density : 1,
-      stickiness: typeof raw?.stickiness === "number" ? raw.stickiness : 1,
-      smoothness: typeof raw?.smoothness === "number" ? raw.smoothness : 1,
+      stickiness: typeof raw?.stickiness === "number" ? raw.stickiness : 0,
+      simplify: typeof raw?.simplify === "number" ? raw.simplify : 0,
     };
   }
 

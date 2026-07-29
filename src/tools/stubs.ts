@@ -181,6 +181,14 @@ const magicMorphSettings = {
     label: "Divisions",
     maxLabel: "Every frame",
   },
+  stickiness: {
+    type: "range",
+    min: 0,
+    max: 1,
+    step: 0.1,
+    default: 0,
+    label: "Corner Stick",
+  },
   density: {
     type: "range",
     min: 1,
@@ -189,21 +197,13 @@ const magicMorphSettings = {
     default: 1,
     label: "Density",
   },
-  stickiness: {
+  simplify: {
     type: "range",
     min: 0,
-    max: 1,
-    step: 0.1,
-    default: 1,
-    label: "Corner Stick",
-  },
-  smoothness: {
-    type: "range",
-    min: 1,
-    max: 2,
-    step: 0.1,
-    default: 1,
-    label: "Smoothness",
+    max: 10,
+    step: 0.5,
+    default: 0,
+    label: "Simplify",
   },
 } as const satisfies SettingsSchema;
 
