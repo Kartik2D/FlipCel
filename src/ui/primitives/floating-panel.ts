@@ -229,6 +229,14 @@ export class FloatingPanel extends Block {
       padding-right: 0;
     }
 
+    .panel-header.is-drag-handle {
+      cursor: grab;
+    }
+
+    :host([dragging]) .panel-header.is-drag-handle {
+      cursor: grabbing;
+    }
+
     /* Horizontal grab pill — flat, no shadow */
     .panel-drag-pill {
       width: 2.5rem;
@@ -237,12 +245,8 @@ export class FloatingPanel extends Block {
       background: var(--block-border, #555555);
       box-shadow: none;
       flex-shrink: 0;
-      cursor: grab;
+      cursor: inherit;
       pointer-events: auto;
-    }
-
-    :host([dragging]) .panel-drag-pill {
-      cursor: grabbing;
     }
 
     .panel-header-close {
@@ -604,8 +608,24 @@ export class FloatingPanel extends Block {
     return true;
   }
 
-  /** When true, the whole title bar is draggable (no grab pill). */
+  /** When true, the whole title bar is the drag handle (e.g. no dedicated pill). */
   protected headerActsAsDragHandle(): boolean {
+    return false;
+  }
+
+  /**
+   * Only the title bar / explicit `data-drag-handle` moves the panel — never the face.
+   */
+  protected override _isWhitespaceTarget(e: PointerEvent): boolean {
+    const path = e.composedPath();
+    for (const el of path) {
+      if (el === this) break;
+      if (!(el instanceof HTMLElement)) continue;
+      if (el.hasAttribute("data-interactive")) return false;
+      const tag = el.tagName.toLowerCase();
+      if (tag === "button" || tag === "input" || tag === "blocky-button") return false;
+      if (el.hasAttribute("data-drag-handle")) return true;
+    }
     return false;
   }
 
@@ -616,7 +636,9 @@ export class FloatingPanel extends Block {
   protected renderDragHandlePill(title?: string) {
     const showClose = this.showPinnedClose;
     const showPill = this.draggable && this.showsDragHandlePill();
-    const headerDraggable = this.draggable && this.headerActsAsDragHandle();
+    // Whole top bar (pill + title chrome) is the move handle when draggable.
+    const headerDraggable =
+      this.draggable && (showPill || this.headerActsAsDragHandle());
     if (!showPill && !headerDraggable && !title && !showClose) {
       return html``;
     }
