@@ -585,6 +585,12 @@ export class InkwellLayersPanel extends FloatingPanel {
     this.emit("frames-duplicate", layerActionDetail(sel));
   }
 
+  private onFrameActionAutoMorphClick(anchor: HTMLElement) {
+    const sel = this.frameSelection;
+    if (!sel || sel.layerIds.length === 0) return;
+    this.emit("frames-auto-morph", { ...layerActionDetail(sel), anchor });
+  }
+
   private onFrameActionReverseClick() {
     const sel = this.frameSelection;
     if (!sel || this.reverseAnimation) return;
@@ -850,6 +856,14 @@ export class InkwellLayersPanel extends FloatingPanel {
               ?disabled=${len < 2 || this.reverseAnimation !== null}
               @click=${() => this.onFrameActionReverseClick()}
             >${phosphorIcon("arrows-left-right", 14)}</button>
+            <button
+              type="button"
+              class="frame-action-btn"
+              title="Auto morph: fill holds with morphs toward their next keyframe"
+              aria-label="Auto morph"
+              @click=${(e: Event) =>
+                this.onFrameActionAutoMorphClick(e.currentTarget as HTMLElement)}
+            >${phosphorIcon("magic-wand", 14)}</button>
             <button
               type="button"
               class="frame-action-btn negative"
@@ -1693,18 +1707,26 @@ export class InkwellLayersPanel extends FloatingPanel {
   private renderPlaybackActions() {
     const t = this.timeline.value;
     return html`
-      <span class="fps-field playback-fps">
-        fps
-        <input
-          type="number"
-          min="1"
-          max="60"
-          .value=${String(t.frameRate)}
-          @change=${(e: Event) => {
-            const value = Number((e.target as HTMLInputElement).value);
-            if (Number.isFinite(value)) this.emit("frame-rate-change", value);
-          }}
-        />
+      <span class="playback-fps-group">
+        <span class="fps-field playback-fps">
+          fps
+          <input
+            type="number"
+            min="1"
+            max="60"
+            .value=${String(t.frameRate)}
+            @change=${(e: Event) => {
+              const value = Number((e.target as HTMLInputElement).value);
+              if (Number.isFinite(value)) this.emit("frame-rate-change", value);
+            }}
+          />
+        </span>
+        <button
+          type="button"
+          class="tl-btn playback-rt ${t.realTimeLock ? "on" : ""}"
+          title="Lock timings to real time: changing fps rescales keyframes so the animation keeps its wall-clock speed (e.g. 30 to 60 fps makes every frame a two-frame hold)"
+          @click=${() => this.emit("real-time-lock-toggle")}
+        >RT</button>
       </span>
       <button
         type="button"

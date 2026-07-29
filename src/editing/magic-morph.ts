@@ -24,6 +24,7 @@ import {
   type ChartStroke,
 } from "./magic-move-graph";
 import { morphLayerJson } from "./magic-morph-blend";
+import { timelineStore, layerJsonEquals } from "../document/document";
 
 interface Settings {
   scope: "active" | "all";
@@ -31,6 +32,26 @@ interface Settings {
   density: number;
   stickiness: number;
   smoothness: number;
+}
+
+/**
+ * Divisions slider max — at this value, Apply fills every frame of the span
+ * (like Auto Morph's "Every frame") instead of packing `divisions` inbetweens.
+ * Keep in sync with the `divisions` range max in `tools/stubs.ts`.
+ */
+const EVERY_FRAME_DIVISIONS = 12;
+
+/**
+ * Interpolate a morph-progress curve (intermediate ratios at even time steps,
+ * endpoints implied at 0 and 1) at time fraction `u` in [0, 1].
+ */
+function sampleRatioCurve(curve: number[], u: number): number {
+  const pts = [0, ...curve, 1];
+  const pos = Math.max(0, Math.min(1, u)) * (pts.length - 1);
+  const i = Math.min(pts.length - 2, Math.floor(pos));
+  const frac = pos - i;
+  const v = pts[i] + (pts[i + 1] - pts[i]) * frac;
+  return Math.max(0, Math.min(1, v));
 }
 
 function accent(): string {
@@ -190,13 +211,27 @@ export class MagicMorphController {
       return { ok: false, error: "Not enough frames between poses." };
     }
 
-    let ratios = ratioResult.ratios;
-    let frames = evenFramesBetween(packStart, packEnd, ratios.length);
+    let ratios: number[];
+    let frames: number[];
+    if (divisions >= EVERY_FRAME_DIVISIONS) {
+      // Slider maxed → inbetween on every frame of the span, with progress
+      // still eased by the chart's timing curve.
+      frames = [];
+      ratios = [];
+      const spanLen = packEnd - packStart;
+      for (let f = packStart + 1; f < packEnd; f++) {
+        frames.push(f);
+        ratios.push(sampleRatioCurve(ratioResult.ratios, (f - packStart) / spanLen));
+      }
+    } else {
+      ratios = ratioResult.ratios;
+      frames = evenFramesBetween(packStart, packEnd, ratios.length);
+      if (frames.length < ratios.length) ratios = thinRatios(ratios, frames.length);
+      else if (frames.length > ratios.length) frames = frames.slice(0, ratios.length);
+    }
     if (frames.length === 0) {
       return { ok: false, error: "Could not place inbetween frames." };
     }
-    if (frames.length < ratios.length) ratios = thinRatios(ratios, frames.length);
-    else if (frames.length > ratios.length) frames = frames.slice(0, ratios.length);
 
     for (let li = 0; li < spans.length; li++) {
       const span = spans[li];
@@ -232,6 +267,106 @@ export class MagicMorphController {
     this.documentManager.reloadVisibleFrame();
     this.historyManager.snapshot();
     this.deactivate();
+    return { ok: true };
+  }
+
+  /**
+   * Auto Morph: for every hold in [start, end] on the given layers that has
+   * a next keyframe, write morphed inbetweens toward that keyframe — on
+   * every frame of the gap, or at `divisions` evenly spaced steps.
+   */
+  autoMorphRange(
+    layerIds: string[],
+    start: number,
+    end: number,
+    opts: { mode: "every" | "divisions"; divisions: number },
+  ): { ok: true } | { ok: false; error: string } {
+    if (!this.documentManager || !this.historyManager) {
+      return { ok: false, error: "Magic Morph is not wired up." };
+    }
+    this.documentManager.commitDirtyLayerContent();
+
+    const { density, stickiness, smoothness } = this.readSettings();
+    const morphOpts = { density, stickiness, smoothness };
+    // Snapshot before writing: morph inbetweens insert keyframes, and we
+    // only want to process the holds that existed at click time.
+    const tracks = timelineStore.get().tracks;
+
+    const touched: string[] = [];
+    for (const layerId of layerIds) {
+      const track = tracks.find((t) => t.id === layerId);
+      if (!track) continue;
+      let changed = false;
+      for (const kf of track.keyframes) {
+        if (kf.frame < start || kf.frame > end || kf.blank) continue;
+        const span = this.documentManager.getMagicMorphSpan(layerId, kf.frame);
+        if (!span || span.startFrame !== kf.frame) continue;
+        // Identical poses (moving hold / duplicated keyframe): morphing would
+        // only write static frames — leave the hold alone.
+        if (layerJsonEquals(span.startJson, span.endJson)) continue;
+
+        const spanLen = span.endFrame - span.startFrame;
+        const frames: number[] = [];
+        const ratios: number[] = [];
+        if (opts.mode === "every") {
+          for (let f = span.startFrame + 1; f < span.endFrame; f++) {
+            frames.push(f);
+            ratios.push((f - span.startFrame) / spanLen);
+          }
+        } else {
+          const d = Math.max(2, Math.round(opts.divisions));
+          for (let i = 1; i < d; i++) {
+            const ratio = i / d;
+            const f = Math.round(span.startFrame + ratio * spanLen);
+            if (f <= span.startFrame || f >= span.endFrame) continue;
+            if (frames[frames.length - 1] === f) continue;
+            frames.push(f);
+            ratios.push(ratio);
+          }
+        }
+        if (frames.length === 0) continue;
+
+        for (let i = 0; i < frames.length; i++) {
+          const json = morphLayerJson(
+            span.startJson,
+            span.endJson,
+            ratios[i] ?? 0,
+            morphOpts,
+          );
+          if (!json) continue;
+          this.documentManager.writeLayerContentAtFrame(
+            layerId,
+            frames[i],
+            json,
+            { publish: false },
+          );
+        }
+        this.documentManager.bridgeKeyframeHolds(layerId, frames, {
+          publish: false,
+          holdLast: true,
+        });
+        this.documentManager.extendKeyframeHoldThrough(
+          layerId,
+          frames[frames.length - 1],
+          span.endFrame - 1,
+          { publish: true },
+        );
+        changed = true;
+      }
+      if (changed) touched.push(layerId);
+    }
+
+    if (touched.length === 0) {
+      return {
+        ok: false,
+        error: "No holds with a next keyframe in the selection.",
+      };
+    }
+    for (const layerId of touched) {
+      this.documentManager.invalidateLoadedLayer(layerId);
+    }
+    this.documentManager.reloadVisibleFrame();
+    this.historyManager.snapshot();
     return { ok: true };
   }
 

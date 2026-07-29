@@ -88,6 +88,8 @@ export interface TimelineState {
   playing: boolean;
   onionSkin: boolean;
   autoHold: boolean;
+  /** Changing fps rescales keyframes so animation keeps real-time speed. */
+  realTimeLock: boolean;
   /** Flash-style Edit Multiple Frames: range contents editable on stage. */
   editMultipleFrames: boolean;
   emfRange: { layerIds: string[]; start: number; end: number } | null;
@@ -101,6 +103,7 @@ export const timelineStore = new Store<TimelineState>({
   playing: false,
   onionSkin: true,
   autoHold: true,
+  realTimeLock: false,
   editMultipleFrames: false,
   emfRange: null,
 });
@@ -141,6 +144,62 @@ export function cloneTracks(tracks: LayerTrack[]): LayerTrack[] {
   }));
 }
 
+/** Parse a Paper layer JSON payload into `[tag, props, ...]`, or null. */
+function parseLayerPayload(
+  json: string,
+): [string, Record<string, unknown>, ...unknown[]] | null {
+  if (!json.startsWith('["Layer"')) return null;
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (
+      Array.isArray(parsed) &&
+      parsed[0] === "Layer" &&
+      parsed[1] &&
+      typeof parsed[1] === "object"
+    ) {
+      return parsed as [string, Record<string, unknown>, ...unknown[]];
+    }
+  } catch {
+    // Not parseable.
+  }
+  return null;
+}
+
+/** Layer JSON with the top-level layer `name` removed. */
+function stripLayerName(json: string): string {
+  const parsed = parseLayerPayload(json);
+  if (!parsed) return json;
+  delete parsed[1].name;
+  return JSON.stringify(parsed);
+}
+
+/**
+ * Stamp the track's current name into layer artwork JSON.
+ *
+ * Paper.js embeds `layer.name` in `exportJSON`. That name is track metadata,
+ * not artwork — it must stay in sync with the layer panel or commit sees a
+ * false dirty and auto-keys phantom pose copies on holds.
+ */
+export function withLayerName(json: string, name: string): string {
+  if (!json) return json;
+  const parsed = parseLayerPayload(json);
+  if (!parsed) return json;
+  if (parsed[1].name === name) return json;
+  parsed[1].name = name;
+  return JSON.stringify(parsed);
+}
+
+/**
+ * Compare layer artwork JSON ignoring the layer's name.
+ *
+ * Defense in depth for rename / import drift: even if a stored keyframe
+ * still carries a stale name, it must not count as an artwork edit.
+ */
+export function layerJsonEquals(a: string, b: string): boolean {
+  if (a === b) return true;
+  return stripLayerName(a) === stripLayerName(b);
+}
+
 // ============================================================
 // DocumentManager
 // ============================================================
@@ -162,6 +221,14 @@ export class DocumentManager {
    * keyframe's hold up to the new keyframe. Not persisted, not in history.
    */
   private autoHoldEnabled = true;
+
+  /**
+   * When enabled, changing the frame rate rescales every keyframe span (and
+   * the duration/playhead) by newFps/oldFps so the animation keeps its
+   * real-time timing — e.g. 30 → 60 fps turns every frame into a two-frame
+   * hold. Not persisted, not in history (the retime itself is undoable).
+   */
+  private realTimeLockEnabled = false;
 
   /**
    * Edit Multiple Frames: show unique keyframe contents in a selected range
@@ -315,9 +382,11 @@ export class DocumentManager {
       if (layer.kind === "stage") continue;
       const existing = byId.get(layer.id);
       if (existing) {
+        const renamed = existing.name !== layer.name;
         existing.name = layer.name;
         existing.visible = layer.visible;
         existing.locked = layer.locked;
+        if (renamed) this.rewriteTrackContentNames(existing);
         next.push(existing);
       } else {
         next.push({
@@ -336,6 +405,40 @@ export class DocumentManager {
     }
     this.applyEffectiveVisibility(state.soloLayerId);
     this.publish();
+  }
+
+  /**
+   * Rewrite every unique content blob on a track so its embedded Paper layer
+   * `name` matches `track.name`. Content shared with other tracks is cloned
+   * first so a rename cannot bleed across layers.
+   */
+  private rewriteTrackContentNames(track: LayerTrack): void {
+    const seen = new Set<string>();
+    for (const kf of track.keyframes) {
+      const id = kf.contentId;
+      if (id === EMPTY_CONTENT_ID || seen.has(id)) continue;
+      seen.add(id);
+      const json = this.content.get(id) ?? "";
+      if (!json) continue;
+
+      const shared = this.tracks.some(
+        (t) =>
+          t.id !== track.id &&
+          t.keyframes.some((k) => k.contentId === id),
+      );
+      const next = withLayerName(json, track.name);
+      if (next === json && !shared) continue;
+
+      if (shared) {
+        const cloned = this.newContentId();
+        this.content.set(cloned, withLayerName(json, track.name));
+        for (const k of track.keyframes) {
+          if (k.contentId === id) k.contentId = cloned;
+        }
+      } else if (next !== json) {
+        this.content.set(id, next);
+      }
+    }
   }
 
   /**
@@ -440,15 +543,16 @@ export class DocumentManager {
     const track = this.getTrack(layerId);
     if (!track) return false;
 
-    const json = this.renderer.isLayerEmpty(layerId)
+    const raw = this.renderer.isLayerEmpty(layerId)
       ? ""
       : this.renderer.exportLayerJSON(layerId) ?? "";
+    const json = raw ? withLayerName(raw, track.name) : "";
 
     const covering = this.coveringKeyframe(track, this.currentFrame);
     const visibleContentId = covering?.contentId ?? EMPTY_CONTENT_ID;
     const currentJson = this.content.get(visibleContentId) ?? "";
 
-    if (json === currentJson) {
+    if (layerJsonEquals(json, currentJson)) {
       this.loadedContent.set(layerId, visibleContentId);
       return false;
     }
@@ -475,7 +579,7 @@ export class DocumentManager {
       : this.renderer.exportLayerJSON(layerId) ?? "";
     const covering = this.coveringKeyframe(track, this.currentFrame);
     const visibleContentId = covering?.contentId ?? EMPTY_CONTENT_ID;
-    return json !== (this.content.get(visibleContentId) ?? "");
+    return !layerJsonEquals(json, this.content.get(visibleContentId) ?? "");
   }
 
   /**
@@ -531,16 +635,17 @@ export class DocumentManager {
 
     const writeFrame = (frameIndex: number, json: string): boolean => {
       if (frameIndex < start || frameIndex > end) return false;
+      const stamped = json ? withLayerName(json, track.name) : "";
       const kf = track.keyframes.find((k) => k.frameIndex === frameIndex);
       const prev = kf ? (this.content.get(kf.contentId) ?? "") : "";
-      if (json === prev) return false;
+      if (layerJsonEquals(stamped, prev)) return false;
 
       let newId: string;
-      if (json === "") {
+      if (stamped === "") {
         newId = EMPTY_CONTENT_ID;
       } else {
         newId = this.newContentId();
-        this.content.set(newId, json);
+        this.content.set(newId, stamped);
       }
       this.placeKeyframe(track, frameIndex, newId);
       return true;
@@ -760,7 +865,7 @@ export class DocumentManager {
       contentId = EMPTY_CONTENT_ID;
     } else {
       contentId = this.newContentId();
-      this.content.set(contentId, json);
+      this.content.set(contentId, withLayerName(json, track.name));
     }
     this.placeKeyframe(track, frame, contentId);
     if (frame === this.currentFrame) {
@@ -1138,8 +1243,91 @@ export class DocumentManager {
     return true;
   }
 
-  setFrameRate(fps: number): void {
-    this.frameRate = Math.max(1, Math.min(60, Math.round(fps)));
+  /**
+   * Set the playback rate. With real-time lock enabled, also rescales all
+   * keyframes/duration/playhead so the animation keeps its wall-clock
+   * timing. Returns true when keyframes were retimed (callers should
+   * snapshot history).
+   */
+  setFrameRate(fps: number): boolean {
+    const next = Math.max(1, Math.min(60, Math.round(fps)));
+    if (next === this.frameRate) {
+      this.publish();
+      return false;
+    }
+    const prev = this.frameRate;
+    this.frameRate = next;
+
+    if (this.realTimeLockEnabled) {
+      const ratio = next / prev;
+      const newDuration = Math.max(
+        1,
+        Math.min(9999, Math.round(this.duration * ratio)),
+      );
+      this.retimeTracks(ratio, newDuration);
+      this.duration = newDuration;
+      this.currentFrame = Math.max(
+        0,
+        Math.min(newDuration - 1, Math.round(this.currentFrame * ratio)),
+      );
+      this.reloadCurrentFrame();
+      this.publish();
+      return true;
+    }
+
+    this.publish();
+    return false;
+  }
+
+  /**
+   * Rescale every keyframe span by `ratio`, mapping span *boundaries*
+   * (start, end + 1) so holds stay contiguous and gaps keep their relative
+   * size. When shrinking, keyframes that land on the same frame collapse
+   * and the later one wins.
+   */
+  private retimeTracks(ratio: number, newDuration: number): void {
+    for (const track of this.tracks) {
+      const remapped: Keyframe[] = [];
+      for (const kf of track.keyframes) {
+        const start = Math.max(
+          0,
+          Math.min(newDuration - 1, Math.round(kf.frameIndex * ratio)),
+        );
+        // Blank keyframes stay single-frame (model invariant); uncovered
+        // frames render empty anyway, so timing is preserved.
+        const end =
+          kf.contentId === EMPTY_CONTENT_ID
+            ? start
+            : Math.min(
+                newDuration - 1,
+                Math.max(start, Math.round((kf.holdUntil + 1) * ratio) - 1),
+              );
+        // Collisions from downscaling: the later keyframe wins.
+        while (
+          remapped.length > 0 &&
+          remapped[remapped.length - 1].frameIndex >= start
+        ) {
+          remapped.pop();
+        }
+        const prev = remapped[remapped.length - 1];
+        if (prev && prev.holdUntil >= start) prev.holdUntil = start - 1;
+        remapped.push({
+          frameIndex: start,
+          contentId: kf.contentId,
+          holdUntil: end,
+        });
+      }
+      track.keyframes = remapped;
+    }
+  }
+
+  isRealTimeLockEnabled(): boolean {
+    return this.realTimeLockEnabled;
+  }
+
+  setRealTimeLock(enabled: boolean): void {
+    if (this.realTimeLockEnabled === enabled) return;
+    this.realTimeLockEnabled = enabled;
     this.publish();
   }
 
@@ -1688,6 +1876,7 @@ export class DocumentManager {
       playing: this.playing,
       onionSkin: this.onionSkinEnabled,
       autoHold: this.autoHoldEnabled,
+      realTimeLock: this.realTimeLockEnabled,
       editMultipleFrames: this.editMultipleFrames,
       emfRange: this.emfRange
         ? { ...this.emfRange, layerIds: [...this.emfRange.layerIds] }

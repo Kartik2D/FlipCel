@@ -52,6 +52,8 @@ export const PHOSPHOR_ICONS: Record<string, string> = {
     '<path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/>',
   lock:
     '<rect x="40" y="88" width="176" height="128" rx="8" opacity="0.2"/><path d="M208,80H176V56a48,48,0,0,0-96,0V80H48A16,16,0,0,0,32,96V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V96A16,16,0,0,0,208,80ZM96,56a32,32,0,0,1,64,0V80H96ZM208,208H48V96H208V208Zm-80-28a20,20,0,1,0-20-20A20,20,0,0,0,128,180Z"/>',
+  "magic-wand":
+    '<path d="M40 216L164 92" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><path d="M156 84l16 16" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><path d="M188 32v32M172 48h32" stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none"/><path d="M220 108v28M206 122h28" stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none"/><path d="M116 36v28M102 50h28" stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none"/>',
   "lock-open":
     '<rect x="40" y="88" width="176" height="128" rx="8" opacity="0.2"/><path d="M208,80H96V56a32,32,0,0,1,32-32c15.37,0,29.2,11,32.16,25.51a8,8,0,0,0,15.68-3C171.23,25.39,151.12,8,128,8A48.05,48.05,0,0,0,80,56V80H48A16,16,0,0,0,32,96V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V96A16,16,0,0,0,208,80Zm0,128H48V96H208V208Z"/>',
 };

@@ -668,8 +668,9 @@ export class PaperRenderer {
         if (wanted.json) layer.importJSON(wanted.json);
         contentChanged = true;
       }
-      // Re-apply after importJSON: Layer exports can embed `visible: false`
-      // from when the layer was hidden, which would undo wanted.visible.
+      // Re-apply after importJSON: Layer exports can embed a stale `name`
+      // (from before a rename) or `visible: false` (from while hidden).
+      layer.name = wanted.name;
       layer.visible = wanted.visible;
     }
 

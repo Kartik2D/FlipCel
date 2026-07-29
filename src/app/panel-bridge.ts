@@ -82,6 +82,12 @@ export type PanelBridgeDeps = {
     start: number,
     end: number,
   ) => void;
+  onAutoMorphOpen: (
+    layerIds: string[],
+    start: number,
+    end: number,
+    anchor: HTMLElement,
+  ) => void;
   onFramesDuplicateDragStart: (
     layerIds: string[] | undefined,
     layerId: string | undefined,
@@ -110,6 +116,7 @@ export type PanelBridgeDeps = {
   ) => void;
   onKeyframeHoldToggle: (layerId: string, frame: number) => void;
   onAutoHoldToggle: () => void;
+  onRealTimeLockToggle: () => void;
   onDurationSet: (frames: number) => void;
   onFrameRateChange: (rate: number) => void;
   onLayerAdd: (id: string, name: string) => void;
@@ -246,6 +253,12 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     ).detail;
     deps.onFramesDuplicateDragEnd(layerIds, layerId, start, end, delta);
   });
+  layersPanel.addEventListener("frames-auto-morph", (e: Event) => {
+    const { layerIds, start, end, anchor } = (
+      e as CustomEvent<FrameRangeDetail & { anchor: HTMLElement }>
+    ).detail;
+    deps.onAutoMorphOpen(layerIds ?? [], start, end, anchor);
+  });
   layersPanel.addEventListener("frames-reverse", (e: Event) => {
     const { layerId, layerIds, start, end } = (
       e as CustomEvent<FrameRangeDetail>
@@ -264,6 +277,9 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
   });
   layersPanel.addEventListener("auto-hold-toggle", () => {
     deps.onAutoHoldToggle();
+  });
+  layersPanel.addEventListener("real-time-lock-toggle", () => {
+    deps.onRealTimeLockToggle();
   });
   layersPanel.addEventListener("duration-set", (e: Event) => {
     deps.onDurationSet((e as CustomEvent<number>).detail);

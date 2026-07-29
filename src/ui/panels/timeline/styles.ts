@@ -9,6 +9,14 @@ export const timelinePanelStyles = css`
     justify-self: start;
   }
 
+  .playback-fps-group {
+    justify-self: start;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+
   .playback-play {
     justify-self: center;
   }

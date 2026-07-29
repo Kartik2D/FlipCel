@@ -127,9 +127,13 @@ export class InkwellToolsPanel extends FloatingPanel {
     }
 
     if (def.type === "range") {
+      const valueLabel =
+        def.maxLabel !== undefined && Number(currentValue) >= def.max
+          ? def.maxLabel
+          : currentValue;
       return html`
         <label>
-          <span>${label}: ${currentValue}</span>
+          <span>${label}: ${valueLabel}</span>
           <input
             type="range"
             min=${def.min}

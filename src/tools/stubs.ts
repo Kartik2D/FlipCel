@@ -179,6 +179,7 @@ const magicMorphSettings = {
     step: 1,
     default: 1,
     label: "Divisions",
+    maxLabel: "Every frame",
   },
   density: {
     type: "range",

@@ -19,6 +19,8 @@ export interface RangeSetting {
   step: number;
   default: number;
   label?: string;
+  /** Shown instead of the numeric value when the slider is at `max`. */
+  maxLabel?: string;
 }
 
 export interface ColorSetting {

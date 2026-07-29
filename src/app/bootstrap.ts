@@ -60,6 +60,7 @@ import type {
   InkwellFunctionsPanel,
   InkwellMagicMovePopup,
   InkwellMagicMorphPopup,
+  InkwellAutoMorphPopup,
 } from "../ui/register";
 import "../ui/register"; // Register Lit components
 import {
@@ -141,6 +142,7 @@ class App {
   private functionsPanel: InkwellFunctionsPanel;
   private magicMovePopup: InkwellMagicMovePopup;
   private magicMorphPopup: InkwellMagicMorphPopup;
+  private autoMorphPopup: InkwellAutoMorphPopup;
   private camera: Camera;
   private isInitialized = false;
   private pixelResScale = 2;
@@ -300,6 +302,9 @@ class App {
     this.magicMorphPopup = document.getElementById(
       "magic-morph-popup",
     ) as InkwellMagicMorphPopup;
+    this.autoMorphPopup = document.getElementById(
+      "auto-morph-popup",
+    ) as InkwellAutoMorphPopup;
     this.timelineSession = new TimelineSession({
       documentManager: this.documentManager,
       historyManager: this.historyManager,
@@ -333,6 +338,28 @@ class App {
     };
     this.toolsPanel.addEventListener("magic-morph-apply", onMagicMorphApply);
     this.magicMorphPopup.addEventListener("magic-morph-apply", onMagicMorphApply);
+    this.autoMorphPopup.addEventListener("auto-morph-apply", (e: Event) => {
+      const d = (
+        e as CustomEvent<{
+          layerIds: string[];
+          start: number;
+          end: number;
+          mode: "every" | "divisions";
+          divisions: number;
+        }>
+      ).detail;
+      const result = this.magicMorphController.autoMorphRange(
+        d.layerIds,
+        d.start,
+        d.end,
+        { mode: d.mode, divisions: d.divisions },
+      );
+      if (!result.ok) {
+        console.warn("Auto Morph:", result.error);
+      }
+      this.requestRedraw();
+      this.scheduleAutosave();
+    });
     window.addEventListener("pointerup", this.globalDuplicateDragEndHandler);
     window.addEventListener("pointercancel", this.globalDuplicateDragEndHandler);
     window.addEventListener("blur", this.globalDuplicateDragEndHandler);
@@ -486,6 +513,9 @@ class App {
         this.onFramesMove(layerIds, layerId, start, end, delta),
       onFramesDuplicate: (layerIds, layerId, start, end) =>
         this.onFramesDuplicate(layerIds, layerId, start, end),
+      onAutoMorphOpen: (layerIds, start, end, anchor) => {
+        this.autoMorphPopup.openFor({ layerIds, start, end }, anchor);
+      },
       onFramesDuplicateDragStart: (layerIds, layerId, start, end) =>
         this.onFramesDuplicateDragStart(layerIds, layerId, start, end),
       onFramesDuplicateDragEnd: (layerIds, layerId, start, end, delta) =>
@@ -498,6 +528,11 @@ class App {
       onAutoHoldToggle: () => {
         this.documentManager.setAutoHold(!this.documentManager.isAutoHoldEnabled());
       },
+      onRealTimeLockToggle: () => {
+        this.documentManager.setRealTimeLock(
+          !this.documentManager.isRealTimeLockEnabled(),
+        );
+      },
       onDurationSet: (frames) => {
         if (this.documentManager.setDuration(frames)) {
           this.historyManager.snapshot();
@@ -505,7 +540,11 @@ class App {
         }
       },
       onFrameRateChange: (rate) => {
-        this.documentManager.setFrameRate(rate);
+        // Returns true when real-time lock retimed keyframes.
+        if (this.documentManager.setFrameRate(rate)) {
+          this.historyManager.snapshot();
+          this.requestRedraw();
+        }
         this.scheduleAutosave();
       },
       onLayerAdd: (id, name) => this.onLayerAdd(id, name),
@@ -1377,12 +1416,16 @@ class App {
     const trimmed = name.trim();
     if (!trimmed) return;
     const state = layerStore.get();
-    if (!state.layers.some((l) => l.id === layerId)) return;
+    const layer = state.layers.find((l) => l.id === layerId);
+    if (!layer || layer.name === trimmed) return;
     if (!this.paperRenderer.setLayerName(layerId, trimmed)) return;
     layerStore.update((s) => ({
       ...s,
       layers: s.layers.map((l) => (l.id === layerId ? { ...l, name: trimmed } : l)),
     }));
+    // Rewrite stored keyframe JSON names immediately so a mid-hold commit
+    // cannot treat the rename as an artwork edit and spawn phantom poses.
+    this.documentManager.syncFromLayerStore(layerStore.get());
     this.historyManager.snapshot();
   }
 
