@@ -1,9 +1,9 @@
 /**
- * Persistence — .inkwell files + IndexedDB autosave
+ * Persistence — JSON document export + IndexedDB autosave
  *
- * The file format is the serialized document model (JSON, versioned).
- * Autosave writes the same payload to IndexedDB (structured clone, no
- * stringify cost, no localStorage size cap) debounced from history snapshots.
+ * Documents are plain versioned JSON. Autosave writes the same payload to
+ * IndexedDB (structured clone, no stringify cost, no localStorage size cap)
+ * debounced from history snapshots.
  */
 import type { SerializedDocument } from "./document";
 import { DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from "../state/index";
@@ -12,8 +12,6 @@ const DB_NAME = "inkwell";
 const DB_VERSION = 1;
 const STORE_NAME = "documents";
 const AUTOSAVE_KEY = "autosave";
-
-export const INKWELL_FILE_EXTENSION = ".inkwell";
 
 // ============================================================
 // Validation
@@ -26,18 +24,18 @@ export const INKWELL_FILE_EXTENSION = ".inkwell";
 export function parseSerializedDocument(data: unknown): SerializedDocument {
   if (typeof data === "string") data = JSON.parse(data);
   if (typeof data !== "object" || data === null) {
-    throw new Error("Not an Inkwell document (expected a JSON object)");
+    throw new Error("Not a document (expected a JSON object)");
   }
   const doc = data as Partial<SerializedDocument>;
   if (doc.version !== 1) {
     throw new Error(`Unsupported document version: ${String(doc.version)}`);
   }
   if (!Array.isArray(doc.tracks) || typeof doc.content !== "object" || doc.content === null) {
-    throw new Error("Malformed Inkwell document (missing tracks/content)");
+    throw new Error("Malformed document (missing tracks/content)");
   }
   for (const track of doc.tracks) {
     if (typeof track?.id !== "string" || !Array.isArray(track?.keyframes)) {
-      throw new Error("Malformed Inkwell document (bad layer track)");
+      throw new Error("Malformed document (bad layer track)");
     }
   }
   return {
@@ -59,7 +57,7 @@ export function parseSerializedDocument(data: unknown): SerializedDocument {
 }
 
 // ============================================================
-// File save / open
+// JSON export / open
 // ============================================================
 
 export function downloadDocument(doc: SerializedDocument, filename?: string): void {
@@ -68,7 +66,7 @@ export function downloadDocument(doc: SerializedDocument, filename?: string): vo
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename ?? `inkwell-${Date.now()}${INKWELL_FILE_EXTENSION}`;
+  a.download = filename ?? `inkwell-${Date.now()}.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -83,7 +81,7 @@ export function pickDocumentFile(): Promise<SerializedDocument | null> {
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = `${INKWELL_FILE_EXTENSION},application/json`;
+    input.accept = "application/json,.json";
     input.style.display = "none";
     document.body.appendChild(input);
 

@@ -1712,7 +1712,7 @@ class App {
   }
 
   // ============================================================
-  // Document Save / Open / New (delegated to TimelineSession)
+  // Document Export / Open / New (delegated to TimelineSession)
   // ============================================================
 
   private serializeDocument(): SerializedDocument {

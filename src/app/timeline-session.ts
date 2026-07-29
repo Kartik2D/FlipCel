@@ -510,7 +510,7 @@ export class TimelineSession {
   }
 
   // ============================================================
-  // Document Save / Open / New
+  // Document Export / Open / New
   // ============================================================
 
   serializeDocument(): SerializedDocument {

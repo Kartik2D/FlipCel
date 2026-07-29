@@ -422,11 +422,11 @@ export class InkwellUniversalPanel extends FloatingPanel {
                 >
               </div>
               <div class="row">
-                <blocky-button flat @click=${() => this.emit("doc-save")}
-                  >Save</blocky-button
-                >
                 <blocky-button flat @click=${() => this.emit("doc-open")}
                   >Open</blocky-button
+                >
+                <blocky-button flat @click=${() => this.emit("doc-save")}
+                  >Save JSON</blocky-button
                 >
                 <blocky-button
                   flat
@@ -434,7 +434,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
                     this.dispatchEvent(
                       new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
                     )}
-                  >Export</blocky-button
+                  >Export SVG</blocky-button
                 >
               </div>
             </inkwell-panel-section>

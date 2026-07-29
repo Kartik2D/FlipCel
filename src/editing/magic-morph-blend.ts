@@ -1,7 +1,9 @@
 /**
  * Magic Morph blend — keep this small.
  *
- * 1. Match top-level Path / CompoundPath items (color + centroid)
+ * 1. Match top-level items in stages (merge-aware): fill roots first, then
+ *    children in each matched parent's frame, then islands under those —
+ *    hybrid vector+raster scoring. Unmatched items shrink/grow in place.
  * 2. Factor out a shared per-item frame (centroid + size); everything below
  *    happens on the residual inside that frame, so fast moves don't shear
  *    contours apart
@@ -11,12 +13,14 @@
  * 4. Sample each matched pair at even arc length, align cyclically
  *    (phase-anchored so band edges share one phase), then pin matched
  *    corner features with soft falloff and lerp the residual
- * 5. Topology changes: unmatched holes collapse in place about an interior
- *    point; births grow from a speck seeded on the matched fill of A
+ * 5. Topology changes: unmatched holes grow/collapse from a parent-local
+ *    seed inside the morphing outer; grow is clamped so holes never
+ *    intersect or escape the outer
  * 6. CompoundPath uses evenodd; fill only on the parent
  */
 import paper from "paper";
 import { getContainmentPoint } from "../render/paper/path-geometry";
+import { matchItemsWithMass } from "./magic-morph-mass";
 import { morphItemSdf } from "./magic-morph-sdf";
 
 const SAMPLE_MIN = 16;
@@ -45,16 +49,6 @@ export const DEFAULT_MORPH_OPTIONS: MorphOptions = {
 // ---------------------------------------------------------------------------
 // Style
 // ---------------------------------------------------------------------------
-
-function colorKey(item: paper.PathItem): string {
-  const c = (item.fillColor ?? item.strokeColor) as paper.Color | null;
-  if (!c) return "none";
-  try {
-    return c.toCSS(true);
-  } catch {
-    return "none";
-  }
-}
 
 function mixColor(
   a: paper.Color | null | undefined,
@@ -152,38 +146,6 @@ function greedyMatch(
     if (pairs.length >= Math.min(aLen, bLen)) break;
   }
   return pairs;
-}
-
-function matchItems(
-  aItems: paper.PathItem[],
-  bItems: paper.PathItem[],
-): Array<{ a: paper.PathItem; b: paper.PathItem }> {
-  const scores: Array<{ ai: number; bi: number; score: number }> = [];
-  for (let ai = 0; ai < aItems.length; ai++) {
-    const a = aItems[ai];
-    const ac = a.bounds.center;
-    const aKey = colorKey(a);
-    const aArea = Math.max(1, a.bounds.width * a.bounds.height);
-    for (let bi = 0; bi < bItems.length; bi++) {
-      const b = bItems[bi];
-      const bc = b.bounds.center;
-      const bArea = Math.max(1, b.bounds.width * b.bounds.height);
-      const dist = ac.getDistance(bc);
-      const size = Math.sqrt(Math.max(aArea, bArea));
-      const areaRatio = Math.min(aArea, bArea) / Math.max(aArea, bArea);
-      const colorBoost = aKey === colorKey(b) ? 1 : 0.55;
-      scores.push({
-        ai,
-        bi,
-        score:
-          colorBoost *
-          (areaRatio * 0.35 + (1 / (1 + dist / size)) * 0.65),
-      });
-    }
-  }
-  return greedyMatch(scores, aItems.length, bItems.length, 0.12).map(
-    ({ ai, bi }) => ({ a: aItems[ai], b: bItems[bi] }),
-  );
 }
 
 /**
@@ -647,46 +609,6 @@ function morphContourSamples(
 }
 
 /**
- * Unmatched contour (topology birth/death): uniformly scale about an
- * *interior* point (never an exterior guessed point — that inverts the
- * contour and self-intersects), then translate so the collapse point sits
- * at `targetWorld` when provided.
- */
-function rideFrame(
-  c: paper.Path,
-  f: Frame,
-  grow: number,
-  cT: paper.Point,
-  sT: number,
-  targetWorld?: paper.Point,
-): paper.Path {
-  const ns = normalize(sampleArc(c, 32), f);
-  // Interior shrink center — sample centroid can lie outside crescents/arcs.
-  const ip = getContainmentPoint(c) ?? c.bounds.center;
-  const ax = (ip.x - f.c.x) / f.s;
-  const ay = (ip.y - f.c.y) / f.s;
-
-  const g = Math.max(0.02, grow);
-  const centerWorld = cT.add(new paper.Point(ax, ay).multiply(sT));
-  const dest = targetWorld ?? centerWorld;
-  const ox = dest.x - centerWorld.x;
-  const oy = dest.y - centerWorld.y;
-
-  const out = new paper.Path();
-  out.closed = !!c.closed;
-  for (const s of ns) {
-    const q = new paper.Point(
-      ax + (s.point.x - ax) * g,
-      ay + (s.point.y - ay) * g,
-    );
-    out.add(cT.add(q.multiply(sT)).add(new paper.Point(ox, oy)));
-  }
-  finishHandles(out);
-  clearContourStyle(out);
-  return out;
-}
-
-/**
  * Containment parent tree + evenodd depths — same model as
  * `PaperRenderer.splitDisconnectedItems`: tightest larger container is the
  * parent; depth walks that chain. Under merge normalization a compound is
@@ -760,61 +682,237 @@ function owningFill(
   return null;
 }
 
-/** Contour interior point in an item frame's normalized space. */
-function contourInteriorNorm(c: paper.Path, f: Frame): paper.Point {
-  const ip = getContainmentPoint(c) ?? c.bounds.center;
-  return ip.subtract(f.c).divide(f.s);
+/** Local frame of a parent contour: centroid + half-diagonal size. */
+function parentFrame(p: paper.Path): Frame {
+  const ip = getContainmentPoint(p) ?? p.bounds.center;
+  const s = Math.max(
+    1e-6,
+    Math.hypot(p.bounds.width, p.bounds.height) / 2,
+  );
+  return { c: ip, s };
+}
+
+function toParentLocal(world: paper.Point, pf: Frame): paper.Point {
+  return world.subtract(pf.c).divide(pf.s);
+}
+
+function fromParentLocal(local: paper.Point, pf: Frame): paper.Point {
+  return pf.c.add(local.multiply(pf.s));
+}
+
+/** True when every vertex of `hole` lies strictly inside `outer`. */
+function holeInsideOuter(hole: paper.Path, outer: paper.Path): boolean {
+  if (!hole.segments.length) return false;
+  for (const seg of hole.segments) {
+    try {
+      if (!outer.contains(seg.point)) return false;
+    } catch {
+      return false;
+    }
+  }
+  // Reject boundary contact / crossing: hole bounds must be strictly inside.
+  try {
+    if (!outer.contains(hole.bounds.topLeft)) return false;
+    if (!outer.contains(hole.bounds.bottomRight)) return false;
+    if (!outer.contains(hole.bounds.center)) return false;
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 /**
- * World-space seed for an unmatched contour birth (B side only).
- *
- * Remaps the hole's interior through its owning fill onto the matched
- * counterpart fill so the speck appears in the solid band — not in a void
- * where evenodd would flip it into a filled island. Death collapses
- * in-place (no translation); sliding a mid-sized hole into another hole
- * crosses evenodd parity and self-intersects.
+ * Find a seed strictly inside `outer`, biased toward `preferred`.
+ * Walks preferred → outer interior until containment holds, then insets
+ * slightly so a growing hole has room before hitting the boundary.
  */
-function guessBirthWorld(
-  unmatched: paper.Path,
+function findSeedInsideOuter(
+  outer: paper.Path,
+  preferred: paper.Point,
+): paper.Point {
+  const interior = getContainmentPoint(outer) ?? outer.bounds.center;
+  let seed = preferred;
+  try {
+    if (!outer.contains(seed)) {
+      // First point on the segment that lands inside, then keep walking in.
+      for (let i = 1; i <= 40; i++) {
+        const u = i / 40;
+        const p = preferred.add(interior.subtract(preferred).multiply(u));
+        if (outer.contains(p)) {
+          seed = p;
+          break;
+        }
+      }
+      if (!outer.contains(seed)) seed = interior;
+    }
+  } catch {
+    seed = interior;
+  }
+
+  // Inset toward interior so the speck isn't on the boundary.
+  const inset = seed.add(interior.subtract(seed).multiply(0.2));
+  try {
+    if (outer.contains(inset)) return inset;
+  } catch {
+    // fall through
+  }
+  return seed;
+}
+
+/**
+ * Scale `hole` about `center` by `grow` (world space).
+ */
+function scaleHoleAbout(
+  hole: paper.Path,
+  center: paper.Point,
+  grow: number,
+): paper.Path {
+  const g = Math.max(0.02, grow);
+  const out = new paper.Path();
+  out.closed = !!hole.closed;
+  const samples = sampleArc(hole, 32);
+  for (const s of samples) {
+    out.add(
+      new paper.Point(
+        center.x + (s.point.x - center.x) * g,
+        center.y + (s.point.y - center.y) * g,
+      ),
+    );
+  }
+  finishHandles(out);
+  clearContourStyle(out);
+  return out;
+}
+
+/** Place `hole` so its interior sits on `seed` (world), full size. */
+function placeHoleAt(hole: paper.Path, seed: paper.Point): paper.Path {
+  const ip = getContainmentPoint(hole) ?? hole.bounds.center;
+  const placed = new paper.Path();
+  placed.closed = !!hole.closed;
+  for (const s of sampleArc(hole, 32)) {
+    placed.add(s.point.subtract(ip).add(seed));
+  }
+  finishHandles(placed);
+  clearContourStyle(placed);
+  return placed;
+}
+
+/**
+ * Build an unmatched hole that stays inside `outer`. Preferred center is
+ * parent-local (hole relative to its owning fill), mapped onto the morphing
+ * outer. Grow is binary-searched down until the hole no longer escapes or
+ * intersects the outer — intersecting paths are rejected outright.
+ */
+function topologyHole(
+  hole: paper.Path,
+  outer: paper.Path,
+  grow: number,
+  preferredWorld: paper.Point,
+): paper.Path | null {
+  const seeds = [
+    findSeedInsideOuter(outer, preferredWorld),
+    getContainmentPoint(outer) ?? outer.bounds.center,
+  ];
+
+  const targetGrow = Math.max(0.02, Math.min(1, grow));
+  let best: paper.Path | null = null;
+  let bestGrow = -1;
+
+  for (const seed of seeds) {
+    const placed = placeHoleAt(hole, seed);
+    let lo = 0.02;
+    let hi = targetGrow;
+    let localBest: paper.Path | null = null;
+
+    // Speck must fit; otherwise this seed is unusable.
+    const speck = scaleHoleAbout(placed, seed, lo);
+    if (!holeInsideOuter(speck, outer)) {
+      speck.remove();
+      placed.remove();
+      continue;
+    }
+    localBest = speck;
+
+    for (let i = 0; i < 12; i++) {
+      const mid = (lo + hi) / 2;
+      const cand = scaleHoleAbout(placed, seed, mid);
+      if (holeInsideOuter(cand, outer)) {
+        localBest.remove();
+        localBest = cand;
+        lo = mid;
+      } else {
+        cand.remove();
+        hi = mid;
+      }
+    }
+    placed.remove();
+
+    if (lo > bestGrow) {
+      best?.remove();
+      best = localBest;
+      bestGrow = lo;
+    } else {
+      localBest.remove();
+    }
+    // Prefer the first seed that can reach the target grow.
+    if (bestGrow >= targetGrow - 1e-3) break;
+  }
+
+  return best;
+}
+
+/**
+ * Preferred world center for an unmatched hole at time `t`: express the hole
+ * interior in its owning-fill local frame, map onto the morphing outer
+ * (interpolated parent frame). Falls back to hole interior if no parent pair.
+ */
+function preferredHoleCenter(
+  hole: paper.Path,
   paths: paper.Path[],
   depths: number[],
   parents: Array<paper.Path | null>,
-  fSelf: Frame,
-  fOther: Frame,
-  pairs: Array<{ a: paper.Path; b: paper.Path }>,
-  t: number,
+  morphOuter: paper.Path,
 ): paper.Point {
-  const ownNorm = contourInteriorNorm(unmatched, fSelf);
-  const ownAbs = fSelf.c.add(ownNorm.multiply(fSelf.s));
+  const fill = owningFill(hole, paths, depths, parents);
+  const holeIp = getContainmentPoint(hole) ?? hole.bounds.center;
+  if (!fill) {
+    return findSeedInsideOuter(morphOuter, holeIp);
+  }
 
-  const fill = owningFill(unmatched, paths, depths, parents);
-  if (!fill) return ownAbs;
+  const srcPf = parentFrame(fill);
+  const local = toParentLocal(holeIp, srcPf);
 
-  const pair = pairs.find((p) => p.b === fill);
-  if (!pair) return ownAbs;
+  // Map local offset onto the *morphed* outer so the seed rides with it.
+  const dstPf = parentFrame(morphOuter);
+  const mapped = fromParentLocal(local, dstPf);
+  return findSeedInsideOuter(morphOuter, mapped);
+}
 
-  const fillSelfC = contourInteriorNorm(fill, fSelf);
-  const fillSelfS = Math.max(
-    1e-6,
-    Math.hypot(fill.bounds.width, fill.bounds.height) / (2 * fSelf.s),
-  );
-  const local = ownNorm.subtract(fillSelfC).divide(fillSelfS);
-
-  const fillOtherC = contourInteriorNorm(pair.a, fOther);
-  const fillOtherS = Math.max(
-    1e-6,
-    Math.hypot(pair.a.bounds.width, pair.a.bounds.height) / (2 * fOther.s),
-  );
-  const otherNorm = fillOtherC.add(local.multiply(fillOtherS));
-  const otherAbs = fOther.c.add(otherNorm.multiply(fOther.s));
-
-  // Speck starts on A (t→0), settles at B's own interior (t→1).
-  const w = 1 - t;
-  return new paper.Point(
-    ownAbs.x + (otherAbs.x - ownAbs.x) * w,
-    ownAbs.y + (otherAbs.y - ownAbs.y) * w,
-  );
+/** Fallback item-frame collapse when no morphing outer is available. */
+function rideFrameFallback(
+  c: paper.Path,
+  f: Frame,
+  grow: number,
+  cT: paper.Point,
+  sT: number,
+): paper.Path {
+  const ns = normalize(sampleArc(c, 32), f);
+  const ip = getContainmentPoint(c) ?? c.bounds.center;
+  const ax = (ip.x - f.c.x) / f.s;
+  const ay = (ip.y - f.c.y) / f.s;
+  const g = Math.max(0.02, grow);
+  const out = new paper.Path();
+  out.closed = !!c.closed;
+  for (const s of ns) {
+    const q = new paper.Point(
+      ax + (s.point.x - ax) * g,
+      ay + (s.point.y - ay) * g,
+    );
+    out.add(cT.add(q.multiply(sT)));
+  }
+  finishHandles(out);
+  clearContourStyle(out);
+  return out;
 }
 
 function morphItem(
@@ -866,6 +964,10 @@ function morphItem(
     );
 
   const children: paper.Path[] = [];
+  // Morph fill roots first so unmatched holes can be clamped inside them.
+  const morphOuterByFillA = new Map<paper.Path, paper.Path>();
+  const morphOuterByFillB = new Map<paper.Path, paper.Path>();
+
   for (const { a: ca, b: cb } of pairs) {
     const closed = !!(ca.closed || cb.closed);
     let na = normalize(sampleArc(ca, sampleCountFor(ca, cb)), fA);
@@ -874,32 +976,54 @@ function morphItem(
       na = rotateToPhase(na);
       nb = rotateToPhase(nb);
     }
-    children.push(morphContourSamples(na, nb, closed, t, fA, fB, opts));
+    const morphed = morphContourSamples(na, nb, closed, t, fA, fB, opts);
+    children.push(morphed);
+    const ai = aContours.indexOf(ca);
+    if (ai >= 0 && aNest.depths[ai] % 2 === 0) {
+      morphOuterByFillA.set(ca, morphed);
+      morphOuterByFillB.set(cb, morphed);
+    }
   }
 
-  // Topology birth/death: always scale about an interior point.
-  // Death collapses in place (keeps the hole in the fill band). Birth seeds
-  // a speck on the matched fill of A, then grows into B's hole.
+  // Topology birth/death: parent-local seed inside the morphing outer;
+  // grow is clamped so the hole never intersects / escapes the outer.
   const cT = fA.c.add(fB.c.subtract(fA.c).multiply(t));
   const sT = fA.s + (fB.s - fA.s) * t;
+
   for (const c of aContours) {
-    if (!usedA.has(c)) {
-      children.push(rideFrame(c, fA, 1 - t, cT, sT));
+    if (usedA.has(c)) continue;
+    const fill = owningFill(c, aContours, aNest.depths, aNest.parents);
+    const morphOuter = fill ? morphOuterByFillA.get(fill) : undefined;
+    if (morphOuter) {
+      const preferred = preferredHoleCenter(
+        c,
+        aContours,
+        aNest.depths,
+        aNest.parents,
+        morphOuter,
+      );
+      const hole = topologyHole(c, morphOuter, 1 - t, preferred);
+      if (hole) children.push(hole);
+    } else {
+      children.push(rideFrameFallback(c, fA, 1 - t, cT, sT));
     }
   }
   for (const c of bContours) {
-    if (!usedB.has(c)) {
-      const target = guessBirthWorld(
+    if (usedB.has(c)) continue;
+    const fill = owningFill(c, bContours, bNest.depths, bNest.parents);
+    const morphOuter = fill ? morphOuterByFillB.get(fill) : undefined;
+    if (morphOuter) {
+      const preferred = preferredHoleCenter(
         c,
         bContours,
         bNest.depths,
         bNest.parents,
-        fB,
-        fA,
-        pairs,
-        t,
+        morphOuter,
       );
-      children.push(rideFrame(c, fB, t, cT, sT, target));
+      const hole = topologyHole(c, morphOuter, t, preferred);
+      if (hole) children.push(hole);
+    } else {
+      children.push(rideFrameFallback(c, fB, t, cT, sT));
     }
   }
 
@@ -937,7 +1061,8 @@ export function morphLayerJson(
     const bItems = topItems(layerB);
     if (aItems.length === 0) return aJson;
 
-    const pairs = matchItems(aItems, bItems);
+    // Hybrid vector + raster mass matching (vector base, mass soft factor).
+    const pairs = matchItemsWithMass(aItems, bItems);
     for (const a of aItems) {
       const pair = pairs.find((p) => p.a === a);
       if (pair) {

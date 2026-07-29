@@ -117,7 +117,7 @@ export type EmfRange = {
   end: number;
 };
 
-/** Serialized `.inkwell` document (also the autosave payload). */
+/** Serialized document JSON (also the autosave payload). */
 export interface SerializedDocument {
   version: 1;
   stage: { width: number; height: number; color: string };
