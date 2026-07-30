@@ -4,6 +4,13 @@ import {
   themeModeStore,
   wheelFrictionStore,
   wheelDirectionStore,
+  quickShapeEnabledStore,
+  quickShapeCurveStyleStore,
+  quickShapeHoldMsStore,
+  clampQuickShapeCurveStyle,
+  clampQuickShapeHoldMs,
+  QUICK_SHAPE_HOLD_MS_MIN,
+  QUICK_SHAPE_HOLD_MS_MAX,
   stageStore,
   clampStageDimension,
   normalizeStageDimensionInput,
@@ -32,6 +39,12 @@ export class FlipCelUniversalPanel extends FloatingPanel {
   private themeMode = new StoreController(this, themeModeStore);
   private wheelFriction = new StoreController(this, wheelFrictionStore);
   private wheelDirection = new StoreController(this, wheelDirectionStore);
+  private quickShapeEnabled = new StoreController(this, quickShapeEnabledStore);
+  private quickShapeCurveStyle = new StoreController(
+    this,
+    quickShapeCurveStyleStore,
+  );
+  private quickShapeHoldMs = new StoreController(this, quickShapeHoldMsStore);
   private stage = new StoreController(this, stageStore);
 
   static styles = css`
@@ -253,6 +266,18 @@ export class FlipCelUniversalPanel extends FloatingPanel {
       line-height: 1.1;
       font-weight: 600;
     }
+
+    .qs-slider-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--flipcel-text-muted, #666);
+      margin-top: 2px;
+    }
+
+    .qs-slider-labels[data-disabled] {
+      opacity: 0.45;
+    }
   `;
 
   private emit(name: string, detail?: unknown) {
@@ -430,7 +455,7 @@ export class FlipCelUniversalPanel extends FloatingPanel {
                       this.keyboardShortcutsVisible,
                     );
                   }}
-                  >Keyboard Shortcuts</blocky-button
+                  >Shortcuts</blocky-button
                 >
               </div>
             </flipcel-panel-section>
@@ -501,6 +526,68 @@ export class FlipCelUniversalPanel extends FloatingPanel {
                       >
                     `,
                   )}
+                </div>
+              </label>
+            </flipcel-panel-section>
+
+            <flipcel-panel-section title="Quick Shape" data-interactive>
+              <div class="toggle">
+                <span>Quick Shape</span>
+                <input
+                  type="checkbox"
+                  .checked=${this.quickShapeEnabled.value}
+                  @change=${(e: Event) => {
+                    this.quickShapeEnabled.set(
+                      (e.target as HTMLInputElement).checked,
+                    );
+                  }}
+                />
+              </div>
+              <label>
+                <span>Hold delay: ${(this.quickShapeHoldMs.value / 1000).toFixed(1)}s</span>
+                <input
+                  type="range"
+                  min=${QUICK_SHAPE_HOLD_MS_MIN}
+                  max=${QUICK_SHAPE_HOLD_MS_MAX}
+                  step="50"
+                  .value=${String(this.quickShapeHoldMs.value)}
+                  ?disabled=${!this.quickShapeEnabled.value}
+                  @input=${(e: Event) => {
+                    const ms = parseInt(
+                      (e.target as HTMLInputElement).value,
+                      10,
+                    );
+                    this.quickShapeHoldMs.set(clampQuickShapeHoldMs(ms));
+                  }}
+                />
+              </label>
+              <label>
+                <span>Path style</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  .value=${String(
+                    Math.round(this.quickShapeCurveStyle.value * 100),
+                  )}
+                  ?disabled=${!this.quickShapeEnabled.value}
+                  @input=${(e: Event) => {
+                    const pct = parseInt(
+                      (e.target as HTMLInputElement).value,
+                      10,
+                    );
+                    this.quickShapeCurveStyle.set(
+                      clampQuickShapeCurveStyle(pct / 100),
+                    );
+                  }}
+                />
+                <div
+                  class="qs-slider-labels"
+                  ?data-disabled=${!this.quickShapeEnabled.value}
+                >
+                  <span>Straight</span>
+                  <span>Bezier</span>
                 </div>
               </label>
             </flipcel-panel-section>

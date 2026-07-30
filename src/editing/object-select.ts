@@ -15,8 +15,16 @@ import type {
 } from "../render/paper-renderer";
 import type { Camera } from "../render/camera";
 import type { ChromeLayer } from "../render/chrome-layer";
-import { configStore, toolSettingsStore, selectionStore } from "../state/index";
+import {
+  configStore,
+  toolSettingsStore,
+  selectionStore,
+  quickShapeEnabledStore,
+  quickShapeCurveStyleStore,
+  quickShapeHoldMsStore,
+} from "../state/index";
 import { pixelToViewport } from "../geometry/coords";
+import { LassoQuickShapeSession } from "../geometry/quick-shape";
 import { MarqueeTracker } from "./marquee";
 import { TransformGizmoController } from "./transform-gizmo";
 
@@ -41,6 +49,7 @@ export class SelectionController {
 
   private selectionShape: "rect" | "lasso" = "rect";
   private layerScope: SelectLayerScope = "all";
+  private lassoQuickShape = new LassoQuickShapeSession();
   private selectedItems: paper.PathItem[] = [];
   private pendingExtractionSnapshot: Map<string, paper.PathItem[]> | null = null;
   private isDragging = false;
@@ -109,9 +118,21 @@ export class SelectionController {
       };
       this.selectionShape = selectSettings.shape === "lasso" ? "lasso" : "rect";
       this.layerScope = selectSettings.scope === "active" ? "active" : "all";
+      this.syncLassoQuickShapePrefs();
     };
     applySelectSettings();
     toolSettingsStore.subscribe(() => applySelectSettings());
+    quickShapeEnabledStore.subscribe(() => this.syncLassoQuickShapePrefs());
+    quickShapeCurveStyleStore.subscribe(() => this.syncLassoQuickShapePrefs());
+    quickShapeHoldMsStore.subscribe(() => this.syncLassoQuickShapePrefs());
+  }
+
+  private syncLassoQuickShapePrefs(): void {
+    this.lassoQuickShape.setEnabled(
+      quickShapeEnabledStore.get() && this.selectionShape === "lasso",
+    );
+    this.lassoQuickShape.setCurveStyle(quickShapeCurveStyleStore.get());
+    this.lassoQuickShape.setHoldMs(quickShapeHoldMsStore.get());
   }
 
   setSnapshotCallback(callback: () => void): void {
@@ -183,6 +204,7 @@ export class SelectionController {
     this.isDragging = false;
     this.dragStartPoint = null;
     this.resetDragThreshold();
+    this.lassoQuickShape.reset();
     this.marquee.reset();
     this.clearTransformState();
     this.drawUI();
@@ -197,6 +219,7 @@ export class SelectionController {
     this.isDragging = false;
     this.dragStartPoint = null;
     this.resetDragThreshold();
+    this.lassoQuickShape.reset();
     this.marquee.reset();
     this.clearTransformState();
     this.drawUI();
@@ -211,6 +234,7 @@ export class SelectionController {
     this.isDragging = false;
     this.dragStartPoint = null;
     this.resetDragThreshold();
+    this.lassoQuickShape.reset();
     this.marquee.reset();
     this.lastShapeClick = null;
     this.clearTransformState();
@@ -304,6 +328,15 @@ export class SelectionController {
     this.lastViewportPoint = viewportPoint;
 
     if (this.marquee.isTracking()) {
+      if (this.selectionShape === "lasso") {
+        const mode = this.lassoQuickShape.noteMove(viewportPoint);
+        if (mode === "adjust") {
+          const path = this.lassoQuickShape.getPath();
+          if (path) this.marquee.setLassoPoints(path);
+          this.drawUI();
+          return;
+        }
+      }
       this.marquee.update(viewportPoint, this.selectionShape);
       this.drawUI();
       return;
@@ -333,6 +366,7 @@ export class SelectionController {
       const marqueeCurrentPoint = this.marquee.getCurrentPoint();
       const lassoPoints = this.marquee.getLassoPoints();
       if (!marqueeStartPoint || !marqueeCurrentPoint) {
+        this.lassoQuickShape.reset();
         this.marquee.reset();
         this.drawUI();
         return;
@@ -362,9 +396,11 @@ export class SelectionController {
         selectionStore.set({ items: [...this.selectedItems] });
       } else {
         // Tap outside / on an unselected shape: deselect only.
+        this.lassoQuickShape.reset();
         this.clearSelection();
         return;
       }
+      this.lassoQuickShape.reset();
       this.marquee.reset();
       this.isDragging = false;
       this.dragStartPoint = null;
@@ -388,6 +424,7 @@ export class SelectionController {
     this.isDragging = false;
     this.dragStartPoint = null;
     this.resetDragThreshold();
+    this.lassoQuickShape.reset();
     this.marquee.reset();
     this.clearTransformState();
     this.drawUI();
@@ -509,6 +546,19 @@ export class SelectionController {
     this.dragStartPoint = null;
     this.marquee.start(viewportPoint);
     this.clearTransformState();
+    if (this.selectionShape === "lasso") {
+      this.syncLassoQuickShapePrefs();
+      this.lassoQuickShape.begin(
+        viewportPoint,
+        () => this.marquee.getLassoPoints(),
+        (path) => {
+          this.marquee.setLassoPoints(path);
+          this.drawUI();
+        },
+      );
+    } else {
+      this.lassoQuickShape.reset();
+    }
   }
 
   private isDoubleClickOnShape(

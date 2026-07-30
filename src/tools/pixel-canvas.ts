@@ -115,6 +115,23 @@ export class PixelCanvas {
     return tool.onEnd(this.toolContext, toolSettings as never);
   }
 
+  /** Live stroke buffer (pixel space). Copy before mutating externally. */
+  getCurrentStroke(): Point[] {
+    return this.currentStroke;
+  }
+
+  /** Replace the live stroke buffer without drawing. */
+  setCurrentStroke(points: Point[]): void {
+    this.currentStroke.length = 0;
+    for (const p of points) {
+      this.currentStroke.push({ ...p });
+    }
+  }
+
+  getToolContext(): ToolContext {
+    return this.toolContext;
+  }
+
   // ============================================================
   // Legacy API (for backwards compatibility during transition)
   // ============================================================

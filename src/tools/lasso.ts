@@ -1,4 +1,5 @@
-import type { ToolContext, ToolDefinition, SettingsSchema } from "./types";
+import type { Point } from "../geometry/types";
+import type { ToolContext, ToolDefinition, SettingsSchema, InferSettings } from "./types";
 import { paintModeSetting } from "./paint-mode";
 
 // ============================================================
@@ -15,14 +16,21 @@ const lassoSettings = {
   },
 } as const satisfies SettingsSchema;
 
-// Helper function to draw the lasso shape (closure to avoid adding to interface)
-function drawLassoShape(tc: ToolContext, preview: "fill" | "stroke") {
-  tc.clear();
+export type LassoSettings = InferSettings<typeof lassoSettings>;
 
-  if (tc.stroke.length < 2) {
-    if (tc.stroke.length === 1) {
+/** Draw the lasso shape (closed polyline) onto the pixel canvas. */
+export function drawLassoShape(
+  tc: ToolContext,
+  preview: "fill" | "stroke",
+  points?: Point[],
+): void {
+  tc.clear();
+  const stroke = points ?? tc.stroke;
+
+  if (stroke.length < 2) {
+    if (stroke.length === 1) {
       tc.ctx.beginPath();
-      tc.ctx.arc(tc.stroke[0].x, tc.stroke[0].y, 1, 0, Math.PI * 2);
+      tc.ctx.arc(stroke[0].x, stroke[0].y, 1, 0, Math.PI * 2);
       if (preview === "stroke") {
         tc.ctx.stroke();
       } else {
@@ -33,9 +41,9 @@ function drawLassoShape(tc: ToolContext, preview: "fill" | "stroke") {
   }
 
   tc.ctx.beginPath();
-  tc.ctx.moveTo(tc.stroke[0].x, tc.stroke[0].y);
-  for (let i = 1; i < tc.stroke.length; i++) {
-    tc.ctx.lineTo(tc.stroke[i].x, tc.stroke[i].y);
+  tc.ctx.moveTo(stroke[0].x, stroke[0].y);
+  for (let i = 1; i < stroke.length; i++) {
+    tc.ctx.lineTo(stroke[i].x, stroke[i].y);
   }
   tc.ctx.closePath();
   if (preview === "stroke") {
@@ -44,6 +52,17 @@ function drawLassoShape(tc: ToolContext, preview: "fill" | "stroke") {
   } else {
     tc.ctx.fill();
   }
+}
+
+/** Replace the live stroke and redraw the lasso preview. */
+export function replaceLassoStroke(
+  tc: ToolContext,
+  points: Point[],
+  preview: "fill" | "stroke",
+): void {
+  tc.stroke.length = 0;
+  for (const p of points) tc.stroke.push({ ...p });
+  drawLassoShape(tc, preview);
 }
 
 export const lasso: ToolDefinition<typeof lassoSettings, "lasso"> = {

@@ -309,3 +309,36 @@ export function wheelDirectionSign(direction: WheelDirection): 1 | -1 {
 }
 
 export const wheelDirectionStore = new Store<WheelDirection>("clockwise");
+
+// ============================================================
+// Quick Shape (global)
+// ============================================================
+
+/** Hold-to-snap freehand strokes into primitives / cleaned paths. */
+export const quickShapeEnabledStore = new Store<boolean>(true);
+
+/**
+ * Continuum for freehand cleanup when no primitive wins.
+ * 0 = Straight (sharp polyline), 1 = Bezier (smooth curves).
+ */
+export const quickShapeCurveStyleStore = new Store<number>(0.45);
+
+/** Still-hold delay before Quick Shape snaps (milliseconds). */
+export const QUICK_SHAPE_HOLD_MS_MIN = 100;
+export const QUICK_SHAPE_HOLD_MS_MAX = 1000;
+export const QUICK_SHAPE_HOLD_MS_DEFAULT = 400;
+
+export const quickShapeHoldMsStore = new Store<number>(QUICK_SHAPE_HOLD_MS_DEFAULT);
+
+export function clampQuickShapeCurveStyle(value: number): number {
+  if (!Number.isFinite(value)) return 0.45;
+  return Math.max(0, Math.min(1, value));
+}
+
+export function clampQuickShapeHoldMs(value: number): number {
+  if (!Number.isFinite(value)) return QUICK_SHAPE_HOLD_MS_DEFAULT;
+  return Math.max(
+    QUICK_SHAPE_HOLD_MS_MIN,
+    Math.min(QUICK_SHAPE_HOLD_MS_MAX, Math.round(value)),
+  );
+}

@@ -60,4 +60,15 @@ export class MarqueeTracker {
   getLassoPoints(): Point[] {
     return this.lassoPoints;
   }
+
+  /** Replace the live lasso polyline (e.g. after Quick Shape snap). */
+  setLassoPoints(points: Point[]): void {
+    this.lassoPoints = points.map((p) => ({ ...p }));
+    if (this.lassoPoints.length > 0) {
+      this.currentPoint = { ...this.lassoPoints[this.lassoPoints.length - 1] };
+      if (!this.startPoint) {
+        this.startPoint = { ...this.lassoPoints[0] };
+      }
+    }
+  }
 }

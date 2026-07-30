@@ -50,9 +50,17 @@ import type { PaperRenderer } from "../../render/paper-renderer";
 import type { SelectionHandle, SelectionHandleId } from "../../render/paper-renderer";
 import type { Camera } from "../../render/camera";
 import type { ChromeLayer } from "../../render/chrome-layer";
-import { configStore, toolSettingsStore, selectionStore } from "../../state/index";
+import {
+  configStore,
+  toolSettingsStore,
+  selectionStore,
+  quickShapeEnabledStore,
+  quickShapeCurveStyleStore,
+  quickShapeHoldMsStore,
+} from "../../state/index";
 import paper from "paper";
 import { pixelToViewport } from "../../geometry/coords";
+import { LassoQuickShapeSession } from "../../geometry/quick-shape";
 import { MarqueeTracker } from "../marquee";
 import { TransformGizmoController } from "../transform-gizmo";
 
@@ -93,6 +101,7 @@ export class DirectSelectController {
   private onReconcile?: (items: paper.PathItem[]) => void;
 
   private selectionShape: "rect" | "lasso" = "rect";
+  private lassoQuickShape = new LassoQuickShapeSession();
 
   private pickedAnchors: Set<AnchorKey> = new Set();
   private anchorHandles: AnchorHandle[] = [];
@@ -208,10 +217,27 @@ export class DirectSelectController {
     configStore.subscribe((config) => {
       this.config = config;
     });
-    toolSettingsStore.subscribe((settings) => {
-      const directSelectSettings = settings["direct-select"] as { shape?: unknown };
-      this.selectionShape = directSelectSettings.shape === "lasso" ? "lasso" : "rect";
-    });
+    const applyDirectSelectSettings = () => {
+      const directSelectSettings = toolSettingsStore.get()["direct-select"] as {
+        shape?: unknown;
+      };
+      this.selectionShape =
+        directSelectSettings.shape === "lasso" ? "lasso" : "rect";
+      this.syncLassoQuickShapePrefs();
+    };
+    applyDirectSelectSettings();
+    toolSettingsStore.subscribe(() => applyDirectSelectSettings());
+    quickShapeEnabledStore.subscribe(() => this.syncLassoQuickShapePrefs());
+    quickShapeCurveStyleStore.subscribe(() => this.syncLassoQuickShapePrefs());
+    quickShapeHoldMsStore.subscribe(() => this.syncLassoQuickShapePrefs());
+  }
+
+  private syncLassoQuickShapePrefs(): void {
+    this.lassoQuickShape.setEnabled(
+      quickShapeEnabledStore.get() && this.selectionShape === "lasso",
+    );
+    this.lassoQuickShape.setCurveStyle(quickShapeCurveStyleStore.get());
+    this.lassoQuickShape.setHoldMs(quickShapeHoldMsStore.get());
   }
 
   setSnapshotCallback(callback: () => void): void {
@@ -621,7 +647,7 @@ export class DirectSelectController {
       this.lastShapeClick = { timestampMs: now, point: viewportPoint, itemId: shapeHit.id };
       this.lastEdgeClick = null;
       this.marqueeFromShapePeek = true;
-      this.marquee.start(viewportPoint);
+      this.beginMarquee(viewportPoint);
       this.bringInteractedItemsToFront();
       this.publishPickedItems();
       this.drawUI();
@@ -631,7 +657,7 @@ export class DirectSelectController {
     this.lastShapeClick = null;
     this.lastEdgeClick = null;
     this.marqueeFromShapePeek = false;
-    this.marquee.start(viewportPoint);
+    this.beginMarquee(viewportPoint);
     this.drawUI();
   }
 
@@ -722,6 +748,15 @@ export class DirectSelectController {
     this.lastViewportPoint = viewportPoint;
 
     if (this.marquee.isTracking()) {
+      if (this.selectionShape === "lasso") {
+        const mode = this.lassoQuickShape.noteMove(viewportPoint);
+        if (mode === "adjust") {
+          const path = this.lassoQuickShape.getPath();
+          if (path) this.marquee.setLassoPoints(path);
+          this.drawUI();
+          return;
+        }
+      }
       this.marquee.update(viewportPoint, this.selectionShape);
       this.drawUI();
       return;
@@ -1306,7 +1341,25 @@ export class DirectSelectController {
     this.resetDragThreshold();
   }
 
+  private beginMarquee(viewportPoint: Point): void {
+    this.marquee.start(viewportPoint);
+    if (this.selectionShape === "lasso") {
+      this.syncLassoQuickShapePrefs();
+      this.lassoQuickShape.begin(
+        viewportPoint,
+        () => this.marquee.getLassoPoints(),
+        (path) => {
+          this.marquee.setLassoPoints(path);
+          this.drawUI();
+        },
+      );
+    } else {
+      this.lassoQuickShape.reset();
+    }
+  }
+
   private resetMarqueeState(): void {
+    this.lassoQuickShape.reset();
     this.marquee.reset();
     this.marqueeFromShapePeek = false;
   }

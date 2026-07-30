@@ -19,6 +19,13 @@ import type { CanvasConfig, Point } from "../geometry/types";
 import type { ToolId } from "../tools/registry";
 import { pixelToViewport } from "../geometry/coords";
 import {
+  adjustQuickShape,
+  recognizeQuickShape,
+  resampleWithPressure,
+  QUICK_SHAPE_SLOP_PX,
+  type QuickShapeResult,
+} from "../geometry/quick-shape";
+import {
   colorStore,
   modifiersStore,
   toolSettingsStore,
@@ -26,12 +33,29 @@ import {
   symmetryStore,
   normalizeSymmetrySettings,
   layerStore,
+  quickShapeEnabledStore,
+  quickShapeCurveStyleStore,
+  quickShapeHoldMsStore,
 } from "../state/index";
 import {
   hitTestSymmetryHandle,
   setSymmetryGestureSource,
 } from "../geometry/symmetry";
 import { isPaintModeModifierHeld } from "../input/shortcuts";
+import { stampBrushStroke } from "../tools/brush";
+import { replaceLassoStroke } from "../tools/lasso";
+
+interface PixelQuickShapeState {
+  tool: "brush" | "lasso";
+  /** Freehand stroke captured at snap time (for pressure remap). */
+  originalPoints: Point[];
+  /** Recognition result at identity transform. */
+  base: QuickShapeResult;
+  /** Latest adjusted result. */
+  result: QuickShapeResult;
+  /** Pointer position when snap fired. */
+  adjustOrigin: Point;
+}
 
 export interface ToolSessionDeps {
   getConfig: () => CanvasConfig;
@@ -63,8 +87,115 @@ export class ToolSession {
   /** True while dragging the symmetry-axis origin handle. */
   private symmetryHandleDragging = false;
 
+  /** Active brush/lasso gesture eligible for Quick Shape. */
+  private pixelDrawingTool: "brush" | "lasso" | null = null;
+  private lastPixelPoint: Point | null = null;
+  /** Anchor for still-slop; timer resets when pointer leaves this neighborhood. */
+  private quickShapeStillAnchor: Point | null = null;
+  private quickShapeStillTimer: ReturnType<typeof setTimeout> | null = null;
+  private pixelQuickShape: PixelQuickShapeState | null = null;
+
   constructor(deps: ToolSessionDeps) {
     this.deps = deps;
+  }
+
+  private clearQuickShapeStillTimer(): void {
+    if (this.quickShapeStillTimer !== null) {
+      clearTimeout(this.quickShapeStillTimer);
+      this.quickShapeStillTimer = null;
+    }
+  }
+
+  private resetPixelQuickShape(): void {
+    this.clearQuickShapeStillTimer();
+    this.pixelQuickShape = null;
+    this.pixelDrawingTool = null;
+    this.lastPixelPoint = null;
+    this.quickShapeStillAnchor = null;
+  }
+
+  private isQuickShapeEnabled(): boolean {
+    return quickShapeEnabledStore.get();
+  }
+
+  /** Still-slop in pixel-canvas units (~8 CSS px). */
+  private pixelQuickShapeSlop(): number {
+    const c = this.deps.getConfig();
+    return Math.max(
+      1,
+      QUICK_SHAPE_SLOP_PX * (c.pixelWidth / Math.max(c.viewportWidth, 1)),
+    );
+  }
+
+  private armQuickShapeStillTimer(tool: "brush" | "lasso"): void {
+    this.clearQuickShapeStillTimer();
+    if (!this.isQuickShapeEnabled() || this.pixelQuickShape) return;
+
+    this.quickShapeStillTimer = setTimeout(() => {
+      this.quickShapeStillTimer = null;
+      const hold = this.lastPixelPoint;
+      if (!hold || this.pixelDrawingTool !== tool) return;
+      this.trySnapPixelQuickShape(tool, hold);
+    }, quickShapeHoldMsStore.get());
+  }
+
+  private trySnapPixelQuickShape(tool: "brush" | "lasso", holdPoint: Point): void {
+    if (this.pixelDrawingTool !== tool || this.pixelQuickShape) return;
+    if (!this.isQuickShapeEnabled()) return;
+
+    const stroke = this.deps.pixelCanvasManager.getCurrentStroke();
+    if (stroke.length < 3) return;
+
+    const recognized = recognizeQuickShape(stroke, {
+      preferClosed: tool === "lasso",
+      curveStyle: quickShapeCurveStyleStore.get(),
+    });
+    if (!recognized) return;
+
+    const originalPoints = stroke.map((p) => ({ ...p }));
+    this.pixelQuickShape = {
+      tool,
+      originalPoints,
+      base: recognized,
+      result: recognized,
+      adjustOrigin: { ...holdPoint },
+    };
+    this.applyPixelQuickShapePreview();
+    try {
+      navigator.vibrate?.(10);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private applyPixelQuickShapePreview(): void {
+    const state = this.pixelQuickShape;
+    if (!state) return;
+
+    const { deps } = this;
+    const settings = toolSettingsStore.get();
+    const tc = deps.pixelCanvasManager.getToolContext();
+
+    if (state.tool === "brush") {
+      const brushSettings = settings.brush as {
+        sizeMin: number;
+        sizeMax: number;
+      };
+      const stamped = resampleWithPressure(
+        state.originalPoints,
+        state.result.path,
+      );
+      deps.pixelCanvasManager.setCurrentStroke(stamped);
+      stampBrushStroke(
+        tc,
+        stamped,
+        brushSettings.sizeMin,
+        brushSettings.sizeMax,
+      );
+    } else {
+      const lassoSettings = settings.lasso as { preview: "fill" | "stroke" };
+      replaceLassoStroke(tc, state.result.path, lassoSettings.preview);
+    }
   }
 
   onToolStart(
@@ -200,6 +331,14 @@ export class ToolSession {
     deps.pixelCanvasManager.startTool(tool, point, settings);
     deps.feedbackLayer.setDrawingState(true);
     deps.feedbackLayer.updateCursor(point);
+
+    if (tool === "brush" || tool === "lasso") {
+      this.resetPixelQuickShape();
+      this.pixelDrawingTool = tool;
+      this.lastPixelPoint = { ...point };
+      this.quickShapeStillAnchor = { ...point };
+      this.armQuickShapeStillTimer(tool);
+    }
   }
 
   onToolMove(point: Point, tool: ToolId): void {
@@ -252,10 +391,45 @@ export class ToolSession {
       return;
     }
 
+    // Quick Shape adjust: scale+rotate snapped preview; do not append freehand.
+    if (
+      (tool === "brush" || tool === "lasso") &&
+      this.pixelQuickShape &&
+      this.pixelQuickShape.tool === tool
+    ) {
+      const adjusted = adjustQuickShape(
+        this.pixelQuickShape.base,
+        this.pixelQuickShape.adjustOrigin,
+        point,
+      );
+      this.pixelQuickShape.result = adjusted;
+      this.applyPixelQuickShapePreview();
+      this.lastPixelPoint = { ...point };
+      deps.feedbackLayer.updateCursor(point);
+      return;
+    }
+
     // Delegate to tool behavior via PixelCanvas
     const settings = toolSettingsStore.get();
     deps.pixelCanvasManager.moveTool(tool, point, settings);
     deps.feedbackLayer.updateCursor(point);
+
+    if (tool === "brush" || tool === "lasso") {
+      this.lastPixelPoint = { ...point };
+      const anchor = this.quickShapeStillAnchor;
+      const slop = this.pixelQuickShapeSlop();
+      if (!anchor) {
+        this.quickShapeStillAnchor = { ...point };
+        this.armQuickShapeStillTimer(tool);
+      } else {
+        const dx = point.x - anchor.x;
+        const dy = point.y - anchor.y;
+        if (dx * dx + dy * dy >= slop * slop) {
+          this.quickShapeStillAnchor = { ...point };
+          this.armQuickShapeStillTimer(tool);
+        }
+      }
+    }
   }
 
   async onToolEnd(tool: ToolId): Promise<void> {
@@ -301,6 +475,13 @@ export class ToolSession {
     }
 
     if (tool === "eyedropper") return;
+
+    this.clearQuickShapeStillTimer();
+    // Leave snapped raster on the canvas; endTool still returns points for the gate.
+    this.pixelQuickShape = null;
+    this.pixelDrawingTool = null;
+    this.lastPixelPoint = null;
+    this.quickShapeStillAnchor = null;
 
     deps.feedbackLayer.setDrawingState(false);
 
@@ -385,6 +566,7 @@ export class ToolSession {
 
     if (tool === "eyedropper") return;
 
+    this.resetPixelQuickShape();
     this.insideClipForStroke = undefined;
     deps.feedbackLayer.setDrawingState(false);
     // End the tool action without tracing
