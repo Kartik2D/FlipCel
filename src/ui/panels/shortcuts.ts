@@ -17,14 +17,24 @@ import type { SettingsSchema } from "../../tools/types";
 // Shortcuts Panel (mode / frame / zoom quick actions)
 // ============================================================
 
+/** Minimum gap between the centered top dock and this quick-actions dock. */
+const DOCK_GAP_PX = 12;
+
 @customElement("flipcel-shortcuts-panel")
 export class FlipCelShortcutsPanel extends FloatingPanel {
   @property({ type: Number }) zoomLevel = 100;
+  /**
+   * Hidden when the centered top dock would collide with this strip.
+   * Keeps layout size (visibility) so we can re-show when space returns.
+   */
+  @property({ type: Boolean, reflect: true }) crowded = false;
 
   private tool = new StoreController(this, toolStore);
   private settings = new StoreController(this, toolSettingsStore);
   private modifiers = new StoreController(this, modifiersStore);
   private timeline = new StoreController(this, timelineStore);
+  private dockResizeObserver: ResizeObserver | null = null;
+  private readonly onViewportChange = () => this.syncCrowding();
 
   protected override usesFaceScrollbar(): boolean {
     return false;
@@ -52,6 +62,12 @@ export class FlipCelShortcutsPanel extends FloatingPanel {
       --flipcel-dock-control: 44px;
     }
 
+    /* Stay in the layout tree so crowding can be re-evaluated after resize. */
+    :host([crowded]) {
+      visibility: hidden;
+      pointer-events: none;
+    }
+
     .face {
       overflow: hidden;
       min-height: calc(
@@ -69,6 +85,43 @@ export class FlipCelShortcutsPanel extends FloatingPanel {
     super.connectedCallback();
     this.pinned = true;
     this.showPinnedClose = false;
+    window.addEventListener("resize", this.onViewportChange);
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("resize", this.onViewportChange);
+    this.dockResizeObserver?.disconnect();
+    this.dockResizeObserver = null;
+    super.disconnectedCallback();
+  }
+
+  firstUpdated() {
+    this.dockResizeObserver = new ResizeObserver(() => this.syncCrowding());
+    this.dockResizeObserver.observe(this);
+    const dock = document.querySelector("flipcel-top-bar-panel");
+    if (dock) this.dockResizeObserver.observe(dock);
+    this.syncCrowding();
+  }
+
+  /**
+   * Prefer the top dock when horizontal space is tight: hide quick actions
+   * once the centered dock would overlap this right-side strip.
+   */
+  private syncCrowding() {
+    const dock = document.querySelector<HTMLElement>("flipcel-top-bar-panel");
+    if (!dock || dock.offsetWidth < 1 || this.offsetWidth < 1) {
+      if (this.crowded) this.crowded = false;
+      this.removeAttribute("aria-hidden");
+      return;
+    }
+
+    // Use layout width so in-flight dock scaleX animations don't flicker this.
+    const dockRight = window.innerWidth / 2 + dock.offsetWidth / 2;
+    const shortcutsLeft = this.getBoundingClientRect().left;
+    const needsHide = dockRight + DOCK_GAP_PX > shortcutsLeft;
+    if (this.crowded !== needsHide) this.crowded = needsHide;
+    if (needsHide) this.setAttribute("aria-hidden", "true");
+    else this.removeAttribute("aria-hidden");
   }
 
   private emitDock(name: string) {
