@@ -5,8 +5,8 @@ import { customElement, property } from "lit/decorators.js";
 // Panel Section (shaded inset group inside panel windows)
 // ============================================================
 
-@customElement("inkwell-panel-section")
-export class InkwellPanelSection extends LitElement {
+@customElement("flipcel-panel-section")
+export class FlipCelPanelSection extends LitElement {
   @property({ type: String }) title = "";
   /** Center the section title (e.g. startup theme picker). */
   @property({ type: Boolean, reflect: true, attribute: "center-title" }) centerTitle = false;
@@ -19,17 +19,17 @@ export class InkwellPanelSection extends LitElement {
       width: 100%;
       min-width: 0;
       box-sizing: border-box;
-      border-radius: var(--inkwell-content-radius);
+      border-radius: var(--flipcel-content-radius);
       background: var(
-        --inkwell-panel-inset-bg,
+        --flipcel-panel-inset-bg,
         color-mix(
           in srgb,
-          var(--inkwell-panel-depth, #d4d4d4) 45%,
-          var(--block-face-bg, var(--inkwell-panel-surface, #ffffff))
+          var(--flipcel-panel-depth, #d4d4d4) 45%,
+          var(--block-face-bg, var(--flipcel-panel-surface, #ffffff))
         )
       );
       padding: 10px;
-      color: var(--inkwell-text-secondary, #333333);
+      color: var(--flipcel-text-secondary, #333333);
     }
 
     :host([grow]) {
@@ -43,7 +43,7 @@ export class InkwellPanelSection extends LitElement {
       margin: 0 0 10px;
       font: inherit;
       font-weight: 600;
-      color: var(--inkwell-text-primary, #1a1a1a);
+      color: var(--flipcel-text-primary, #1a1a1a);
     }
 
     :host([center-title]) .section-title {

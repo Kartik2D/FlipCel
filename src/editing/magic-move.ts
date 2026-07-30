@@ -62,7 +62,7 @@ const GROUP_COLORS = [
 
 function readAccentColor(): string {
   const value = getComputedStyle(document.documentElement)
-    .getPropertyValue("--inkwell-accent")
+    .getPropertyValue("--flipcel-accent")
     .trim();
   return value || GROUP_COLORS[0];
 }

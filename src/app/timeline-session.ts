@@ -18,7 +18,7 @@ import type { DirectSelectController } from "../editing/direct-select";
 import type { MagicMoveController } from "../editing/magic-move";
 import type { MagicMorphController } from "../editing/magic-morph";
 import type { PaperRenderer } from "../render/paper-renderer";
-import type { InkwellLayersPanel } from "../ui/register";
+import type { FlipCelLayersPanel } from "../ui/register";
 import type { ToolId } from "../tools/registry";
 import type { FrameRangeDetail } from "./panel-bridge";
 import {
@@ -65,7 +65,7 @@ export interface TimelineSessionDeps {
   magicMoveController: MagicMoveController;
   magicMorphController: MagicMorphController;
   paperRenderer: PaperRenderer;
-  layersPanel: InkwellLayersPanel;
+  layersPanel: FlipCelLayersPanel;
   switchTool: (tool: ToolId) => void;
   requestRedraw: () => void;
   fitStageInView: (immediate: boolean) => void;

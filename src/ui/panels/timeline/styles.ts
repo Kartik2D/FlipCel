@@ -69,8 +69,8 @@ export const timelinePanelStyles = css`
     padding: 0 7px;
     border: none;
     border-radius: 6px;
-    background: var(--block-depth-color, var(--inkwell-panel-depth));
-    color: var(--inkwell-text-muted, #666);
+    background: var(--block-depth-color, var(--flipcel-panel-depth));
+    color: var(--flipcel-text-muted, #666);
     font: inherit;
     font-weight: 600;
     line-height: 1;
@@ -86,8 +86,8 @@ export const timelinePanelStyles = css`
   }
 
   .tl-btn.on {
-    background: var(--inkwell-accent, var(--panel-accent, #4a6fb5));
-    color: var(--inkwell-accent-contrast, #ffffff);
+    background: var(--flipcel-accent, var(--panel-accent, #4a6fb5));
+    color: var(--flipcel-accent-contrast, #ffffff);
   }
 
   .frame-counter {
@@ -95,7 +95,7 @@ export const timelinePanelStyles = css`
     align-items: center;
     gap: 2px;
     font-variant-numeric: tabular-nums;
-    color: var(--inkwell-text-muted, #666);
+    color: var(--flipcel-text-muted, #666);
     padding: 0 4px;
     white-space: nowrap;
   }
@@ -104,7 +104,7 @@ export const timelinePanelStyles = css`
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    color: var(--inkwell-text-muted, #666);
+    color: var(--flipcel-text-muted, #666);
   }
 
   .duration-input,
@@ -114,8 +114,8 @@ export const timelinePanelStyles = css`
     padding: 3px 4px;
     border: none;
     border-radius: 6px;
-    background: var(--block-depth-color, var(--inkwell-panel-depth));
-    color: var(--block-border, var(--inkwell-panel-border));
+    background: var(--block-depth-color, var(--flipcel-panel-depth));
+    color: var(--block-border, var(--flipcel-panel-border));
     text-align: center;
   }
 
@@ -248,7 +248,7 @@ export const timelinePanelStyles = css`
     margin: 0 1px;
     border: none;
     border-radius: 4px;
-    background: var(--inkwell-timeline-cell-bg, var(--block-depth-color, var(--inkwell-panel-depth)));
+    background: var(--flipcel-timeline-cell-bg, var(--block-depth-color, var(--flipcel-panel-depth)));
     cursor: pointer;
     touch-action: none;
     -webkit-tap-highlight-color: transparent;
@@ -263,28 +263,28 @@ export const timelinePanelStyles = css`
      their intersection plus the playhead ring. */
   .frame-cell.current {
     background: var(
-      --inkwell-timeline-playhead-bg,
-      color-mix(in srgb, var(--inkwell-playhead, #f2c14e) 18%, var(--inkwell-panel-surface))
+      --flipcel-timeline-playhead-bg,
+      color-mix(in srgb, var(--flipcel-playhead, #f2c14e) 18%, var(--flipcel-panel-surface))
     );
   }
 
   .strip-row.active .frame-cell {
     background: var(
-      --inkwell-timeline-active-row-bg,
-      color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 22%, var(--inkwell-panel-surface))
+      --flipcel-timeline-active-row-bg,
+      color-mix(in srgb, var(--flipcel-accent, #4a6fb5) 22%, var(--flipcel-panel-surface))
     );
   }
 
   .strip-row.active .frame-cell.current {
     background: var(
-      --inkwell-timeline-active-playhead-bg,
+      --flipcel-timeline-active-playhead-bg,
       color-mix(
         in srgb,
-        var(--inkwell-timeline-active-row-bg, var(--inkwell-accent)) 52%,
-        var(--inkwell-timeline-playhead-bg, var(--inkwell-playhead, #f2c14e))
+        var(--flipcel-timeline-active-row-bg, var(--flipcel-accent)) 52%,
+        var(--flipcel-timeline-playhead-bg, var(--flipcel-playhead, #f2c14e))
       )
     );
-    box-shadow: inset 0 0 0 2px var(--inkwell-playhead, #f2c14e);
+    box-shadow: inset 0 0 0 2px var(--flipcel-playhead, #f2c14e);
   }
 
   .frame-cell:hover {
@@ -311,7 +311,7 @@ export const timelinePanelStyles = css`
     height: 6px;
     border-radius: 999px;
     background: var(--block-border, #555555);
-    box-shadow: 0 0 0 1px var(--inkwell-panel-surface, #ffffff);
+    box-shadow: 0 0 0 1px var(--flipcel-panel-surface, #ffffff);
   }
 
   .span-dot {
@@ -324,7 +324,7 @@ export const timelinePanelStyles = css`
     border-radius: 50%;
     box-sizing: border-box;
     border: 1.5px solid var(--block-border, #555555);
-    box-shadow: 0 0 0 1px var(--inkwell-panel-surface, #ffffff);
+    box-shadow: 0 0 0 1px var(--flipcel-panel-surface, #ffffff);
   }
 
   /* Single-frame keyframe: filled dot instead of a crammed pill. */
@@ -333,15 +333,15 @@ export const timelinePanelStyles = css`
   }
 
   .strip-row.active .span-pill {
-    background: var(--inkwell-accent, #4a6fb5);
+    background: var(--flipcel-accent, #4a6fb5);
   }
 
   .strip-row.active .span-dot {
-    border-color: var(--inkwell-accent, #4a6fb5);
+    border-color: var(--flipcel-accent, #4a6fb5);
   }
 
   .strip-row.active .span-dot--filled {
-    background: var(--inkwell-accent, #4a6fb5);
+    background: var(--flipcel-accent, #4a6fb5);
   }
 
   /* Drag-selected frame range: accent box over the strip, positioned with
@@ -357,10 +357,10 @@ export const timelinePanelStyles = css`
     z-index: 1;
     background: color-mix(
       in srgb,
-      var(--inkwell-timeline-selection-bg, var(--inkwell-accent, #4a6fb5)) 38%,
+      var(--flipcel-timeline-selection-bg, var(--flipcel-accent, #4a6fb5)) 38%,
       transparent
     );
-    box-shadow: inset 0 0 0 2px var(--inkwell-accent, #4a6fb5);
+    box-shadow: inset 0 0 0 2px var(--flipcel-accent, #4a6fb5);
     /* Clicks pass through to cells; tapping inside the range reopens the popup. */
     pointer-events: none;
   }
@@ -372,11 +372,11 @@ export const timelinePanelStyles = css`
   .frame-selection.duplicating {
     background: color-mix(
       in srgb,
-      var(--inkwell-timeline-selection-bg, var(--inkwell-accent, #4a6fb5)) 28%,
+      var(--flipcel-timeline-selection-bg, var(--flipcel-accent, #4a6fb5)) 28%,
       transparent
     );
-    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 70%, transparent);
-    border: 1px dashed var(--inkwell-accent, #4a6fb5);
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--flipcel-accent, #4a6fb5) 70%, transparent);
+    border: 1px dashed var(--flipcel-accent, #4a6fb5);
   }
 
   /* Quick actions for a selected frame range (duplicate / reverse / delete). */
@@ -385,7 +385,7 @@ export const timelinePanelStyles = css`
     z-index: 2100;
     transform: translate(-50%, -100%);
     pointer-events: auto;
-    font-family: var(--inkwell-font, system-ui, sans-serif);
+    font-family: var(--flipcel-font, system-ui, sans-serif);
     animation: frame-actions-pop-in 180ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
   }
 
@@ -395,18 +395,18 @@ export const timelinePanelStyles = css`
   }
 
   .frame-actions-shell {
-    background: var(--inkwell-panel-depth, #bcbcbc);
-    border: var(--inkwell-block-border-width, 0px) solid var(--inkwell-panel-border, #555555);
-    border-radius: var(--inkwell-block-radius);
+    background: var(--flipcel-panel-depth, #bcbcbc);
+    border: var(--flipcel-block-border-width, 0px) solid var(--flipcel-panel-border, #555555);
+    border-radius: var(--flipcel-block-radius);
     padding: 0;
-    box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
+    box-shadow: var(--flipcel-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
     overflow: hidden;
   }
 
   .frame-actions-face {
-    background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
+    background: var(--flipcel-panel-surface, rgba(255, 253, 249, 0.94));
     border-radius: calc(
-      var(--inkwell-block-radius) - var(--inkwell-block-border-width, 0px)
+      var(--flipcel-block-radius) - var(--flipcel-block-border-width, 0px)
     );
     padding: 4px;
     display: flex;
@@ -424,7 +424,7 @@ export const timelinePanelStyles = css`
     border: none;
     border-radius: 6px;
     background: transparent;
-    color: var(--inkwell-text-primary, #1a1a1a);
+    color: var(--flipcel-text-primary, #1a1a1a);
     font: inherit;
     font-size: 12px;
     font-weight: 600;
@@ -439,15 +439,15 @@ export const timelinePanelStyles = css`
   }
 
   .frame-action-btn:hover {
-    background: var(--inkwell-accent-muted, rgba(77, 115, 215, 0.28));
+    background: var(--flipcel-accent-muted, rgba(77, 115, 215, 0.28));
   }
 
   .frame-action-btn.negative {
-    color: var(--inkwell-negative, #af5b5b);
+    color: var(--flipcel-negative, #af5b5b);
   }
 
   .frame-action-btn.negative:hover {
-    background: var(--inkwell-panel-active-negative, rgba(255, 122, 122, 0.58));
+    background: var(--flipcel-panel-active-negative, rgba(255, 122, 122, 0.58));
   }
 
   .frame-action-btn:disabled {
@@ -457,12 +457,12 @@ export const timelinePanelStyles = css`
   }
 
   .frame-action-btn.active {
-    background: var(--inkwell-accent, #4a6fb5);
+    background: var(--flipcel-accent, #4a6fb5);
     color: #fff;
   }
 
   .frame-action-btn.active:hover {
-    background: color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 88%, #000);
+    background: color-mix(in srgb, var(--flipcel-accent, #4a6fb5) 88%, #000);
     color: #fff;
   }
 
@@ -477,12 +477,12 @@ export const timelinePanelStyles = css`
   .frame-selection.emf-on {
     background: color-mix(
       in srgb,
-      var(--inkwell-accent, #4a6fb5) 34%,
+      var(--flipcel-accent, #4a6fb5) 34%,
       transparent
     );
     box-shadow:
-      inset 0 0 0 2px var(--inkwell-accent, #4a6fb5),
-      0 0 0 1px color-mix(in srgb, var(--inkwell-accent, #4a6fb5) 70%, transparent);
+      inset 0 0 0 2px var(--flipcel-accent, #4a6fb5),
+      0 0 0 1px color-mix(in srgb, var(--flipcel-accent, #4a6fb5) 70%, transparent);
   }
 
   /* Move preview: the departing artwork fades in place while a ghost of
@@ -510,7 +510,7 @@ export const timelinePanelStyles = css`
     height: 0;
     transform: rotate(0deg);
     animation: timeline-reverse-spin 480ms
-      var(--inkwell-motion-bounce-easing, cubic-bezier(0.34, 1.25, 0.64, 1)) forwards;
+      var(--flipcel-motion-bounce-easing, cubic-bezier(0.34, 1.25, 0.64, 1)) forwards;
   }
 
   @keyframes timeline-reverse-spin {
@@ -565,7 +565,7 @@ export const timelinePanelStyles = css`
     left: -1px;
     width: 2px;
     border-radius: 1px;
-    background: var(--inkwell-playhead, #f2c14e);
+    background: var(--flipcel-playhead, #f2c14e);
     opacity: 0.85;
   }
 
@@ -643,7 +643,7 @@ export const timelinePanelStyles = css`
     font-size: 9px;
     line-height: 1;
     text-align: center;
-    color: var(--inkwell-text-muted, #666);
+    color: var(--flipcel-text-muted, #666);
     text-shadow: 0 0 3px var(--block-face-bg, rgba(255, 255, 255, 0.7));
     white-space: nowrap;
     overflow: visible;
@@ -652,7 +652,7 @@ export const timelinePanelStyles = css`
   }
 
   .ruler-cell.current {
-    color: var(--inkwell-playhead, #f2c14e);
+    color: var(--flipcel-playhead, #f2c14e);
     font-weight: 700;
   }
 
@@ -667,7 +667,7 @@ export const timelinePanelStyles = css`
     transform: translateX(-50%);
     width: 20px;
     border-radius: 6px;
-    background: var(--inkwell-playhead, #f2c14e);
+    background: var(--flipcel-playhead, #f2c14e);
     z-index: 3;
     cursor: grab;
     touch-action: none;

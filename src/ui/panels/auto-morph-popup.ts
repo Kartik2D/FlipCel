@@ -22,8 +22,8 @@ export interface AutoMorphApplyDetail {
  * in the selection toward its next keyframe, either on every frame or at a
  * chosen number of divisions.
  */
-@customElement("inkwell-auto-morph-popup")
-export class InkwellAutoMorphPopup extends PopupWindow {
+@customElement("flipcel-auto-morph-popup")
+export class FlipCelAutoMorphPopup extends PopupWindow {
   static styles = css`
     ${PopupWindow.styles}
 
@@ -34,7 +34,7 @@ export class InkwellAutoMorphPopup extends PopupWindow {
 
     .hint {
       margin: 0;
-      color: var(--inkwell-text-secondary, #6b6b6b);
+      color: var(--flipcel-text-secondary, #6b6b6b);
       font-weight: 500;
       line-height: 1.3;
     }
@@ -141,6 +141,6 @@ export class InkwellAutoMorphPopup extends PopupWindow {
 
 declare global {
   interface HTMLElementTagNameMap {
-    "inkwell-auto-morph-popup": InkwellAutoMorphPopup;
+    "flipcel-auto-morph-popup": FlipCelAutoMorphPopup;
   }
 }

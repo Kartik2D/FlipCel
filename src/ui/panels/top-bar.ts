@@ -7,7 +7,7 @@ import { phosphorIcon, PANEL_ICON_MAP } from "../icons/phosphor";
 import { anchorPanelBelowTrigger, raisePanelZIndex } from "../primitives/panel-anchor";
 import {
   animateCenteredScaleX,
-  INKWELL_MOTION_OVERSHOOT_MS,
+  FLIPCEL_MOTION_OVERSHOOT_MS,
 } from "../motion";
 import {
   PANEL_VISIBILITY_DEFAULTS,
@@ -20,8 +20,8 @@ import {
 // Top Bar Panel (panel visibility toggles)
 // ============================================================
 
-@customElement("inkwell-top-bar-panel")
-export class InkwellTopBarPanel extends FloatingPanel {
+@customElement("flipcel-top-bar-panel")
+export class FlipCelTopBarPanel extends FloatingPanel {
   @state() private panelVisibility: PanelVisibility[] = PANEL_VISIBILITY_DEFAULTS.map((p) => ({
     ...p,
   }));
@@ -96,15 +96,15 @@ export class InkwellTopBarPanel extends FloatingPanel {
       transform: translateX(-50%);
       --panel-width: auto;
       --panel-min-width: 0;
-      --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-panel-surface, #ffffff));
+      --block-face-bg: var(--flipcel-topbar-surface, var(--flipcel-panel-surface, #ffffff));
       z-index: 1200;
       width: auto;
       max-width: min(calc(100vw - 32px), 640px);
       /* Slightly lighter than the full floating-panels default on compact docks. */
-      --inkwell-shadow-panel: var(--inkwell-dock-shadow);
+      --flipcel-shadow-panel: var(--flipcel-dock-shadow);
       /* Panel row; icon / control column width. */
-      --inkwell-dock-row-h: 44px;
-      --inkwell-dock-control: 44px;
+      --flipcel-dock-row-h: 44px;
+      --flipcel-dock-control: 44px;
     }
 
     .block {
@@ -115,7 +115,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
       /* Visible so entering buttons can overshoot outside the bar. */
       overflow: visible;
       min-height: calc(
-        var(--inkwell-dock-row-h) + (2 * var(--inkwell-block-face-padding))
+        var(--flipcel-dock-row-h) + (2 * var(--flipcel-block-face-padding))
       );
     }
 
@@ -126,9 +126,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
       flex-wrap: nowrap;
       align-items: stretch;
       gap: 6px;
-      height: var(--inkwell-dock-row-h);
-      min-height: var(--inkwell-dock-row-h);
-      max-height: var(--inkwell-dock-row-h);
+      height: var(--flipcel-dock-row-h);
+      min-height: var(--flipcel-dock-row-h);
+      max-height: var(--flipcel-dock-row-h);
       box-sizing: border-box;
     }
 
@@ -136,7 +136,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
       appearance: none;
       margin: 0;
       border: none;
-      border-radius: var(--inkwell-content-radius);
+      border-radius: var(--flipcel-content-radius);
       box-sizing: border-box;
       height: 100%;
       min-height: 0;
@@ -146,8 +146,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
       align-items: center;
       justify-content: center;
       gap: 0;
-      background: var(--inkwell-panel-depth, #070707);
-      color: var(--inkwell-panel-border, #8a8a8a);
+      background: var(--flipcel-panel-depth, #070707);
+      color: var(--flipcel-panel-border, #8a8a8a);
       font: inherit;
       font-size: 11px;
       font-weight: 600;
@@ -168,8 +168,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
     }
 
     .dock-btn[aria-pressed="true"] {
-      background: var(--inkwell-accent, #4a6fb5);
-      color: var(--inkwell-accent-contrast, #ffffff);
+      background: var(--flipcel-accent, #4a6fb5);
+      color: var(--flipcel-accent-contrast, #ffffff);
       filter: none;
     }
 
@@ -179,9 +179,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
     }
 
     .dock-btn-icon {
-      flex: 0 0 var(--inkwell-dock-control);
-      min-width: var(--inkwell-dock-control);
-      max-width: var(--inkwell-dock-control);
+      flex: 0 0 var(--flipcel-dock-control);
+      min-width: var(--flipcel-dock-control);
+      max-width: var(--flipcel-dock-control);
       padding: 0;
     }
 
@@ -191,13 +191,13 @@ export class InkwellTopBarPanel extends FloatingPanel {
     }
 
     .dock-btn-color[aria-pressed="true"] {
-      box-shadow: inset 0 0 0 2px var(--inkwell-accent-contrast, #ffffff);
+      box-shadow: inset 0 0 0 2px var(--flipcel-accent-contrast, #ffffff);
       color: transparent;
     }
 
     .dock-btn-enter {
-      animation: dock-btn-pop-in var(--inkwell-motion-overshoot-duration, 420ms)
-        var(--inkwell-motion-overshoot-easing, cubic-bezier(0.22, 1.7, 0.36, 1)) both;
+      animation: dock-btn-pop-in var(--flipcel-motion-overshoot-duration, 420ms)
+        var(--flipcel-motion-overshoot-easing, cubic-bezier(0.22, 1.7, 0.36, 1)) both;
     }
 
     @keyframes dock-btn-pop-in {
@@ -306,7 +306,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
     window.setTimeout(() => {
       this.enteringPanelIds = this.enteringPanelIds.filter((id) => !ids.includes(id));
       for (const id of ids) this.knownTriggerIds.add(id);
-    }, INKWELL_MOTION_OVERSHOOT_MS + 40);
+    }, FLIPCEL_MOTION_OVERSHOOT_MS + 40);
   }
 
   /** Drop the toggle immediately; dock width still animates closed. */

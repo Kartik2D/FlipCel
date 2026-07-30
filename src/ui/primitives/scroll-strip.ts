@@ -7,8 +7,8 @@ import { phosphorIcon } from "../icons/phosphor";
  * When `label` is set, arrows sit on the title row; the viewport spans full width.
  * Wheel / trackpad gestures over the whole strip scroll horizontally.
  */
-@customElement("inkwell-scroll-strip")
-export class InkwellScrollStrip extends LitElement {
+@customElement("flipcel-scroll-strip")
+export class FlipCelScrollStrip extends LitElement {
   /** Number of visible rows in the scrolling track (items fill row-first). */
   @property({ type: Number, reflect: true }) rows = 1;
   /** Optional title shown on the arrow row. */
@@ -17,7 +17,7 @@ export class InkwellScrollStrip extends LitElement {
   @property({ type: Boolean, reflect: true, attribute: "center-label" })
   centerLabel = false;
   /**
-   * Bleed to cancel parent `--inkwell-block-face-padding` so the track is flush
+   * Bleed to cancel parent `--flipcel-block-face-padding` so the track is flush
    * with the group edge; header keeps matching inset padding.
    */
   @property({ type: Boolean, reflect: true }) flush = false;
@@ -64,8 +64,8 @@ export class InkwellScrollStrip extends LitElement {
     }
 
     :host([flush]) {
-      width: calc(100% + (2 * var(--inkwell-block-face-padding, 12px)));
-      margin-inline: calc(-1 * var(--inkwell-block-face-padding, 12px));
+      width: calc(100% + (2 * var(--flipcel-block-face-padding, 12px)));
+      margin-inline: calc(-1 * var(--flipcel-block-face-padding, 12px));
     }
 
     .shell {
@@ -87,7 +87,7 @@ export class InkwellScrollStrip extends LitElement {
     }
 
     :host([flush]) .header {
-      padding-inline: var(--inkwell-block-face-padding, 12px);
+      padding-inline: var(--flipcel-block-face-padding, 12px);
     }
 
     .header-label {
@@ -96,7 +96,7 @@ export class InkwellScrollStrip extends LitElement {
       font: inherit;
       font-weight: 600;
       line-height: 1.2;
-      color: var(--inkwell-text-primary, #1a1a1a);
+      color: var(--flipcel-text-primary, #1a1a1a);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -117,8 +117,8 @@ export class InkwellScrollStrip extends LitElement {
       border-radius: 50%;
       display: grid;
       place-items: center;
-      background: var(--block-depth-color, var(--inkwell-panel-depth, #bcbcbc));
-      color: var(--block-border, var(--inkwell-panel-border, #555555));
+      background: var(--block-depth-color, var(--flipcel-panel-depth, #bcbcbc));
+      color: var(--block-border, var(--flipcel-panel-border, #555555));
       cursor: pointer;
       -webkit-tap-highlight-color: transparent;
       line-height: 0;
@@ -160,7 +160,7 @@ export class InkwellScrollStrip extends LitElement {
       box-sizing: border-box;
       align-items: stretch;
       /* Inset chips from the flush viewport edges; scrolls with content. */
-      padding-inline: var(--inkwell-block-face-padding, 12px);
+      padding-inline: var(--flipcel-block-face-padding, 12px);
     }
 
     :host([rows="1"]) .track {

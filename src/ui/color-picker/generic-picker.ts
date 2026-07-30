@@ -70,7 +70,7 @@ export class GenericColorPicker extends BaseColorPicker {
     }
     .plane-square-inner {
       position: absolute; inset: 0; cursor: crosshair;
-      border-radius: var(--inkwell-content-radius);
+      border-radius: var(--flipcel-content-radius);
       overflow: hidden;
       border: var(--picker-border-width) solid var(--picker-border-color); box-sizing: border-box;
     }

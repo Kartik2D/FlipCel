@@ -101,7 +101,7 @@ export type ThemeMode =
   | "lagoon"
   | "neon";
 
-export const THEME_STORAGE_KEY = "inkwell.theme";
+export const THEME_STORAGE_KEY = "flipcel.theme";
 
 export const THEME_OPTIONS: readonly ThemeMode[] = [
   "slab",
@@ -233,7 +233,9 @@ export function isThemeMode(value: unknown): value is ThemeMode {
 
 export function readStoredTheme(): ThemeMode {
   try {
-    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    const stored =
+      localStorage.getItem(THEME_STORAGE_KEY) ??
+      localStorage.getItem("inkwell.theme");
     if (isThemeMode(stored)) return stored;
     if (stored && stored in THEME_MIGRATIONS) return THEME_MIGRATIONS[stored];
   } catch {

@@ -3,8 +3,8 @@ import { property } from "lit/decorators.js";
 import { Block } from "./block";
 import { phosphorIcon } from "../icons/phosphor";
 import {
-  INKWELL_MOTION_OVERSHOOT_MS,
-  INKWELL_PANEL_SHOW_KEYFRAMES,
+  FLIPCEL_MOTION_OVERSHOOT_MS,
+  FLIPCEL_PANEL_SHOW_KEYFRAMES,
 } from "../motion";
 
 // ============================================================
@@ -29,7 +29,7 @@ export class FloatingPanel extends Block {
     mini: null,
   };
   /**
-   * Arrange `inkwell-panel-section` groups in a responsive masonry (multi-column)
+   * Arrange `flipcel-panel-section` groups in a responsive masonry (multi-column)
    * layout when the panel is wide enough. Layers/tools opt out.
    */
   @property({ type: Boolean, reflect: true }) masonry = true;
@@ -54,12 +54,12 @@ export class FloatingPanel extends Block {
       touch-action: auto;
       overscroll-behavior: none;
 
-      --block-font-color: var(--inkwell-text-primary, #1a1a1a);
-      --panel-accent: var(--inkwell-accent, #4a6fb5);
-      --panel-accent-hover: var(--inkwell-accent-hover, #3d5e9a);
-      --panel-accent-muted: var(--inkwell-accent-muted, rgba(74, 111, 181, 0.35));
-      --panel-track-bg: var(--inkwell-track-bg, #cfcfcf);
-      --panel-track-focus: var(--inkwell-track-bg, #b8b8b8);
+      --block-font-color: var(--flipcel-text-primary, #1a1a1a);
+      --panel-accent: var(--flipcel-accent, #4a6fb5);
+      --panel-accent-hover: var(--flipcel-accent-hover, #3d5e9a);
+      --panel-accent-muted: var(--flipcel-accent-muted, rgba(74, 111, 181, 0.35));
+      --panel-track-bg: var(--flipcel-track-bg, #cfcfcf);
+      --panel-track-focus: var(--flipcel-track-bg, #b8b8b8);
     }
 
     .block {
@@ -70,23 +70,23 @@ export class FloatingPanel extends Block {
       max-height: 100%;
       height: auto;
       transform-origin: center center;
-      transition: transform var(--inkwell-motion-quad-duration, 220ms)
-        var(--inkwell-motion-quad-easing, cubic-bezier(0.45, 0, 0.55, 1));
+      transition: transform var(--flipcel-motion-quad-duration, 220ms)
+        var(--flipcel-motion-quad-easing, cubic-bezier(0.45, 0, 0.55, 1));
     }
 
     /* Grabbed + over dock: shrink with quad in-out to show it can re-dock / minimize. */
     :host([dragging][dock-hover]) .block {
-      transform: scale(var(--inkwell-panel-dock-hover-scale, 0.88));
+      transform: scale(var(--flipcel-panel-dock-hover-scale, 0.88));
     }
 
     /* Shown from dock / reveal — overshoot pop-in on the shell. */
     :host([showing]) .block {
       transition: none;
-      animation: inkwell-panel-show var(--inkwell-motion-overshoot-duration, 420ms)
-        var(--inkwell-motion-overshoot-easing, cubic-bezier(0.22, 1.7, 0.36, 1)) both;
+      animation: flipcel-panel-show var(--flipcel-motion-overshoot-duration, 420ms)
+        var(--flipcel-motion-overshoot-easing, cubic-bezier(0.22, 1.7, 0.36, 1)) both;
     }
 
-    @keyframes inkwell-panel-show {
+    @keyframes flipcel-panel-show {
       0% {
         transform: scale(0.88);
         opacity: 0;
@@ -227,7 +227,7 @@ export class FloatingPanel extends Block {
       margin: 0;
     }
 
-    .panel-form > inkwell-panel-section {
+    .panel-form > flipcel-panel-section {
       flex: 0 0 auto;
     }
 
@@ -242,7 +242,7 @@ export class FloatingPanel extends Block {
       margin: 0;
       font: inherit;
       font-weight: 600;
-      color: var(--inkwell-text-primary, #1a1a1a);
+      color: var(--flipcel-text-primary, #1a1a1a);
     }
 
     .panel-title {
@@ -286,9 +286,9 @@ export class FloatingPanel extends Block {
       box-sizing: border-box;
       margin: 0;
       min-height: calc(
-        var(--panel-header-control-size) + (2 * var(--inkwell-block-face-padding, 12px))
+        var(--panel-header-control-size) + (2 * var(--flipcel-block-face-padding, 12px))
       );
-      padding: var(--inkwell-block-face-padding, 12px);
+      padding: var(--flipcel-block-face-padding, 12px);
       background: var(--block-face-bg);
       border-radius: calc(var(--block-radius) - var(--block-border-width, 2px))
         calc(var(--block-radius) - var(--block-border-width, 2px)) 0 0;
@@ -395,8 +395,8 @@ export class FloatingPanel extends Block {
     }
 
     .panel-header-mini[aria-pressed="true"] {
-      background: var(--inkwell-accent, #4a6fb5);
-      color: var(--inkwell-accent-contrast, #ffffff);
+      background: var(--flipcel-accent, #4a6fb5);
+      color: var(--flipcel-accent-contrast, #ffffff);
       filter: none;
     }
 
@@ -447,7 +447,7 @@ export class FloatingPanel extends Block {
     }
 
     .panel-form label > span:first-child {
-      color: var(--inkwell-text-secondary, #333333);
+      color: var(--flipcel-text-secondary, #333333);
     }
 
     /* Native selects: match flat panel buttons (depth grey, no shadow) */
@@ -459,7 +459,7 @@ export class FloatingPanel extends Block {
       padding: 6px 1.75rem 6px 10px;
       margin: 0;
       border: none;
-      border-radius: var(--inkwell-content-radius);
+      border-radius: var(--flipcel-content-radius);
       background-color: var(--block-depth-color, #bcbcbc);
       color: var(--block-border, #555555);
       cursor: pointer;
@@ -558,7 +558,7 @@ export class FloatingPanel extends Block {
     .toggle span {
       flex: 1;
       min-width: 0;
-      color: var(--inkwell-text-secondary, #333333);
+      color: var(--flipcel-text-secondary, #333333);
     }
 
     .toggle input[type="checkbox"] {
@@ -572,8 +572,8 @@ export class FloatingPanel extends Block {
       box-sizing: border-box;
       overflow: hidden;
       border-radius: 999px;
-      border: 1.5px solid var(--inkwell-toggle-border, #999999);
-      background: var(--inkwell-toggle-track, #d4d4d4);
+      border: 1.5px solid var(--flipcel-toggle-border, #999999);
+      background: var(--flipcel-toggle-track, #d4d4d4);
       cursor: pointer;
       transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
     }
@@ -586,8 +586,8 @@ export class FloatingPanel extends Block {
       width: 16px;
       height: 16px;
       border-radius: 50%;
-      background: var(--inkwell-toggle-thumb, #ffffff);
-      box-shadow: var(--inkwell-shadow-soft, 0 2px 4px rgba(0, 0, 0, 0.12));
+      background: var(--flipcel-toggle-thumb, #ffffff);
+      box-shadow: var(--flipcel-shadow-soft, 0 2px 4px rgba(0, 0, 0, 0.12));
       transform: translateY(-50%);
       transition: transform 120ms ease, background-color 120ms ease;
     }
@@ -611,7 +611,7 @@ export class FloatingPanel extends Block {
     }
 
     .hint {
-      color: var(--inkwell-text-muted, #666);
+      color: var(--flipcel-text-muted, #666);
       font-style: italic;
       margin: 0;
     }
@@ -695,7 +695,7 @@ export class FloatingPanel extends Block {
 
   /** Hit-test against the top dock (with a little slack below) for re-dock drops. */
   protected isOverTopDock(): boolean {
-    const dock = document.querySelector<HTMLElement>("inkwell-top-bar-panel");
+    const dock = document.querySelector<HTMLElement>("flipcel-top-bar-panel");
     if (!dock || dock.style.display === "none") return false;
 
     const dockRect = dock.getBoundingClientRect();
@@ -733,7 +733,7 @@ export class FloatingPanel extends Block {
   private showAnimationTarget: HTMLElement | null = null;
 
   private onShowAnimationEnd = (e: AnimationEvent) => {
-    if (e.animationName !== INKWELL_PANEL_SHOW_KEYFRAMES) return;
+    if (e.animationName !== FLIPCEL_PANEL_SHOW_KEYFRAMES) return;
     this.clearShowAnimation();
   };
 
@@ -768,7 +768,7 @@ export class FloatingPanel extends Block {
     this.showAnimationClearTimeout = setTimeout(() => {
       this.showAnimationClearTimeout = null;
       this.clearShowAnimation();
-    }, INKWELL_MOTION_OVERSHOOT_MS + 80);
+    }, FLIPCEL_MOTION_OVERSHOOT_MS + 80);
   }
 
   /** Docks / always-on chrome can opt out. */

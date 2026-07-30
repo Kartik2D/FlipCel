@@ -46,8 +46,8 @@ export class BlockyButton extends Block {
 
     :host {
       /* Don't inherit panel face padding / shell radius — buttons have their own. */
-      --block-face-padding: var(--inkwell-flat-button-padding, 6px 5px);
-      --block-radius: var(--inkwell-content-radius);
+      --block-face-padding: var(--flipcel-flat-button-padding, 6px 5px);
+      --block-radius: var(--flipcel-content-radius);
       --block-font-weight: 600;
       --block-face-bg: var(--block-depth-color, #bcbcbc);
       --block-font-color: var(--block-border, #555555);
@@ -96,8 +96,8 @@ export class BlockyButton extends Block {
     }
 
     :host([large]) {
-      --block-face-padding: var(--inkwell-flat-button-large-padding, 14px 16px);
-      --block-font-size: var(--inkwell-flat-button-large-font-size, 14px);
+      --block-face-padding: var(--flipcel-flat-button-large-padding, 14px 16px);
+      --block-font-size: var(--flipcel-flat-button-large-font-size, 14px);
     }
 
     :host(:hover) .face {
@@ -105,15 +105,15 @@ export class BlockyButton extends Block {
     }
 
     :host([active]) .face {
-      background: var(--inkwell-accent, #4a6fb5);
-      color: var(--inkwell-accent-contrast, #ffffff);
-      --block-font-color: var(--inkwell-accent-contrast, #ffffff);
+      background: var(--flipcel-accent, #4a6fb5);
+      color: var(--flipcel-accent-contrast, #ffffff);
+      --block-font-color: var(--flipcel-accent-contrast, #ffffff);
     }
 
     :host([accent]) {
-      --block-face-bg: var(--inkwell-accent, #4a6fb5);
-      --block-font-color: var(--inkwell-accent-contrast, #ffffff);
-      color: var(--inkwell-accent-contrast, #ffffff);
+      --block-face-bg: var(--flipcel-accent, #4a6fb5);
+      --block-font-color: var(--flipcel-accent-contrast, #ffffff);
+      color: var(--flipcel-accent-contrast, #ffffff);
     }
 
     :host([accent]:not([active]):hover) .face {
@@ -121,15 +121,15 @@ export class BlockyButton extends Block {
     }
 
     :host([accent][active]) .face {
-      background: var(--inkwell-accent-hover, #3d5e9a);
-      color: var(--inkwell-accent-contrast, #ffffff);
-      --block-font-color: var(--inkwell-accent-contrast, #ffffff);
+      background: var(--flipcel-accent-hover, #3d5e9a);
+      color: var(--flipcel-accent-contrast, #ffffff);
+      --block-font-color: var(--flipcel-accent-contrast, #ffffff);
     }
 
     :host([positive]) {
-      --block-face-bg: var(--inkwell-positive, #3d9a6a);
-      --block-font-color: var(--inkwell-positive-contrast, #ffffff);
-      color: var(--inkwell-positive-contrast, #ffffff);
+      --block-face-bg: var(--flipcel-positive, #3d9a6a);
+      --block-font-color: var(--flipcel-positive-contrast, #ffffff);
+      color: var(--flipcel-positive-contrast, #ffffff);
     }
 
     :host([positive]:not([active]):hover) .face {
@@ -137,15 +137,15 @@ export class BlockyButton extends Block {
     }
 
     :host([positive][active]) .face {
-      background: var(--inkwell-positive-hover, #328555);
-      color: var(--inkwell-positive-contrast, #ffffff);
-      --block-font-color: var(--inkwell-positive-contrast, #ffffff);
+      background: var(--flipcel-positive-hover, #328555);
+      color: var(--flipcel-positive-contrast, #ffffff);
+      --block-font-color: var(--flipcel-positive-contrast, #ffffff);
     }
 
     :host([negative]) {
-      --block-face-bg: var(--inkwell-negative, #c45a5a);
-      --block-font-color: var(--inkwell-negative-contrast, #ffffff);
-      color: var(--inkwell-negative-contrast, #ffffff);
+      --block-face-bg: var(--flipcel-negative, #c45a5a);
+      --block-font-color: var(--flipcel-negative-contrast, #ffffff);
+      color: var(--flipcel-negative-contrast, #ffffff);
     }
 
     :host([negative]:not([active]):hover) .face {
@@ -153,15 +153,15 @@ export class BlockyButton extends Block {
     }
 
     :host([negative][active]) .face {
-      background: var(--inkwell-negative-hover, #a84848);
-      color: var(--inkwell-negative-contrast, #ffffff);
-      --block-font-color: var(--inkwell-negative-contrast, #ffffff);
+      background: var(--flipcel-negative-hover, #a84848);
+      color: var(--flipcel-negative-contrast, #ffffff);
+      --block-font-color: var(--flipcel-negative-contrast, #ffffff);
     }
 
     :host([neutral]) {
-      --block-face-bg: var(--inkwell-neutral, #6b7280);
-      --block-font-color: var(--inkwell-neutral-contrast, #ffffff);
-      color: var(--inkwell-neutral-contrast, #ffffff);
+      --block-face-bg: var(--flipcel-neutral, #6b7280);
+      --block-font-color: var(--flipcel-neutral-contrast, #ffffff);
+      color: var(--flipcel-neutral-contrast, #ffffff);
     }
 
     :host([neutral]:not([active]):hover) .face {
@@ -169,15 +169,15 @@ export class BlockyButton extends Block {
     }
 
     :host([neutral][active]) .face {
-      background: var(--inkwell-neutral-hover, #565d6b);
-      color: var(--inkwell-neutral-contrast, #ffffff);
-      --block-font-color: var(--inkwell-neutral-contrast, #ffffff);
+      background: var(--flipcel-neutral-hover, #565d6b);
+      color: var(--flipcel-neutral-contrast, #ffffff);
+      --block-font-color: var(--flipcel-neutral-contrast, #ffffff);
     }
 
     :host([playhead]) {
-      --block-face-bg: var(--inkwell-playhead, #f2c14e);
-      --block-font-color: var(--inkwell-text-primary, #1a1a1a);
-      color: var(--inkwell-text-primary, #1a1a1a);
+      --block-face-bg: var(--flipcel-playhead, #f2c14e);
+      --block-font-color: var(--flipcel-text-primary, #1a1a1a);
+      color: var(--flipcel-text-primary, #1a1a1a);
     }
 
     :host([playhead]:not([active]):hover) .face {
@@ -185,9 +185,9 @@ export class BlockyButton extends Block {
     }
 
     :host([playhead][active]) .face {
-      background: color-mix(in srgb, var(--inkwell-playhead, #f2c14e) 88%, #000000);
-      color: var(--inkwell-text-primary, #1a1a1a);
-      --block-font-color: var(--inkwell-text-primary, #1a1a1a);
+      background: color-mix(in srgb, var(--flipcel-playhead, #f2c14e) 88%, #000000);
+      color: var(--flipcel-text-primary, #1a1a1a);
+      --block-font-color: var(--flipcel-text-primary, #1a1a1a);
     }
   `;
 }

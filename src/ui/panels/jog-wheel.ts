@@ -25,8 +25,8 @@ const WHEEL_HUB_MIN_R = 14;
 /** Lever exponent: 2 = full finger lever, 1 = no distance scaling (rim-normalized). */
 const WHEEL_LEVER_EXPONENT = 1.25;
 
-@customElement("inkwell-wheel-panel")
-export class InkwellWheelPanel extends FloatingPanel {
+@customElement("flipcel-wheel-panel")
+export class FlipCelWheelPanel extends FloatingPanel {
   @property({ type: Boolean, reflect: true }) override masonry = false;
 
   private timeline = new StoreController(this, timelineStore);
@@ -158,7 +158,7 @@ export class InkwellWheelPanel extends FloatingPanel {
       inset: var(--grab-ring-inset);
       border-radius: 50%;
       z-index: 3;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      background: var(--block-depth-color, var(--flipcel-panel-depth));
       display: flex;
       align-items: center;
       justify-content: center;
@@ -217,7 +217,7 @@ export class InkwellWheelPanel extends FloatingPanel {
       height: var(--chamber-size);
       margin: calc(var(--chamber-size) / -2) 0 0 calc(var(--chamber-size) / -2);
       border-radius: 50%;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      background: var(--block-depth-color, var(--flipcel-panel-depth));
       pointer-events: none;
     }
 
@@ -239,7 +239,7 @@ export class InkwellWheelPanel extends FloatingPanel {
       overflow: hidden;
       display: flex;
       align-items: stretch;
-      background: var(--inkwell-accent, #4a6fb5);
+      background: var(--flipcel-accent, #4a6fb5);
       z-index: 4;
       pointer-events: none;
     }
@@ -252,7 +252,7 @@ export class InkwellWheelPanel extends FloatingPanel {
       margin: 0;
       padding: 0;
       background: transparent;
-      color: var(--inkwell-accent-contrast, #ffffff);
+      color: var(--flipcel-accent-contrast, #ffffff);
       font: inherit;
       font-size: 17px;
       line-height: 1;
@@ -276,7 +276,7 @@ export class InkwellWheelPanel extends FloatingPanel {
       margin: var(--hub-frame-inset) var(--hub-frame-inset) var(--hub-frame-inset) auto;
       border-radius: 50%;
       background: rgba(0, 0, 0, 0.22);
-      color: var(--inkwell-accent-contrast, #ffffff);
+      color: var(--flipcel-accent-contrast, #ffffff);
       display: grid;
       place-items: center;
       font-size: 14px;

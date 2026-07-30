@@ -6,17 +6,17 @@
  */
 import type { ToolId, AllToolSettings } from "../tools/registry";
 import type {
-  InkwellColorPanel,
-  InkwellColorPopup,
-  InkwellToolsPanel,
-  InkwellToolSettingsPanel,
-  InkwellUniversalPanel,
-  InkwellHistoryPanel,
-  InkwellViewPanel,
-  InkwellShortcutsPanel,
-  InkwellLayersPanel,
-  InkwellWheelPanel,
-  InkwellFunctionsPanel,
+  FlipCelColorPanel,
+  FlipCelColorPopup,
+  FlipCelToolsPanel,
+  FlipCelToolSettingsPanel,
+  FlipCelUniversalPanel,
+  FlipCelHistoryPanel,
+  FlipCelViewPanel,
+  FlipCelShortcutsPanel,
+  FlipCelLayersPanel,
+  FlipCelWheelPanel,
+  FlipCelFunctionsPanel,
 } from "../ui/register";
 import { timelineStore } from "../document/document";
 
@@ -32,17 +32,17 @@ export type FrameRangeDeltaDetail = FrameRangeDetail & {
 };
 
 export type PanelBridgeDeps = {
-  colorPanel: InkwellColorPanel;
-  colorPopup: InkwellColorPopup;
-  toolsPanel: InkwellToolsPanel;
-  toolSettingsPanel: InkwellToolSettingsPanel;
-  universalPanel: InkwellUniversalPanel;
-  historyPanel: InkwellHistoryPanel;
-  viewPanel: InkwellViewPanel;
-  shortcutsPanel: InkwellShortcutsPanel;
-  layersPanel: InkwellLayersPanel;
-  wheelPanel: InkwellWheelPanel;
-  functionsPanel: InkwellFunctionsPanel;
+  colorPanel: FlipCelColorPanel;
+  colorPopup: FlipCelColorPopup;
+  toolsPanel: FlipCelToolsPanel;
+  toolSettingsPanel: FlipCelToolSettingsPanel;
+  universalPanel: FlipCelUniversalPanel;
+  historyPanel: FlipCelHistoryPanel;
+  viewPanel: FlipCelViewPanel;
+  shortcutsPanel: FlipCelShortcutsPanel;
+  layersPanel: FlipCelLayersPanel;
+  wheelPanel: FlipCelWheelPanel;
+  functionsPanel: FlipCelFunctionsPanel;
 
   onColorPickerChange: (color: string) => void;
   onColorPickerChangeEnd: (color: string) => void;

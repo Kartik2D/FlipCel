@@ -8,7 +8,7 @@
 import type { SerializedDocument } from "./document";
 import { DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from "../state/index";
 
-const DB_NAME = "inkwell";
+const DB_NAME = "flipcel";
 const DB_VERSION = 1;
 const STORE_NAME = "documents";
 const AUTOSAVE_KEY = "autosave";
@@ -66,7 +66,7 @@ export function downloadDocument(doc: SerializedDocument, filename?: string): vo
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename ?? `inkwell-${Date.now()}.json`;
+  a.download = filename ?? `flipcel-${Date.now()}.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();

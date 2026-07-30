@@ -5,8 +5,8 @@ import { magicMoveUiStore, StoreController } from "../../state";
 /**
  * Compact Apply popup shown once a Magic Move timing chart is valid.
  */
-@customElement("inkwell-magic-move-popup")
-export class InkwellMagicMovePopup extends LitElement {
+@customElement("flipcel-magic-move-popup")
+export class FlipCelMagicMovePopup extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false;
   @property({ type: Number }) x = 0;
   @property({ type: Number }) y = 0;
@@ -26,7 +26,7 @@ export class InkwellMagicMovePopup extends LitElement {
       position: fixed;
       z-index: 2000;
       display: none;
-      font-family: var(--inkwell-font, system-ui, sans-serif);
+      font-family: var(--flipcel-font, system-ui, sans-serif);
       font-size: 12px;
       font-weight: 600;
     }
@@ -36,11 +36,11 @@ export class InkwellMagicMovePopup extends LitElement {
     }
 
     .shell {
-      background: var(--inkwell-panel-depth, #bcbcbc);
-      border: var(--inkwell-block-border-width, 0px) solid var(--inkwell-panel-border, #555555);
-      border-radius: var(--inkwell-block-radius);
+      background: var(--flipcel-panel-depth, #bcbcbc);
+      border: var(--flipcel-block-border-width, 0px) solid var(--flipcel-panel-border, #555555);
+      border-radius: var(--flipcel-block-radius);
       padding: 0;
-      box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
+      box-shadow: var(--flipcel-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
       min-width: 120px;
       animation: mm-pop-in 180ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
     }
@@ -57,11 +57,11 @@ export class InkwellMagicMovePopup extends LitElement {
     }
 
     .face {
-      background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
+      background: var(--flipcel-panel-surface, rgba(255, 253, 249, 0.94));
       border-radius: calc(
-        var(--inkwell-block-radius) - var(--inkwell-block-border-width, 2px)
+        var(--flipcel-block-radius) - var(--flipcel-block-border-width, 2px)
       );
-      padding: var(--inkwell-block-face-padding, 12px);
+      padding: var(--flipcel-block-face-padding, 12px);
       display: flex;
       flex-direction: column;
       gap: 6px;
@@ -69,7 +69,7 @@ export class InkwellMagicMovePopup extends LitElement {
 
     .hint {
       margin: 0;
-      color: var(--inkwell-text-secondary, #6b6b6b);
+      color: var(--flipcel-text-secondary, #6b6b6b);
       font-weight: 500;
       line-height: 1.3;
     }
@@ -142,6 +142,6 @@ export class InkwellMagicMovePopup extends LitElement {
 
 declare global {
   interface HTMLElementTagNameMap {
-    "inkwell-magic-move-popup": InkwellMagicMovePopup;
+    "flipcel-magic-move-popup": FlipCelMagicMovePopup;
   }
 }

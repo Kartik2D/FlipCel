@@ -13,8 +13,8 @@ import {
 import { timelineStore } from "../../document/document";
 import { FloatingPanel } from "../primitives/floating-panel";
 
-@customElement("inkwell-view-panel")
-export class InkwellViewPanel extends FloatingPanel {
+@customElement("flipcel-view-panel")
+export class FlipCelViewPanel extends FloatingPanel {
   @property({ type: Boolean }) brushSizeIndicatorEnabled = true;
 
   private viewOverlay = new StoreController(this, viewOverlayStore);
@@ -198,7 +198,7 @@ export class InkwellViewPanel extends FloatingPanel {
     return this.renderFloatingBlock(
       "View",
       html`
-            <inkwell-panel-section data-interactive>
+            <flipcel-panel-section data-interactive>
               <div class="toggle">
                 <span>Onion skin</span>
                 <input
@@ -238,8 +238,8 @@ export class InkwellViewPanel extends FloatingPanel {
                   >
                 </div>
               </label>
-            </inkwell-panel-section>
-            <inkwell-panel-section data-interactive>
+            </flipcel-panel-section>
+            <flipcel-panel-section data-interactive>
               <div class="toggle">
                 <span>Show grid</span>
                 <input
@@ -252,8 +252,8 @@ export class InkwellViewPanel extends FloatingPanel {
                 />
               </div>
               ${this.renderGridSettings(gridOn)}
-            </inkwell-panel-section>
-            <inkwell-panel-section data-interactive>
+            </flipcel-panel-section>
+            <flipcel-panel-section data-interactive>
               <div class="toggle">
                 <span>Symmetry</span>
                 <input
@@ -267,8 +267,8 @@ export class InkwellViewPanel extends FloatingPanel {
                 />
               </div>
               ${this.renderSymmetrySettings(sym)}
-            </inkwell-panel-section>
-            <inkwell-panel-section data-interactive>
+            </flipcel-panel-section>
+            <flipcel-panel-section data-interactive>
               <div class="toggle">
                 <span>Show brush size</span>
                 <input
@@ -280,7 +280,7 @@ export class InkwellViewPanel extends FloatingPanel {
                   }}
                 />
               </div>
-            </inkwell-panel-section>
+            </flipcel-panel-section>
       `,
     );
   }

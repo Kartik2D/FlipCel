@@ -58,7 +58,7 @@ function sampleRatioCurve(curve: number[], u: number): number {
 function accent(): string {
   return (
     getComputedStyle(document.documentElement)
-      .getPropertyValue("--inkwell-accent")
+      .getPropertyValue("--flipcel-accent")
       .trim() || "#4d73d7"
   );
 }

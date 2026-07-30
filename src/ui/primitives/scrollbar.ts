@@ -2,7 +2,7 @@ import { LitElement, html, css, type PropertyValues } from "lit";
 import { customElement, property } from "lit/decorators.js";
 
 // ============================================================
-// Inkwell Scrollbar — generic custom scrollbar
+// FlipCel Scrollbar — generic custom scrollbar
 // ============================================================
 
 /**
@@ -18,8 +18,8 @@ import { customElement, property } from "lit/decorators.js";
  * placed in flow (like the timeline's frames scrollbar) or docked in a
  * gutter beside the scroll target (like panel faces).
  */
-@customElement("inkwell-scrollbar")
-export class InkwellScrollbar extends LitElement {
+@customElement("flipcel-scrollbar")
+export class FlipCelScrollbar extends LitElement {
   /** Scroll axis this bar mirrors. */
   @property({ reflect: true }) orientation: "horizontal" | "vertical" =
     "horizontal";
@@ -40,7 +40,7 @@ export class InkwellScrollbar extends LitElement {
     :host {
       --scrollbar-size: 8px;
       --scrollbar-gutter: calc(var(--scrollbar-size) + 8px);
-      --scrollbar-track-bg: var(--block-depth-color, var(--inkwell-panel-depth, rgba(120, 120, 120, 0.16)));
+      --scrollbar-track-bg: var(--block-depth-color, var(--flipcel-panel-depth, rgba(120, 120, 120, 0.16)));
       --scrollbar-thumb-bg: color-mix(
         in srgb,
         var(--block-border, #555555) 55%,

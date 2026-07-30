@@ -20,8 +20,8 @@ import { historyStateStore } from "../../document/history";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { renderThemePreview } from "../theme-preview";
 
-@customElement("inkwell-universal-panel")
-export class InkwellUniversalPanel extends FloatingPanel {
+@customElement("flipcel-universal-panel")
+export class FlipCelUniversalPanel extends FloatingPanel {
   @property({ type: Boolean }) aliasFixEnabled = false;
   @property({ type: Boolean }) historyWindowVisible = false;
 
@@ -50,7 +50,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
 
     .stage-color-row > span {
       flex: 0 0 auto;
-      color: var(--inkwell-text-secondary, #333333);
+      color: var(--flipcel-text-secondary, #333333);
     }
 
     .stage-color-swatch {
@@ -61,8 +61,8 @@ export class InkwellUniversalPanel extends FloatingPanel {
       flex: 0 0 28px;
       margin-left: auto;
       padding: 0;
-      border-radius: var(--inkwell-content-radius);
-      border: var(--block-border-width, var(--inkwell-block-border-width, 2px)) solid
+      border-radius: var(--flipcel-content-radius);
+      border: var(--block-border-width, var(--flipcel-block-border-width, 2px)) solid
         var(--block-border, #555555);
       box-sizing: border-box;
       cursor: pointer;
@@ -90,7 +90,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
     .stage-size-label-row > span:first-child {
       flex: 0 0 auto;
       min-width: 3.25rem;
-      color: var(--inkwell-text-secondary, #333333);
+      color: var(--flipcel-text-secondary, #333333);
     }
 
     .stage-size-input-wrap {
@@ -110,7 +110,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
       padding: 5px 6px;
       margin: 0;
       border: none;
-      border-radius: var(--inkwell-content-radius);
+      border-radius: var(--flipcel-content-radius);
       background-color: var(--block-depth-color, #bcbcbc);
       color: var(--block-border, #555555);
       text-align: right;
@@ -131,7 +131,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
 
     .stage-size-unit {
       flex: 0 0 auto;
-      color: var(--inkwell-text-muted, #666);
+      color: var(--flipcel-text-muted, #666);
       font-size: 11px;
     }
 
@@ -366,7 +366,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
     const sliderHeight = clampStageDimension(height);
 
     return html`
-      <inkwell-panel-section title="Stage" data-interactive>
+      <flipcel-panel-section title="Stage" data-interactive>
         <div class="stage-color-row">
           <span>Stage color</span>
           <button
@@ -382,7 +382,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
         </div>
         ${this.renderStageSizeSlider("width", "Width", width, sliderWidth)}
         ${this.renderStageSizeSlider("height", "Height", height, sliderHeight)}
-      </inkwell-panel-section>
+      </flipcel-panel-section>
     `;
   }
 
@@ -390,7 +390,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
     return this.renderFloatingBlock(
       "Settings",
       html`
-            <inkwell-panel-section data-interactive>
+            <flipcel-panel-section data-interactive>
               <div class="row">
                 <blocky-button
                   flat
@@ -427,9 +427,9 @@ export class InkwellUniversalPanel extends FloatingPanel {
                   >Clear</blocky-button
                 >
               </div>
-            </inkwell-panel-section>
+            </flipcel-panel-section>
 
-            <inkwell-panel-section title="File" data-interactive>
+            <flipcel-panel-section title="File" data-interactive>
               <div class="row">
                 <blocky-button flat accent stretch @click=${() => this.emit("doc-new")}
                   >New File</blocky-button
@@ -451,9 +451,9 @@ export class InkwellUniversalPanel extends FloatingPanel {
                   >Export SVG</blocky-button
                 >
               </div>
-            </inkwell-panel-section>
+            </flipcel-panel-section>
 
-            <inkwell-panel-section title="Animation Wheel" data-interactive>
+            <flipcel-panel-section title="Animation Wheel" data-interactive>
               <label>
                 <span>Friction</span>
                 <div class="row">
@@ -469,12 +469,12 @@ export class InkwellUniversalPanel extends FloatingPanel {
                   )}
                 </div>
               </label>
-            </inkwell-panel-section>
+            </flipcel-panel-section>
 
             ${this.renderStageSettings()}
 
-            <inkwell-panel-section data-interactive>
-              <inkwell-scroll-strip label="Theme" flush rows="2">
+            <flipcel-panel-section data-interactive>
+              <flipcel-scroll-strip label="Theme" flush rows="2">
                 ${THEME_OPTIONS.map(
                   (mode) => html`
                     <blocky-button
@@ -490,10 +490,10 @@ export class InkwellUniversalPanel extends FloatingPanel {
                     </blocky-button>
                   `,
                 )}
-              </inkwell-scroll-strip>
-            </inkwell-panel-section>
+              </flipcel-scroll-strip>
+            </flipcel-panel-section>
 
-            <inkwell-panel-section title="Alias Fix" data-interactive>
+            <flipcel-panel-section title="Alias Fix" data-interactive>
               <div class="toggle">
                 <span>Alias fix</span>
                 <input
@@ -505,7 +505,7 @@ export class InkwellUniversalPanel extends FloatingPanel {
                   }}
                 />
               </div>
-            </inkwell-panel-section>
+            </flipcel-panel-section>
       `,
     );
   }

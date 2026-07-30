@@ -28,8 +28,8 @@ import {
 // Layers Panel
 // ============================================================
 
-@customElement("inkwell-layers-panel")
-export class InkwellLayersPanel extends FloatingPanel {
+@customElement("flipcel-layers-panel")
+export class FlipCelLayersPanel extends FloatingPanel {
   @property({ type: Boolean, reflect: true }) override masonry = false;
 
   private layers = new StoreController(this, layerStore);
@@ -132,7 +132,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-width: 0;
       height: var(--layers-control-size);
       border-radius: 6px;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      background: var(--block-depth-color, var(--flipcel-panel-depth));
       overflow: hidden;
       touch-action: none;
       cursor: pointer;
@@ -155,12 +155,12 @@ export class InkwellLayersPanel extends FloatingPanel {
       font-weight: 600;
       font-variant-numeric: tabular-nums;
       line-height: 1;
-      color: var(--inkwell-text-muted, #666);
+      color: var(--flipcel-text-muted, #666);
       white-space: nowrap;
     }
 
     :host([mini]) .mini-scrubber-mark.current {
-      color: var(--inkwell-playhead, #f2c14e);
+      color: var(--flipcel-playhead, #f2c14e);
     }
 
     :host([mini]) .mini-scrubber-thumb {
@@ -170,14 +170,14 @@ export class InkwellLayersPanel extends FloatingPanel {
       z-index: 2;
       width: 10px;
       border-radius: 4px;
-      background: var(--inkwell-playhead, #f2c14e);
+      background: var(--flipcel-playhead, #f2c14e);
       /* Keep the thumb fully inside the clipped track at both ends. */
       left: calc(
         5px + (var(--mini-scrub-t, 0) * (100% - 10px))
       );
       transform: translateX(-50%);
       pointer-events: none;
-      box-shadow: var(--inkwell-shadow-soft, 0 1px 3px rgba(0, 0, 0, 0.25));
+      box-shadow: var(--flipcel-shadow-soft, 0 1px 3px rgba(0, 0, 0, 0.25));
     }
 
     :host([mini]) .mini-scrubber:active {
@@ -239,7 +239,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       min-width: 0;
       flex: 0 0 auto;
       cursor: pointer;
-      color: var(--block-border, var(--inkwell-panel-border));
+      color: var(--block-border, var(--flipcel-panel-border));
     }
 
     .layer-row-controls {
@@ -280,7 +280,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       z-index: 5;
       cursor: grabbing;
       filter: brightness(0.96);
-      box-shadow: var(--inkwell-shadow-soft, 0 6px 18px rgba(0, 0, 0, 0.18));
+      box-shadow: var(--flipcel-shadow-soft, 0 6px 18px rgba(0, 0, 0, 0.18));
     }
 
     .layer-list.reordering .layer-item:not(.dragging) {
@@ -295,8 +295,8 @@ export class InkwellLayersPanel extends FloatingPanel {
       justify-content: center;
       min-width: 0;
       border-radius: 6px;
-      background: var(--block-depth-color, var(--inkwell-panel-depth));
-      color: var(--block-border, var(--inkwell-panel-border));
+      background: var(--block-depth-color, var(--flipcel-panel-depth));
+      color: var(--block-border, var(--flipcel-panel-border));
     }
 
     .layer-control,
@@ -323,7 +323,7 @@ export class InkwellLayersPanel extends FloatingPanel {
       font-size: 16px;
       font-weight: 700;
       line-height: 1;
-      color: var(--inkwell-text-muted, #666);
+      color: var(--flipcel-text-muted, #666);
     }
 
     .layer-action-button:disabled {
@@ -332,8 +332,8 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .layer-delete-current:hover:not(:disabled) {
-      background: var(--inkwell-negative, #9a4545);
-      color: var(--inkwell-negative-contrast, #ffffff);
+      background: var(--flipcel-negative, #9a4545);
+      color: var(--flipcel-negative-contrast, #ffffff);
       filter: none;
     }
 
@@ -356,8 +356,8 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     .layer-item.active .layer-control,
     .layer-item.active .layer-name-cell {
-      background: var(--inkwell-accent, var(--panel-accent, #b5a04a));
-      color: var(--inkwell-accent-contrast, #ffffff);
+      background: var(--flipcel-accent, var(--panel-accent, #b5a04a));
+      color: var(--flipcel-accent-contrast, #ffffff);
     }
 
     .layer-name-cell {
@@ -374,7 +374,7 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .layer-item.active .layer-name {
-      color: var(--inkwell-accent-contrast, #ffffff);
+      color: var(--flipcel-accent-contrast, #ffffff);
     }
 
     .layer-name-input {
@@ -384,15 +384,15 @@ export class InkwellLayersPanel extends FloatingPanel {
       box-sizing: border-box;
       font: inherit;
       color: inherit;
-      background: color-mix(in srgb, var(--inkwell-panel-surface) 55%, transparent);
+      background: color-mix(in srgb, var(--flipcel-panel-surface) 55%, transparent);
       border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
       border-radius: 4px;
       padding: 1px 5px;
     }
 
     .layer-item.active .layer-name-input {
-      background: color-mix(in srgb, var(--inkwell-accent-contrast, #fff) 14%, transparent);
-      border-color: color-mix(in srgb, var(--inkwell-accent-contrast, #fff) 42%, transparent);
+      background: color-mix(in srgb, var(--flipcel-accent-contrast, #fff) 14%, transparent);
+      border-color: color-mix(in srgb, var(--flipcel-accent-contrast, #fff) 42%, transparent);
     }
 
     .visibility-btn,
@@ -410,8 +410,8 @@ export class InkwellLayersPanel extends FloatingPanel {
     }
 
     .solo-btn.on {
-      background: var(--inkwell-accent, var(--panel-accent, #b5a04a));
-      color: var(--inkwell-accent-contrast, #ffffff);
+      background: var(--flipcel-accent, var(--panel-accent, #b5a04a));
+      color: var(--flipcel-accent-contrast, #ffffff);
     }
 
     .visibility-btn svg,
@@ -434,12 +434,12 @@ export class InkwellLayersPanel extends FloatingPanel {
     .layer-item.active .visibility-btn:hover:not(:disabled),
     .layer-item.active .lock-btn:hover:not(:disabled),
     .layer-item.active .solo-btn:hover:not(:disabled) {
-      background: color-mix(in srgb, var(--inkwell-accent-contrast, #fff) 32%, transparent);
+      background: color-mix(in srgb, var(--flipcel-accent-contrast, #fff) 32%, transparent);
       filter: none;
     }
 
     .layer-item.active .solo-btn.on:hover:not(:disabled) {
-      background: color-mix(in srgb, var(--inkwell-accent-contrast, #fff) 42%, transparent);
+      background: color-mix(in srgb, var(--flipcel-accent-contrast, #fff) 42%, transparent);
     }
   `;
 
@@ -1953,11 +1953,11 @@ export class InkwellLayersPanel extends FloatingPanel {
             ${this.mini
               ? nothing
               : html`
-                  <inkwell-panel-section data-interactive>
+                  <flipcel-panel-section data-interactive>
                     <div class="layers-header">
                       ${this.renderPlaybackActions()}
                     </div>
-                  </inkwell-panel-section>
+                  </flipcel-panel-section>
                 `}
             ${this.mini
               ? nothing
@@ -1974,13 +1974,13 @@ export class InkwellLayersPanel extends FloatingPanel {
                       data-interactive
                       style="--timeline-frames: ${t.duration}"
                     >
-                      <inkwell-scrollbar
+                      <flipcel-scrollbar
                         class="frames-scrollbar"
                         orientation="horizontal"
                         for=".frames-viewport"
                         persistent
                         .gutter=${false}
-                      ></inkwell-scrollbar>
+                      ></flipcel-scrollbar>
                       <div
                         class="strip-ruler"
                         @pointerdown=${this.onScrubDown}
@@ -2139,12 +2139,12 @@ export class InkwellLayersPanel extends FloatingPanel {
                 </div>
               </div>
               </div>
-              <inkwell-scrollbar
+              <flipcel-scrollbar
                 class="layers-vscroll"
                 orientation="vertical"
                 for=".layer-scroll"
                 data-interactive
-              ></inkwell-scrollbar>
+              ></flipcel-scrollbar>
             </div>
             ${this.mini
               ? html`

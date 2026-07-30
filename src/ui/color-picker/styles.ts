@@ -17,7 +17,7 @@ export const handleStyles = css`
     height: var(--picker-handle-size);
     border-radius: 50%;
     border: var(--picker-border-width) solid white;
-    box-shadow: var(--inkwell-shadow-soft, 0 0 2px rgba(0, 0, 0, 0.5));
+    box-shadow: var(--flipcel-shadow-soft, 0 0 2px rgba(0, 0, 0, 0.5));
     background: transparent;
     transform: translate(-50%, -50%);
     box-sizing: border-box;
@@ -36,7 +36,7 @@ export const sliderColumnStyles = css`
   .color-preview {
     width: 100%;
     aspect-ratio: 1;
-    border-radius: var(--inkwell-content-radius);
+    border-radius: var(--flipcel-content-radius);
     border: var(--picker-border-width) solid var(--picker-border-color);
     box-sizing: border-box;
     overflow: hidden;
@@ -49,7 +49,7 @@ export const sliderColumnStyles = css`
   .s-slider {
     flex: 1;
     position: relative;
-    border-radius: var(--inkwell-content-radius);
+    border-radius: var(--flipcel-content-radius);
     overflow: hidden;
     border: var(--picker-border-width) solid var(--picker-border-color);
     box-sizing: border-box;
@@ -65,7 +65,7 @@ export const sliderColumnStyles = css`
     height: 6px;
     border-radius: 2px;
     border: var(--picker-border-width) solid white;
-    box-shadow: var(--inkwell-shadow-soft, 0 0 2px rgba(0, 0, 0, 0.5));
+    box-shadow: var(--flipcel-shadow-soft, 0 0 2px rgba(0, 0, 0, 0.5));
     background: transparent;
     transform: translate(-50%, -50%);
     box-sizing: border-box;

@@ -17,8 +17,8 @@ import { raisePanelZIndex } from "../primitives/panel-anchor";
 // Tool Settings Panel — normal floating panel (opened via tool double-tap)
 // ============================================================
 
-@customElement("inkwell-tool-settings-panel")
-export class InkwellToolSettingsPanel extends FloatingPanel {
+@customElement("flipcel-tool-settings-panel")
+export class FlipCelToolSettingsPanel extends FloatingPanel {
   @property({ type: Number }) pixelRes = 2;
   @property({ type: Boolean, reflect: true }) override masonry = false;
 
@@ -275,9 +275,9 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
     return this.renderFloatingBlock(
       title,
       html`
-        <inkwell-panel-section data-interactive>
+        <flipcel-panel-section data-interactive>
           ${this.renderToolSettings()}
-        </inkwell-panel-section>
+        </flipcel-panel-section>
       `,
     );
   }

@@ -16,8 +16,8 @@ import { renderThemePreview } from "../theme-preview";
  * A blank document is already loaded underneath — dismiss / Create new keep it.
  * Normal floating window (no modal scrim); closing hides it for the session.
  */
-@customElement("inkwell-startup-panel")
-export class InkwellStartupPanel extends FloatingPanel {
+@customElement("flipcel-startup-panel")
+export class FlipCelStartupPanel extends FloatingPanel {
   @property({ type: Boolean }) canRestoreAutosave = false;
 
   private themeMode = new StoreController(this, themeModeStore);
@@ -52,7 +52,7 @@ export class InkwellStartupPanel extends FloatingPanel {
       font-weight: 700;
       line-height: 1.2;
       letter-spacing: -0.02em;
-      color: var(--inkwell-text-primary, #1a1a1a);
+      color: var(--flipcel-text-primary, #1a1a1a);
     }
 
     .startup-theme-chip-btn {
@@ -159,10 +159,10 @@ export class InkwellStartupPanel extends FloatingPanel {
     return this.renderFloatingBlock(
       undefined,
       html`
-        <h2 class="startup-welcome">Welcome to Inkwell</h2>
+        <h2 class="startup-welcome">Welcome to FlipCel</h2>
 
-        <inkwell-panel-section data-interactive>
-          <inkwell-scroll-strip
+        <flipcel-panel-section data-interactive>
+          <flipcel-scroll-strip
             label="Pick a theme"
             center-label
             flush
@@ -184,10 +184,10 @@ export class InkwellStartupPanel extends FloatingPanel {
                 </blocky-button>
               `,
             )}
-          </inkwell-scroll-strip>
-        </inkwell-panel-section>
+          </flipcel-scroll-strip>
+        </flipcel-panel-section>
 
-        <inkwell-panel-section data-interactive>
+        <flipcel-panel-section data-interactive>
           <div class="startup-actions">
             <blocky-button flat large accent stretch @click=${() => this.dismiss()}
               >Create new file</blocky-button
@@ -207,7 +207,7 @@ export class InkwellStartupPanel extends FloatingPanel {
               >Restore previous file</blocky-button
             >
           </div>
-        </inkwell-panel-section>
+        </flipcel-panel-section>
       `,
     );
   }

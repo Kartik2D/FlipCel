@@ -17,8 +17,8 @@ import type { SettingsSchema } from "../../tools/types";
 // Shortcuts Panel (mode / frame / zoom quick actions)
 // ============================================================
 
-@customElement("inkwell-shortcuts-panel")
-export class InkwellShortcutsPanel extends FloatingPanel {
+@customElement("flipcel-shortcuts-panel")
+export class FlipCelShortcutsPanel extends FloatingPanel {
   @property({ type: Number }) zoomLevel = 100;
 
   private tool = new StoreController(this, toolStore);
@@ -44,23 +44,23 @@ export class InkwellShortcutsPanel extends FloatingPanel {
       --panel-right: max(8px, env(safe-area-inset-right, 0px));
       --panel-width: auto;
       --panel-min-width: 0;
-      --block-face-bg: var(--inkwell-topbar-surface, var(--inkwell-panel-surface, #ffffff));
+      --block-face-bg: var(--flipcel-topbar-surface, var(--flipcel-panel-surface, #ffffff));
       z-index: 1200;
       width: auto;
-      --inkwell-shadow-panel: var(--inkwell-dock-shadow);
-      --inkwell-dock-row-h: 44px;
-      --inkwell-dock-control: 44px;
+      --flipcel-shadow-panel: var(--flipcel-dock-shadow);
+      --flipcel-dock-row-h: 44px;
+      --flipcel-dock-control: 44px;
     }
 
     .face {
       overflow: hidden;
       min-height: calc(
-        var(--inkwell-dock-row-h) + (2 * var(--inkwell-block-face-padding))
+        var(--flipcel-dock-row-h) + (2 * var(--flipcel-block-face-padding))
       );
     }
 
     .dock-status {
-      min-height: var(--inkwell-dock-row-h);
+      min-height: var(--flipcel-dock-row-h);
       align-items: center;
     }
   `;

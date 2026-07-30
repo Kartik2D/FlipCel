@@ -48,21 +48,21 @@ import {
   type ContextualActionContext,
 } from "../editing/contextual-actions";
 import type {
-  InkwellColorPanel,
-  InkwellColorPopup,
-  InkwellToolsPanel,
-  InkwellToolSettingsPanel,
-  InkwellUniversalPanel,
-  InkwellHistoryPanel,
-  InkwellStartupPanel,
-  InkwellViewPanel,
-  InkwellShortcutsPanel,
-  InkwellLayersPanel,
-  InkwellWheelPanel,
-  InkwellFunctionsPanel,
-  InkwellMagicMovePopup,
-  InkwellMagicMorphPopup,
-  InkwellAutoMorphPopup,
+  FlipCelColorPanel,
+  FlipCelColorPopup,
+  FlipCelToolsPanel,
+  FlipCelToolSettingsPanel,
+  FlipCelUniversalPanel,
+  FlipCelHistoryPanel,
+  FlipCelStartupPanel,
+  FlipCelViewPanel,
+  FlipCelShortcutsPanel,
+  FlipCelLayersPanel,
+  FlipCelWheelPanel,
+  FlipCelFunctionsPanel,
+  FlipCelMagicMovePopup,
+  FlipCelMagicMorphPopup,
+  FlipCelAutoMorphPopup,
 } from "../ui/register";
 import "../ui/register"; // Register Lit components
 import {
@@ -132,21 +132,21 @@ class App {
       console.error("Autosave failed:", err);
     });
   }, 800);
-  private colorPanel: InkwellColorPanel;
-  private colorPopup: InkwellColorPopup;
-  private toolsPanel: InkwellToolsPanel;
-  private toolSettingsPanel: InkwellToolSettingsPanel;
-  private universalPanel: InkwellUniversalPanel;
-  private historyPanel: InkwellHistoryPanel;
-  private startupPanel: InkwellStartupPanel;
-  private viewPanel: InkwellViewPanel;
-  private shortcutsPanel: InkwellShortcutsPanel;
-  private layersPanel: InkwellLayersPanel;
-  private wheelPanel: InkwellWheelPanel;
-  private functionsPanel: InkwellFunctionsPanel;
-  private magicMovePopup: InkwellMagicMovePopup;
-  private magicMorphPopup: InkwellMagicMorphPopup;
-  private autoMorphPopup: InkwellAutoMorphPopup;
+  private colorPanel: FlipCelColorPanel;
+  private colorPopup: FlipCelColorPopup;
+  private toolsPanel: FlipCelToolsPanel;
+  private toolSettingsPanel: FlipCelToolSettingsPanel;
+  private universalPanel: FlipCelUniversalPanel;
+  private historyPanel: FlipCelHistoryPanel;
+  private startupPanel: FlipCelStartupPanel;
+  private viewPanel: FlipCelViewPanel;
+  private shortcutsPanel: FlipCelShortcutsPanel;
+  private layersPanel: FlipCelLayersPanel;
+  private wheelPanel: FlipCelWheelPanel;
+  private functionsPanel: FlipCelFunctionsPanel;
+  private magicMovePopup: FlipCelMagicMovePopup;
+  private magicMorphPopup: FlipCelMagicMorphPopup;
+  private autoMorphPopup: FlipCelAutoMorphPopup;
   private camera: Camera;
   private isInitialized = false;
   private pixelResScale = 2;
@@ -290,29 +290,29 @@ class App {
     });
 
     // Get panel Lit elements
-    this.colorPanel = document.getElementById("color-panel") as InkwellColorPanel;
-    this.colorPopup = document.getElementById("color-popup") as InkwellColorPopup;
-    this.toolsPanel = document.getElementById("tools-panel") as InkwellToolsPanel;
+    this.colorPanel = document.getElementById("color-panel") as FlipCelColorPanel;
+    this.colorPopup = document.getElementById("color-popup") as FlipCelColorPopup;
+    this.toolsPanel = document.getElementById("tools-panel") as FlipCelToolsPanel;
     this.toolSettingsPanel = document.getElementById(
       "tool-settings-panel",
-    ) as InkwellToolSettingsPanel;
-    this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
-    this.historyPanel = document.getElementById("history-panel") as InkwellHistoryPanel;
-    this.startupPanel = document.getElementById("startup-panel") as InkwellStartupPanel;
-    this.viewPanel = document.getElementById("view-panel") as InkwellViewPanel;
-    this.shortcutsPanel = document.getElementById("shortcuts-panel") as InkwellShortcutsPanel;
-    this.layersPanel = document.getElementById("layers-panel") as InkwellLayersPanel;
-    this.wheelPanel = document.getElementById("wheel-panel") as InkwellWheelPanel;
-    this.functionsPanel = document.getElementById("functions-panel") as InkwellFunctionsPanel;
+    ) as FlipCelToolSettingsPanel;
+    this.universalPanel = document.getElementById("universal-panel") as FlipCelUniversalPanel;
+    this.historyPanel = document.getElementById("history-panel") as FlipCelHistoryPanel;
+    this.startupPanel = document.getElementById("startup-panel") as FlipCelStartupPanel;
+    this.viewPanel = document.getElementById("view-panel") as FlipCelViewPanel;
+    this.shortcutsPanel = document.getElementById("shortcuts-panel") as FlipCelShortcutsPanel;
+    this.layersPanel = document.getElementById("layers-panel") as FlipCelLayersPanel;
+    this.wheelPanel = document.getElementById("wheel-panel") as FlipCelWheelPanel;
+    this.functionsPanel = document.getElementById("functions-panel") as FlipCelFunctionsPanel;
     this.magicMovePopup = document.getElementById(
       "magic-move-popup",
-    ) as InkwellMagicMovePopup;
+    ) as FlipCelMagicMovePopup;
     this.magicMorphPopup = document.getElementById(
       "magic-morph-popup",
-    ) as InkwellMagicMorphPopup;
+    ) as FlipCelMagicMorphPopup;
     this.autoMorphPopup = document.getElementById(
       "auto-morph-popup",
-    ) as InkwellAutoMorphPopup;
+    ) as FlipCelAutoMorphPopup;
     this.timelineSession = new TimelineSession({
       documentManager: this.documentManager,
       historyManager: this.historyManager,
@@ -1649,7 +1649,7 @@ class App {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `inkwell-view-${Date.now()}.svg`;
+    a.download = `flipcel-view-${Date.now()}.svg`;
     document.body.appendChild(a);
     a.click();
     a.remove();

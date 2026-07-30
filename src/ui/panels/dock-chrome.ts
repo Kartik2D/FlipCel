@@ -50,10 +50,10 @@ export const dockChipStyles = css`
   }
 
   .dock-cell {
-    flex: 0 0 var(--inkwell-dock-control);
-    width: var(--inkwell-dock-control);
-    min-width: var(--inkwell-dock-control);
-    max-width: var(--inkwell-dock-control);
+    flex: 0 0 var(--flipcel-dock-control);
+    width: var(--flipcel-dock-control);
+    min-width: var(--flipcel-dock-control);
+    max-width: var(--flipcel-dock-control);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -79,7 +79,7 @@ export const dockChipStyles = css`
     gap: 3px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-    color: var(--inkwell-text-primary, #222);
+    color: var(--flipcel-text-primary, #222);
     white-space: nowrap;
     max-width: 100%;
     overflow: hidden;
@@ -108,7 +108,7 @@ export const dockChipStyles = css`
   .dock-prefix {
     flex-shrink: 0;
     font-weight: 500;
-    color: var(--inkwell-text-muted, #666);
+    color: var(--flipcel-text-muted, #666);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -128,11 +128,11 @@ export const dockChipStyles = css`
   }
 
   button.dock-chip-reset:hover {
-    background: color-mix(in srgb, var(--inkwell-text-primary, #222) 8%, transparent);
+    background: color-mix(in srgb, var(--flipcel-text-primary, #222) 8%, transparent);
   }
 
   button.dock-chip-reset:focus-visible {
-    outline: 2px solid var(--inkwell-panel-border, #555555);
+    outline: 2px solid var(--flipcel-panel-border, #555555);
     outline-offset: 1px;
   }
 
@@ -146,17 +146,17 @@ export const dockChipStyles = css`
   }
 
   .dock-value.mode-positive {
-    background: var(--inkwell-positive, #3d9a6a);
-    color: var(--inkwell-positive-contrast, #ffffff);
+    background: var(--flipcel-positive, #3d9a6a);
+    color: var(--flipcel-positive-contrast, #ffffff);
   }
 
   .dock-value.mode-negative {
-    background: var(--inkwell-negative, #c45a5a);
-    color: var(--inkwell-negative-contrast, #ffffff);
+    background: var(--flipcel-negative, #c45a5a);
+    color: var(--flipcel-negative-contrast, #ffffff);
   }
 
   .dock-value.mode-neutral {
-    background: var(--inkwell-neutral, #6b7280);
-    color: var(--inkwell-neutral-contrast, #ffffff);
+    background: var(--flipcel-neutral, #6b7280);
+    color: var(--flipcel-neutral-contrast, #ffffff);
   }
 `;

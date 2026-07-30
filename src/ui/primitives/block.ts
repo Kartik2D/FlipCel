@@ -1,10 +1,10 @@
 import { LitElement, html, css, nothing } from "lit";
-import type { InkwellScrollbar } from "./scrollbar";
+import type { FlipCelScrollbar } from "./scrollbar";
 import { property } from "lit/decorators.js";
 import {
-  INKWELL_MOTION_BOUNCE_MS,
-  INKWELL_PANEL_SNAP_ANIMATION,
-  INKWELL_PANEL_SNAP_BACK_KEYFRAMES,
+  FLIPCEL_MOTION_BOUNCE_MS,
+  FLIPCEL_PANEL_SNAP_ANIMATION,
+  FLIPCEL_PANEL_SNAP_BACK_KEYFRAMES,
 } from "../motion";
 
 // ============================================================
@@ -39,7 +39,7 @@ export class Block extends LitElement {
   private _snapBackClearTimeout: ReturnType<typeof setTimeout> | null = null;
 
   private _onSnapBackAnimationEnd = (e: AnimationEvent) => {
-    if (e.animationName !== INKWELL_PANEL_SNAP_BACK_KEYFRAMES) return;
+    if (e.animationName !== FLIPCEL_PANEL_SNAP_BACK_KEYFRAMES) return;
     this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
     this._finishSnapBackAnimationCleanup();
   };
@@ -51,18 +51,18 @@ export class Block extends LitElement {
 
   static styles = css`
     :host {
-      --block-depth-color: var(--inkwell-panel-depth, #bcbcbc);
-      --block-border: var(--inkwell-panel-border, #555555);
-      --block-border-width: var(--inkwell-block-border-width, 0px);
-      --block-radius: var(--inkwell-block-radius);
-      --block-face-bg: var(--inkwell-panel-surface, #ffffff);
-      --block-face-padding: var(--inkwell-block-face-padding, 12px);
-      --block-font: var(--inkwell-font, system-ui, sans-serif);
-      --block-font-size: var(--inkwell-block-font-size, 12px);
+      --block-depth-color: var(--flipcel-panel-depth, #bcbcbc);
+      --block-border: var(--flipcel-panel-border, #555555);
+      --block-border-width: var(--flipcel-block-border-width, 0px);
+      --block-radius: var(--flipcel-block-radius);
+      --block-face-bg: var(--flipcel-panel-surface, #ffffff);
+      --block-face-padding: var(--flipcel-block-face-padding, 12px);
+      --block-font: var(--flipcel-font, system-ui, sans-serif);
+      --block-font-size: var(--flipcel-block-font-size, 12px);
       --block-font-weight: 500;
-      --block-font-color: var(--inkwell-text-secondary, #6b6b6b);
-      --block-resize-hit: var(--inkwell-block-resize-hit, 22px);
-      --scrollbar-size: var(--inkwell-scrollbar-size, 8px);
+      --block-font-color: var(--flipcel-text-secondary, #6b6b6b);
+      --block-resize-hit: var(--flipcel-block-resize-hit, 22px);
+      --scrollbar-size: var(--flipcel-scrollbar-size, 8px);
       /* Track + inset so scrollbars sit in reserved padding, not over content. */
       --scrollbar-gutter: calc(var(--scrollbar-size) + 8px);
 
@@ -77,7 +77,7 @@ export class Block extends LitElement {
     }
 
     /* Native scrollbars are hidden everywhere; scrolling surfaces get a
-       guttered <inkwell-scrollbar> instead (see ensureFaceScrollbar). */
+       guttered <flipcel-scrollbar> instead (see ensureFaceScrollbar). */
     :host,
     * {
       scrollbar-width: none;
@@ -121,7 +121,7 @@ export class Block extends LitElement {
       border-radius: var(--block-radius);
       padding: 0;
       height: 100%;
-      box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
+      box-shadow: var(--flipcel-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
       position: relative;
       overflow: hidden;
     }
@@ -175,20 +175,20 @@ export class Block extends LitElement {
     }
 
     /* Same timing breakpoints as .floating-close (0 / 55 / 78 / 100%) — overshoot + settle on translate */
-    @keyframes inkwell-panel-snap-back {
+    @keyframes flipcel-panel-snap-back {
       0% {
-        transform: translate(var(--inkwell-snap-x, 0px), var(--inkwell-snap-y, 0px));
+        transform: translate(var(--flipcel-snap-x, 0px), var(--flipcel-snap-y, 0px));
       }
       55% {
         transform: translate(
-          calc(var(--inkwell-snap-x, 0px) * -0.1),
-          calc(var(--inkwell-snap-y, 0px) * -0.1)
+          calc(var(--flipcel-snap-x, 0px) * -0.1),
+          calc(var(--flipcel-snap-y, 0px) * -0.1)
         );
       }
       78% {
         transform: translate(
-          calc(var(--inkwell-snap-x, 0px) * 0.04),
-          calc(var(--inkwell-snap-y, 0px) * 0.04)
+          calc(var(--flipcel-snap-x, 0px) * 0.04),
+          calc(var(--flipcel-snap-y, 0px) * 0.04)
         );
       }
       100% {
@@ -381,8 +381,8 @@ export class Block extends LitElement {
     this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
     this.style.removeProperty("animation");
     this.style.removeProperty("transform");
-    this.style.removeProperty("--inkwell-snap-x");
-    this.style.removeProperty("--inkwell-snap-y");
+    this.style.removeProperty("--flipcel-snap-x");
+    this.style.removeProperty("--flipcel-snap-y");
   }
 
   private _restorePreDragLayout(
@@ -435,21 +435,21 @@ export class Block extends LitElement {
     const sx = rectBefore.left - rectAfter.left;
     const sy = rectBefore.top - rectAfter.top;
 
-    this.style.setProperty("--inkwell-snap-x", `${sx}px`);
-    this.style.setProperty("--inkwell-snap-y", `${sy}px`);
+    this.style.setProperty("--flipcel-snap-x", `${sx}px`);
+    this.style.setProperty("--flipcel-snap-y", `${sy}px`);
 
     this.removeEventListener("animationend", this._onSnapBackAnimationEnd);
     this.addEventListener("animationend", this._onSnapBackAnimationEnd);
 
     requestAnimationFrame(() => {
-      this.style.animation = INKWELL_PANEL_SNAP_ANIMATION;
+      this.style.animation = FLIPCEL_PANEL_SNAP_ANIMATION;
     });
 
     this._clearSnapBackTimeout();
     this._snapBackClearTimeout = setTimeout(() => {
       this._snapBackClearTimeout = null;
       this._finishSnapBackAnimationCleanup();
-    }, INKWELL_MOTION_BOUNCE_MS + 200);
+    }, FLIPCEL_MOTION_BOUNCE_MS + 200);
   };
 
   private _applyPercentagePosition() {
@@ -656,8 +656,8 @@ export class Block extends LitElement {
     this.ensureFaceScrollbar();
   }
 
-  protected faceScrollbar: InkwellScrollbar | null = null;
-  protected faceHScrollbar: InkwellScrollbar | null = null;
+  protected faceScrollbar: FlipCelScrollbar | null = null;
+  protected faceHScrollbar: FlipCelScrollbar | null = null;
 
   /**
    * Opt-in face scrollbar. Default off so compact Blocks (buttons) are not
@@ -694,7 +694,7 @@ export class Block extends LitElement {
       const face = this.getFaceScrollTarget();
       if (mount && face) {
         if (!this.faceScrollbar || this.faceScrollbar.parentElement !== mount) {
-          const bar = document.createElement("inkwell-scrollbar") as InkwellScrollbar;
+          const bar = document.createElement("flipcel-scrollbar") as FlipCelScrollbar;
           bar.orientation = "vertical";
           bar.classList.add("face-scrollbar");
           bar.setAttribute("data-interactive", "");
@@ -717,7 +717,7 @@ export class Block extends LitElement {
     const face = this.getFaceScrollTarget();
     if (!mount || !face) return;
     if (!this.faceHScrollbar || this.faceHScrollbar.parentElement !== mount) {
-      const bar = document.createElement("inkwell-scrollbar") as InkwellScrollbar;
+      const bar = document.createElement("flipcel-scrollbar") as FlipCelScrollbar;
       bar.orientation = "horizontal";
       bar.classList.add("face-hscrollbar");
       bar.setAttribute("data-interactive", "");

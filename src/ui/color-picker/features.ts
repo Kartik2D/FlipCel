@@ -102,7 +102,7 @@ const colorPickerSharedStyles = css`
     margin: 0;
     font: inherit;
     font-weight: 600;
-    color: var(--inkwell-text-primary, #1a1a1a);
+    color: var(--flipcel-text-primary, #1a1a1a);
   }
 
   .doc-colors-header blocky-button {
@@ -128,7 +128,7 @@ const colorPickerSharedStyles = css`
     height: var(--picker-slider-width);
     flex: 0 0 var(--picker-slider-width);
     padding: 0;
-    border-radius: var(--inkwell-content-radius);
+    border-radius: var(--flipcel-content-radius);
     border: var(--picker-border-width) solid var(--picker-border-color);
     box-sizing: border-box;
     overflow: hidden;
@@ -242,7 +242,7 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
       const showRecolor = this.showDocumentColorRecolor();
 
       return html`
-        <inkwell-panel-section data-interactive>
+        <flipcel-panel-section data-interactive>
           <div class="doc-colors-header">
             <h3 class="doc-colors-label">Document Colors</h3>
             ${showRecolor
@@ -277,7 +277,7 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
               )}
             </div>
           </div>
-        </inkwell-panel-section>
+        </flipcel-panel-section>
       `;
     }
 
@@ -290,7 +290,7 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
       return html`
         ${showVariantTabs
           ? html`
-              <inkwell-panel-section data-interactive>
+              <flipcel-panel-section data-interactive>
                 <div class="variant-tabs">
                   ${PICKER_VARIANTS.map(
                     (v) => html`
@@ -304,7 +304,7 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
                     `,
                   )}
                 </div>
-              </inkwell-panel-section>
+              </flipcel-panel-section>
             `
           : nothing}
         <div class="picker-wrap">
@@ -344,8 +344,8 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
   return ColorPickerFeaturesClass;
 }
 
-@customElement("inkwell-color-panel")
-export class InkwellColorPanel extends ColorPickerFeatures(FloatingPanel) {
+@customElement("flipcel-color-panel")
+export class FlipCelColorPanel extends ColorPickerFeatures(FloatingPanel) {
   /** Picker flex-fills the panel; keep a single-column stack. */
   @property({ type: Boolean, reflect: true }) override masonry = false;
 
@@ -377,8 +377,8 @@ export class InkwellColorPanel extends ColorPickerFeatures(FloatingPanel) {
   }
 }
 
-@customElement("inkwell-color-popup")
-export class InkwellColorPopup extends ColorPickerFeatures(PopupWindow) {
+@customElement("flipcel-color-popup")
+export class FlipCelColorPopup extends ColorPickerFeatures(PopupWindow) {
   static styles = css`
     ${PopupWindow.styles}
     ${colorPickerSharedStyles}

@@ -4,7 +4,7 @@ import { type ToolId, getTool } from "../../tools/registry";
 import { toolStore, StoreController } from "../../state";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { phosphorIcon } from "../icons/phosphor";
-import type { InkwellToolSettingsPanel } from "./tool-settings-panel";
+import type { FlipCelToolSettingsPanel } from "./tool-settings-panel";
 
 // ============================================================
 // Tools Panel — compact icon rail with a custom drag header
@@ -12,8 +12,8 @@ import type { InkwellToolSettingsPanel } from "./tool-settings-panel";
 
 const DOUBLE_TAP_MS = 350;
 
-@customElement("inkwell-tools-panel")
-export class InkwellToolsPanel extends FloatingPanel {
+@customElement("flipcel-tools-panel")
+export class FlipCelToolsPanel extends FloatingPanel {
   @property({ type: Boolean, reflect: true }) override masonry = false;
 
   private tool = new StoreController(this, toolStore);
@@ -131,7 +131,7 @@ export class InkwellToolsPanel extends FloatingPanel {
   private openToolSettings() {
     const panel = document.getElementById(
       "tool-settings-panel",
-    ) as InkwellToolSettingsPanel | null;
+    ) as FlipCelToolSettingsPanel | null;
     if (!panel) return;
     void panel.showNear(this);
   }
@@ -196,7 +196,7 @@ export class InkwellToolsPanel extends FloatingPanel {
     return this.renderToolsBlock(html`
       <div class="tools-rail" data-interactive>
         <div class="grid">
-          ${InkwellToolsPanel.TOOLS.map((toolId) => this.renderToolButton(toolId))}
+          ${FlipCelToolsPanel.TOOLS.map((toolId) => this.renderToolButton(toolId))}
         </div>
       </div>
     `);

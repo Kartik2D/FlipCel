@@ -10,57 +10,57 @@
  */
 
 /** 1 — Quadratic ease-in-out (approx.). */
-export const INKWELL_MOTION_QUAD_MS = 220;
-export const INKWELL_MOTION_QUAD_EASING = "cubic-bezier(0.45, 0, 0.55, 1)";
+export const FLIPCEL_MOTION_QUAD_MS = 220;
+export const FLIPCEL_MOTION_QUAD_EASING = "cubic-bezier(0.45, 0, 0.55, 1)";
 
 /** 2 — Fast attack with obvious overshoot settle. */
-export const INKWELL_MOTION_OVERSHOOT_MS = 420;
-export const INKWELL_MOTION_OVERSHOOT_EASING = "cubic-bezier(0.22, 1.7, 0.36, 1)";
+export const FLIPCEL_MOTION_OVERSHOOT_MS = 420;
+export const FLIPCEL_MOTION_OVERSHOOT_EASING = "cubic-bezier(0.22, 1.7, 0.36, 1)";
 
 /** @deprecated Prefer OVERSHOOT_* — kept for existing snap-back call sites. */
-export const INKWELL_MOTION_BOUNCE_MS = INKWELL_MOTION_OVERSHOOT_MS;
+export const FLIPCEL_MOTION_BOUNCE_MS = FLIPCEL_MOTION_OVERSHOOT_MS;
 /** @deprecated Prefer OVERSHOOT_* */
-export const INKWELL_MOTION_BOUNCE_EASING = INKWELL_MOTION_OVERSHOOT_EASING;
+export const FLIPCEL_MOTION_BOUNCE_EASING = FLIPCEL_MOTION_OVERSHOOT_EASING;
 
-export const INKWELL_CSS_VAR_QUAD_DURATION = "--inkwell-motion-quad-duration";
-export const INKWELL_CSS_VAR_QUAD_EASING = "--inkwell-motion-quad-easing";
-export const INKWELL_CSS_VAR_OVERSHOOT_DURATION = "--inkwell-motion-overshoot-duration";
-export const INKWELL_CSS_VAR_OVERSHOOT_EASING = "--inkwell-motion-overshoot-easing";
+export const FLIPCEL_CSS_VAR_QUAD_DURATION = "--flipcel-motion-quad-duration";
+export const FLIPCEL_CSS_VAR_QUAD_EASING = "--flipcel-motion-quad-easing";
+export const FLIPCEL_CSS_VAR_OVERSHOOT_DURATION = "--flipcel-motion-overshoot-duration";
+export const FLIPCEL_CSS_VAR_OVERSHOOT_EASING = "--flipcel-motion-overshoot-easing";
 
 /** Back-compat aliases → overshoot tokens. */
-export const INKWELL_CSS_VAR_BOUNCE_DURATION = "--inkwell-motion-bounce-duration";
-export const INKWELL_CSS_VAR_BOUNCE_EASING = "--inkwell-motion-bounce-easing";
+export const FLIPCEL_CSS_VAR_BOUNCE_DURATION = "--flipcel-motion-bounce-duration";
+export const FLIPCEL_CSS_VAR_BOUNCE_EASING = "--flipcel-motion-bounce-easing";
 
 /** Visual scale while a floating panel is dragged over the top dock. */
-export const INKWELL_PANEL_DOCK_HOVER_SCALE = 0.88;
-export const INKWELL_CSS_VAR_PANEL_DOCK_HOVER_SCALE = "--inkwell-panel-dock-hover-scale";
+export const FLIPCEL_PANEL_DOCK_HOVER_SCALE = 0.88;
+export const FLIPCEL_CSS_VAR_PANEL_DOCK_HOVER_SCALE = "--flipcel-panel-dock-hover-scale";
 
-function registerInkwellMotionCssVars() {
+function registerFlipCelMotionCssVars() {
   const root = document.documentElement;
-  root.style.setProperty(INKWELL_CSS_VAR_QUAD_DURATION, `${INKWELL_MOTION_QUAD_MS}ms`);
-  root.style.setProperty(INKWELL_CSS_VAR_QUAD_EASING, INKWELL_MOTION_QUAD_EASING);
-  root.style.setProperty(INKWELL_CSS_VAR_OVERSHOOT_DURATION, `${INKWELL_MOTION_OVERSHOOT_MS}ms`);
-  root.style.setProperty(INKWELL_CSS_VAR_OVERSHOOT_EASING, INKWELL_MOTION_OVERSHOOT_EASING);
+  root.style.setProperty(FLIPCEL_CSS_VAR_QUAD_DURATION, `${FLIPCEL_MOTION_QUAD_MS}ms`);
+  root.style.setProperty(FLIPCEL_CSS_VAR_QUAD_EASING, FLIPCEL_MOTION_QUAD_EASING);
+  root.style.setProperty(FLIPCEL_CSS_VAR_OVERSHOOT_DURATION, `${FLIPCEL_MOTION_OVERSHOOT_MS}ms`);
+  root.style.setProperty(FLIPCEL_CSS_VAR_OVERSHOOT_EASING, FLIPCEL_MOTION_OVERSHOOT_EASING);
   // Aliases for older selectors / snap-back shorthand
-  root.style.setProperty(INKWELL_CSS_VAR_BOUNCE_DURATION, `${INKWELL_MOTION_OVERSHOOT_MS}ms`);
-  root.style.setProperty(INKWELL_CSS_VAR_BOUNCE_EASING, INKWELL_MOTION_OVERSHOOT_EASING);
-  root.style.setProperty(INKWELL_CSS_VAR_PANEL_DOCK_HOVER_SCALE, String(INKWELL_PANEL_DOCK_HOVER_SCALE));
+  root.style.setProperty(FLIPCEL_CSS_VAR_BOUNCE_DURATION, `${FLIPCEL_MOTION_OVERSHOOT_MS}ms`);
+  root.style.setProperty(FLIPCEL_CSS_VAR_BOUNCE_EASING, FLIPCEL_MOTION_OVERSHOOT_EASING);
+  root.style.setProperty(FLIPCEL_CSS_VAR_PANEL_DOCK_HOVER_SCALE, String(FLIPCEL_PANEL_DOCK_HOVER_SCALE));
 }
 
-registerInkwellMotionCssVars();
+registerFlipCelMotionCssVars();
 
 /**
  * Name of @keyframes in Block styles — same milestones as `floating-close-bounce-in` (0 / 55 / 78 / 100%),
  * but on translate() so snap-back overshoots and settles like the close button scale.
  */
-export const INKWELL_PANEL_SNAP_BACK_KEYFRAMES = "inkwell-panel-snap-back";
+export const FLIPCEL_PANEL_SNAP_BACK_KEYFRAMES = "flipcel-panel-snap-back";
 
-/** Full `animation` shorthand; host sets `--inkwell-snap-x` / `--inkwell-snap-y` before applying. */
-export const INKWELL_PANEL_SNAP_ANIMATION = `${INKWELL_PANEL_SNAP_BACK_KEYFRAMES} var(${INKWELL_CSS_VAR_OVERSHOOT_DURATION}) var(${INKWELL_CSS_VAR_OVERSHOOT_EASING}) both`;
+/** Full `animation` shorthand; host sets `--flipcel-snap-x` / `--flipcel-snap-y` before applying. */
+export const FLIPCEL_PANEL_SNAP_ANIMATION = `${FLIPCEL_PANEL_SNAP_BACK_KEYFRAMES} var(${FLIPCEL_CSS_VAR_OVERSHOOT_DURATION}) var(${FLIPCEL_CSS_VAR_OVERSHOOT_EASING}) both`;
 
 /** Entrance pop when a panel is shown (overshoot scale). */
-export const INKWELL_PANEL_SHOW_KEYFRAMES = "inkwell-panel-show";
-export const INKWELL_PANEL_SHOW_ANIMATION = `${INKWELL_PANEL_SHOW_KEYFRAMES} var(${INKWELL_CSS_VAR_OVERSHOOT_DURATION}) var(${INKWELL_CSS_VAR_OVERSHOOT_EASING}) both`;
+export const FLIPCEL_PANEL_SHOW_KEYFRAMES = "flipcel-panel-show";
+export const FLIPCEL_PANEL_SHOW_ANIMATION = `${FLIPCEL_PANEL_SHOW_KEYFRAMES} var(${FLIPCEL_CSS_VAR_OVERSHOOT_DURATION}) var(${FLIPCEL_CSS_VAR_OVERSHOOT_EASING}) both`;
 
 /**
  * Center-origin grow/shrink via scaleX FLIP.
@@ -84,8 +84,8 @@ export function animateCenteredScaleX(
     isCurrent?: () => boolean;
   },
 ): Promise<void> {
-  const durationMs = options?.durationMs ?? INKWELL_MOTION_OVERSHOOT_MS;
-  const easing = options?.easing ?? INKWELL_MOTION_OVERSHOOT_EASING;
+  const durationMs = options?.durationMs ?? FLIPCEL_MOTION_OVERSHOOT_MS;
+  const easing = options?.easing ?? FLIPCEL_MOTION_OVERSHOOT_EASING;
   const baseTransform = options?.baseTransform ?? "translateX(-50%)";
   const isCurrent = options?.isCurrent ?? (() => true);
 

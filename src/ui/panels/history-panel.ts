@@ -9,8 +9,8 @@ import { raisePanelZIndex } from "../primitives/panel-anchor";
  * Undo history window — lists document snapshots and jumps to any entry.
  * Opened from Settings (not the top dock).
  */
-@customElement("inkwell-history-panel")
-export class InkwellHistoryPanel extends FloatingPanel {
+@customElement("flipcel-history-panel")
+export class FlipCelHistoryPanel extends FloatingPanel {
   private history = new StoreController(this, historyStateStore);
 
   static styles = css`
@@ -33,7 +33,7 @@ export class InkwellHistoryPanel extends FloatingPanel {
     .history-empty {
       margin: 0;
       padding: 4px 2px;
-      color: var(--inkwell-text-muted, #666);
+      color: var(--flipcel-text-muted, #666);
       font-style: italic;
     }
 
@@ -45,9 +45,9 @@ export class InkwellHistoryPanel extends FloatingPanel {
       margin: 0;
       padding: 7px 8px;
       border: none;
-      border-radius: var(--inkwell-content-radius, 6px);
+      border-radius: var(--flipcel-content-radius, 6px);
       background: transparent;
-      color: var(--inkwell-text-primary, #1a1a1a);
+      color: var(--flipcel-text-primary, #1a1a1a);
       font: inherit;
       font-weight: 600;
       text-align: left;
@@ -82,7 +82,7 @@ export class InkwellHistoryPanel extends FloatingPanel {
     }
 
     .history-item.is-future {
-      color: var(--inkwell-text-muted, #666);
+      color: var(--flipcel-text-muted, #666);
       font-weight: 500;
     }
 
@@ -183,7 +183,7 @@ export class InkwellHistoryPanel extends FloatingPanel {
     return this.renderFloatingBlock(
       "History",
       html`
-        <inkwell-panel-section data-interactive>
+        <flipcel-panel-section data-interactive>
           ${newestFirst.length === 0
             ? html`<p class="history-empty">No history yet</p>`
             : html`
@@ -208,7 +208,7 @@ export class InkwellHistoryPanel extends FloatingPanel {
                   )}
                 </ul>
               `}
-        </inkwell-panel-section>
+        </flipcel-panel-section>
       `,
     );
   }

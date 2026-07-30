@@ -6,8 +6,8 @@ import type { ContextualActionMenuItem } from "../../editing/contextual-actions"
 // Functions Panel (appears on selection)
 // ============================================================
 
-@customElement("inkwell-functions-panel")
-export class InkwellFunctionsPanel extends LitElement {
+@customElement("flipcel-functions-panel")
+export class FlipCelFunctionsPanel extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false;
   @property({ type: Number }) x = 0;
   @property({ type: Number }) y = 0;
@@ -36,10 +36,10 @@ export class InkwellFunctionsPanel extends LitElement {
       position: fixed;
       z-index: 2000;
       display: none;
-      font-family: var(--inkwell-font, system-ui, sans-serif);
+      font-family: var(--flipcel-font, system-ui, sans-serif);
       font-size: 12px;
       font-weight: 600;
-      color: var(--inkwell-text-secondary, #6b6b6b);
+      color: var(--flipcel-text-secondary, #6b6b6b);
     }
 
     :host([open]) {
@@ -47,11 +47,11 @@ export class InkwellFunctionsPanel extends LitElement {
     }
 
     .fn-shell {
-      background: var(--inkwell-panel-depth, #bcbcbc);
-      border: var(--inkwell-block-border-width, 0px) solid var(--inkwell-panel-border, #555555);
-      border-radius: var(--inkwell-block-radius);
+      background: var(--flipcel-panel-depth, #bcbcbc);
+      border: var(--flipcel-block-border-width, 0px) solid var(--flipcel-panel-border, #555555);
+      border-radius: var(--flipcel-block-radius);
       padding: 0;
-      box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
+      box-shadow: var(--flipcel-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
       position: relative;
       overflow: hidden;
       min-width: 0;
@@ -64,9 +64,9 @@ export class InkwellFunctionsPanel extends LitElement {
     }
 
     .fn-face {
-      background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
+      background: var(--flipcel-panel-surface, rgba(255, 253, 249, 0.94));
       border-radius: calc(
-        var(--inkwell-block-radius) - var(--inkwell-block-border-width, 0px)
+        var(--flipcel-block-radius) - var(--flipcel-block-border-width, 0px)
       );
       padding: 4px;
       display: flex;
@@ -84,7 +84,7 @@ export class InkwellFunctionsPanel extends LitElement {
       border: none;
       border-radius: 6px;
       background: transparent;
-      color: var(--inkwell-text-primary, #1a1a1a);
+      color: var(--flipcel-text-primary, #1a1a1a);
       font: inherit;
       line-height: 1;
       white-space: nowrap;
@@ -97,11 +97,11 @@ export class InkwellFunctionsPanel extends LitElement {
     }
 
     .fn-btn:hover {
-      background: var(--inkwell-accent-muted, rgba(77, 115, 215, 0.28));
+      background: var(--flipcel-accent-muted, rgba(77, 115, 215, 0.28));
     }
 
-    .fn-btn.negative { color: var(--inkwell-negative, #af5b5b); }
-    .fn-btn.negative:hover { background: var(--inkwell-panel-active-negative, rgba(255, 122, 122, 0.58)); }
+    .fn-btn.negative { color: var(--flipcel-negative, #af5b5b); }
+    .fn-btn.negative:hover { background: var(--flipcel-panel-active-negative, rgba(255, 122, 122, 0.58)); }
 
     .fn-drag-hint {
       font-size: 11px;
