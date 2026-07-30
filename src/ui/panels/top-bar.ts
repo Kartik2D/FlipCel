@@ -6,6 +6,10 @@ import { FloatingPanel } from "../primitives/floating-panel";
 import { phosphorIcon, PANEL_ICON_MAP } from "../icons/phosphor";
 import { anchorPanelBelowTrigger, raisePanelZIndex } from "../primitives/panel-anchor";
 import {
+  animateCenteredScaleX,
+  INKWELL_MOTION_OVERSHOOT_MS,
+} from "../motion";
+import {
   PANEL_VISIBILITY_DEFAULTS,
   TOP_BAR_PANEL_IDS,
   type PanelVisibility,
@@ -21,6 +25,13 @@ export class InkwellTopBarPanel extends FloatingPanel {
   @state() private panelVisibility: PanelVisibility[] = PANEL_VISIBILITY_DEFAULTS.map((p) => ({
     ...p,
   }));
+  /** Buttons animating out — painted absolutely so the dock can shrink immediately. */
+  @state() private exitingPanelIds: string[] = [];
+  /** Buttons that should play pop-in on their next paint. */
+  @state() private enteringPanelIds: string[] = [];
+  /** Last flex-slot geometry for an exiting button (bar-local coords). */
+  private exitGeometry = new Map<string, { left: number; width: number }>();
+
   private dockColor = new StoreController(this, colorStore);
   private tool = new StoreController(this, toolStore);
   private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
@@ -29,7 +40,16 @@ export class InkwellTopBarPanel extends FloatingPanel {
       e as CustomEvent<{ id: string; visible: boolean; detached?: boolean }>,
     );
 
+  private dockResizeToken = 0;
+  private knownTriggerIds = new Set<string>();
+  private skipNextDockMotion = true;
+
   protected override usesFaceScrollbar(): boolean {
+    return false;
+  }
+
+  /** Dock itself is not a redock drop target preview. */
+  protected override canPreviewDockHover(): boolean {
     return false;
   }
 
@@ -55,14 +75,20 @@ export class InkwellTopBarPanel extends FloatingPanel {
       --inkwell-dock-control: 44px;
     }
 
+    .block {
+      overflow: visible;
+    }
+
     .face {
-      overflow: hidden;
+      /* Visible so exiting buttons can finish their pop outside the shrinking bar. */
+      overflow: visible;
       min-height: calc(
         var(--inkwell-dock-row-h) + (2 * var(--inkwell-block-face-padding))
       );
     }
 
     .bar {
+      position: relative;
       display: flex;
       flex-direction: row;
       flex-wrap: nowrap;
@@ -98,6 +124,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
       -webkit-tap-highlight-color: transparent;
       touch-action: manipulation;
       user-select: none;
+      transform-origin: center center;
     }
 
     .dock-btn:hover {
@@ -132,6 +159,46 @@ export class InkwellTopBarPanel extends FloatingPanel {
       color: transparent;
     }
 
+    .dock-btn-enter {
+      animation: dock-btn-pop-in var(--inkwell-motion-overshoot-duration, 420ms)
+        var(--inkwell-motion-overshoot-easing, cubic-bezier(0.22, 1.7, 0.36, 1)) both;
+    }
+
+    .dock-btn-exit {
+      /* Out of flex flow so dock width can shrink immediately with the pop. */
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      height: auto;
+      margin: 0;
+      animation: dock-btn-pop-out var(--inkwell-motion-overshoot-duration, 420ms)
+        var(--inkwell-motion-overshoot-easing, cubic-bezier(0.22, 1.7, 0.36, 1)) both;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    @keyframes dock-btn-pop-in {
+      0% {
+        transform: scale(0.55);
+        opacity: 0;
+      }
+      100% {
+        transform: scale(1);
+        opacity: 1;
+      }
+    }
+
+    @keyframes dock-btn-pop-out {
+      0% {
+        transform: scale(1);
+        opacity: 1;
+      }
+      100% {
+        transform: scale(0.55);
+        opacity: 0;
+      }
+    }
+
     .btn-content {
       display: inline-flex;
       align-items: center;
@@ -157,7 +224,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
     super.connectedCallback();
     this.pinned = true;
     this.showPinnedClose = false;
-    this.initializeAllPanelsHidden();
+    this.initializePanelVisibility();
     document.addEventListener("pointerdown", this.outsidePointerHandler, true);
     document.addEventListener("panel-visibility-change", this.panelVisibilityChangeHandler as EventListener);
   }
@@ -174,17 +241,88 @@ export class InkwellTopBarPanel extends FloatingPanel {
   firstUpdated(_changed: PropertyValues<this>) {
     super.firstUpdated(_changed);
     this.positionAllVisiblePanels();
+    for (const panel of this.visiblePanelTriggers()) {
+      this.knownTriggerIds.add(panel.id);
+    }
+    this.skipNextDockMotion = false;
   }
 
-  private initializeAllPanelsHidden() {
+  /** Apply defaults: hide closed panels; float default-open ones at their CSS positions. */
+  private initializePanelVisibility() {
     this.panelVisibility = this.panelVisibility.map((panel) => {
       const el = document.getElementById(panel.id) as ToggleablePanel | null;
-      if (el) {
-        el.style.display = "none";
-        el.pinned = false;
+      if (!el) return { ...panel, visible: false, detached: false };
+      if (panel.visible) {
+        el.style.display = "";
+        // Detached defaults are already floating — pinned so dock-hover / redock work immediately.
+        el.pinned = true;
+        return { ...panel, detached: true };
       }
+      el.style.display = "none";
+      el.pinned = false;
       return { ...panel, visible: false, detached: false };
     });
+  }
+
+  private measureDockWidth(): number {
+    return this.offsetWidth;
+  }
+
+  /** Grow/shrink the dock from center with overshoot around a content change. */
+  private async runDockResizeAnimation(mutate: () => void) {
+    if (this.skipNextDockMotion) {
+      mutate();
+      return;
+    }
+
+    const token = ++this.dockResizeToken;
+    const fromWidth = this.measureDockWidth();
+    mutate();
+    await this.updateComplete;
+    if (token !== this.dockResizeToken) return;
+    await animateCenteredScaleX(this, fromWidth, undefined, {
+      baseTransform: "translateX(-50%)",
+      isCurrent: () => token === this.dockResizeToken,
+    });
+  }
+
+  private markEntering(ids: string[]) {
+    if (ids.length === 0) return;
+    this.enteringPanelIds = [...new Set([...this.enteringPanelIds, ...ids])];
+    window.setTimeout(() => {
+      this.enteringPanelIds = this.enteringPanelIds.filter((id) => !ids.includes(id));
+      for (const id of ids) this.knownTriggerIds.add(id);
+    }, INKWELL_MOTION_OVERSHOOT_MS + 40);
+  }
+
+  private beginButtonExit(id: string, applyVisibility: () => void) {
+    if (this.exitingPanelIds.includes(id)) {
+      applyVisibility();
+      return;
+    }
+
+    const btn = this.renderRoot.querySelector<HTMLElement>(`[data-panel-trigger="${id}"]`);
+    const bar = this.renderRoot.querySelector<HTMLElement>(".bar");
+    if (btn && bar) {
+      const btnRect = btn.getBoundingClientRect();
+      const barRect = bar.getBoundingClientRect();
+      this.exitGeometry.set(id, {
+        left: btnRect.left - barRect.left,
+        width: btnRect.width,
+      });
+    }
+
+    // Pop-out + dock shrink together: button leaves flex flow immediately.
+    void this.runDockResizeAnimation(() => {
+      this.exitingPanelIds = [...this.exitingPanelIds, id];
+      applyVisibility();
+    });
+
+    window.setTimeout(() => {
+      this.exitingPanelIds = this.exitingPanelIds.filter((exitId) => exitId !== id);
+      this.exitGeometry.delete(id);
+      this.knownTriggerIds.delete(id);
+    }, INKWELL_MOTION_OVERSHOOT_MS + 40);
   }
 
   private async togglePanel(id: string, triggerEl?: HTMLElement) {
@@ -229,28 +367,67 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
     // Dropped back on the dock: restore the toggle and minimize the panel.
     if (prev.detached && detached === false && visible) {
-      this.panelVisibility = this.panelVisibility.map((panel) =>
-        panel.id === id ? { ...panel, visible: false, detached: false } : panel,
-      );
-      const el = document.getElementById(id) as ToggleablePanel | null;
-      if (el) {
-        el.pinned = false;
-        el.style.display = "none";
-      }
+      const apply = () => {
+        this.panelVisibility = this.panelVisibility.map((panel) =>
+          panel.id === id ? { ...panel, visible: false, detached: false } : panel,
+        );
+        const el = document.getElementById(id) as ToggleablePanel | null;
+        if (el) {
+          el.pinned = false;
+          el.style.display = "none";
+        }
+      };
+      void this.runDockResizeAnimation(() => {
+        apply();
+        this.markEntering([id]);
+      });
       return;
     }
 
-    this.panelVisibility = this.panelVisibility.map((panel) => {
-      if (panel.id !== id) return panel;
-      if (detached === true) {
-        return { ...panel, visible: true, detached: true };
-      }
-      return {
-        ...panel,
-        visible,
-        detached: visible ? (detached ?? panel.detached) : false,
-      };
-    });
+    // Dragged free of the dock — pop the toggle out, then drop it.
+    if (!prev.detached && detached === true) {
+      this.beginButtonExit(id, () => {
+        this.panelVisibility = this.panelVisibility.map((panel) =>
+          panel.id === id ? { ...panel, visible: true, detached: true } : panel,
+        );
+      });
+      return;
+    }
+
+    // Close / other visibility updates — animate when the toggle appears or leaves.
+    const nextDetached =
+      detached === true ? true : visible ? (detached ?? prev.detached) : false;
+    const wasShown = !prev.detached && !this.exitingPanelIds.includes(id);
+    const willBeShown = !nextDetached;
+
+    const apply = () => {
+      this.panelVisibility = this.panelVisibility.map((panel) => {
+        if (panel.id !== id) return panel;
+        if (detached === true) {
+          return { ...panel, visible: true, detached: true };
+        }
+        return {
+          ...panel,
+          visible,
+          detached: visible ? (detached ?? panel.detached) : false,
+        };
+      });
+    };
+
+    if (!wasShown && willBeShown) {
+      void this.runDockResizeAnimation(() => {
+        apply();
+        this.markEntering([id]);
+      });
+      return;
+    }
+
+    if (wasShown && !willBeShown) {
+      this.beginButtonExit(id, apply);
+      return;
+    }
+
+    apply();
   }
 
   private closePanelsOnOutsideClick(e: PointerEvent) {
@@ -302,9 +479,33 @@ export class InkwellTopBarPanel extends FloatingPanel {
     );
   }
 
+  /**
+   * Dock buttons to render: attached toggles plus any still finishing pop-out.
+   * Order follows TOP_BAR_PANEL_IDS.
+   */
+  private renderedPanelTriggers(): Array<PanelVisibility & { exiting: boolean }> {
+    const byId = new Map(this.panelVisibility.map((p) => [p.id, p]));
+    const exiting = new Set(this.exitingPanelIds);
+    const out: Array<PanelVisibility & { exiting: boolean }> = [];
+
+    for (const id of TOP_BAR_PANEL_IDS) {
+      const panel = byId.get(id);
+      if (!panel) continue;
+      if (!panel.detached) {
+        out.push({ ...panel, exiting: false });
+        continue;
+      }
+      if (exiting.has(id)) {
+        out.push({ ...panel, detached: false, exiting: true });
+      }
+    }
+    return out;
+  }
+
   render() {
     const currentToolName = getTool(this.tool.value).name;
-    const panelTriggers = this.visiblePanelTriggers();
+    const panelTriggers = this.renderedPanelTriggers();
+    const entering = new Set(this.enteringPanelIds);
     return html`
       <div class="block">
         <div class="face">
@@ -312,13 +513,21 @@ export class InkwellTopBarPanel extends FloatingPanel {
             ${panelTriggers.map((panel) => {
               const isTools = panel.id === "tools-panel";
               const isColor = panel.id === "color-panel";
+              const exitSlot = panel.exiting ? this.exitGeometry.get(panel.id) : undefined;
               const className = [
                 "dock-btn",
                 isTools ? "dock-btn-flex" : "dock-btn-icon",
                 isColor ? "dock-btn-color" : "",
+                panel.exiting ? "dock-btn-exit" : "",
+                !panel.exiting && entering.has(panel.id) ? "dock-btn-enter" : "",
               ]
                 .filter(Boolean)
                 .join(" ");
+              const exitStyle = exitSlot
+                ? `left:${exitSlot.left}px;width:${exitSlot.width}px;min-width:${exitSlot.width}px;max-width:${exitSlot.width}px;`
+                : "";
+              const colorStyle = isColor ? `background:${this.dockColor.value}` : "";
+              const style = [exitStyle, colorStyle].filter(Boolean).join("") || nothing;
               return html`
                 <button
                   type="button"
@@ -327,7 +536,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
                   title=${isTools ? currentToolName : panel.label}
                   data-interactive
                   aria-pressed=${panel.visible ? "true" : "false"}
-                  style=${isColor ? `background:${this.dockColor.value}` : nothing}
+                  ?disabled=${panel.exiting}
+                  style=${style}
                   @click=${(e: Event) =>
                     this.togglePanel(panel.id, e.currentTarget as HTMLElement)}
                 >

@@ -9,12 +9,12 @@ import type { Camera } from "../../render/camera";
 import paper from "paper";
 import { type AnchorKey, parseAnchorKey } from "./anchors";
 
-export type HandleLinkage = "mirrored" | "asymmetric" | "corner";
+/** Drag linkage — set explicitly by Sharp / Mirrored / Detached, never inferred from angles. */
+export type HandleLinkage = "mirrored" | "detached";
 
 export type BezierHandleHit = {
   kind: "in" | "out";
   segmentKey: AnchorKey;
-  linkage: HandleLinkage;
 };
 
 export type BezierHandleDrag = {
@@ -22,30 +22,6 @@ export type BezierHandleDrag = {
   segmentKey: AnchorKey;
   linkage: HandleLinkage;
 };
-
-/**
- * Classify the relationship between a segment's two tangent handles so the
- * drag logic can keep them linked. Two handles are considered colinear
- * when their normalized directions point nearly opposite one another
- * (dot product ≈ -1). If either handle is effectively zero-length the
- * anchor is treated as a corner and handles move independently.
- */
-export function classifyHandleLinkage(seg: paper.Segment): HandleLinkage {
-  const lenIn = seg.handleIn.length;
-  const lenOut = seg.handleOut.length;
-  const minLen = 1e-4;
-  if (lenIn < minLen || lenOut < minLen) return "corner";
-
-  const nin = seg.handleIn.divide(lenIn);
-  const nout = seg.handleOut.divide(lenOut);
-  const dot = nin.x * nout.x + nin.y * nout.y;
-  // Colinear-opposite when dot ≈ -1. Allow a small tolerance so hand-tuned
-  // handles that are visually symmetric still register as linked.
-  if (dot > -0.999) return "corner";
-
-  const relDiff = Math.abs(lenIn - lenOut) / Math.max(lenIn, lenOut);
-  return relDiff < 0.01 ? "mirrored" : "asymmetric";
-}
 
 /**
  * Hit test the two tangent knobs of the solo-picked anchor, if any.
@@ -68,8 +44,6 @@ export function hitTestBezierHandle(
   const seg = paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
   if (!seg) return null;
 
-  const linkage = classifyHandleLinkage(seg);
-
   const hitRadiusSq = 10 * 10;
   const check = (
     handle: paper.Point,
@@ -81,7 +55,7 @@ export function hitTestBezierHandle(
     const dx = viewportPoint.x - tipScreen.x;
     const dy = viewportPoint.y - tipScreen.y;
     if (dx * dx + dy * dy <= hitRadiusSq) {
-      return { kind, segmentKey: key, linkage };
+      return { kind, segmentKey: key };
     }
     return null;
   };
@@ -119,29 +93,16 @@ export function dragBezierHandleTo(
     world.y - seg.point.y,
   );
 
-  const linkage = handleDrag.linkage;
-  const oppositeLength =
-    handleDrag.kind === "in"
-      ? seg.handleOut.length
-      : seg.handleIn.length;
-
   if (handleDrag.kind === "in") {
     seg.handleIn = newHandle;
   } else {
     seg.handleOut = newHandle;
   }
 
-  // When the two handles started the drag colinear-opposite (either
-  // mirrored or asymmetric), keep them linked during drag by preserving
-  // the opposite handle's original length and rotating its direction to
-  // stay colinear-opposite. Mirrored anchors intentionally drop their
-  // length-symmetry while the user is dragging — the opposite handle
-  // keeps the length it had at drag-start rather than tracking the
-  // dragged handle's new length.
-  if (linkage !== "corner" && !newHandle.isZero() && oppositeLength > 1e-4) {
-    const len = newHandle.length;
-    const scale = -oppositeLength / len;
-    const opposite = newHandle.multiply(scale);
+  // Mirrored (explicit button only): keep the opposite handle equal-length
+  // and colinear-opposite. Detached moves the dragged handle alone.
+  if (handleDrag.linkage === "mirrored" && !newHandle.isZero()) {
+    const opposite = newHandle.multiply(-1);
     if (handleDrag.kind === "in") {
       seg.handleOut = opposite;
     } else {
@@ -156,7 +117,7 @@ export function dragBezierHandleTo(
 /**
  * Render the two bezier control handles (in / out tangents) for the single
  * picked anchor. Skips either tangent when its handle vector is zero, i.e.
- * when the segment is a corner on that side.
+ * when the segment is sharp on that side.
  */
 export function drawBezierHandlesForSoloPick(
   ctx: CanvasRenderingContext2D,

@@ -28,9 +28,13 @@ export const PHOSPHOR_ICONS: Record<string, string> = {
     '<path d="M40 172c28-48 52-48 76 0s48 48 100-8" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="40" cy="172" r="12"/><circle cx="92" cy="116" r="12"/><circle cx="144" cy="172" r="12"/><circle cx="216" cy="164" r="12"/>',
   "point-corner":
     '<path d="M48 192l80-128 80 128" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="128" cy="64" r="10"/><circle cx="208" cy="192" r="10"/>',
+  "point-sharp":
+    '<path d="M48 192l80-128 80 128" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="128" cy="64" r="10"/><circle cx="208" cy="192" r="10"/>',
   "point-mirrored":
     '<path d="M48 192c20-52 44-84 80-84s60 32 80 84" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M88 88h80" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="88" cy="88" r="10"/><circle cx="168" cy="88" r="10"/><circle cx="208" cy="192" r="10"/>',
   "point-asymmetric":
+    '<path d="M48 192c22-52 46-84 80-84s58 28 80 84" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M128 108c10-22 28-36 48-44" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="128" cy="108" r="10"/><circle cx="176" cy="64" r="10"/><circle cx="208" cy="192" r="10"/>',
+  "point-detached":
     '<path d="M48 192c22-52 46-84 80-84s58 28 80 84" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M128 108c10-22 28-36 48-44" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><circle cx="48" cy="192" r="10"/><circle cx="128" cy="108" r="10"/><circle cx="176" cy="64" r="10"/><circle cx="208" cy="192" r="10"/>',
   "film-strip":
     '<rect x="28" y="56" width="200" height="144" rx="12" stroke="currentColor" stroke-width="16" fill="none"/><path d="M28 92h200M28 164h200" stroke="currentColor" stroke-width="12" fill="none"/><path d="M76 56v36M128 56v36M180 56v36M76 164v36M128 164v36M180 164v36" stroke="currentColor" stroke-width="12" fill="none"/>',

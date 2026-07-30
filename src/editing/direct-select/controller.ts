@@ -65,11 +65,13 @@ import {
 import {
   pointInPolygon,
   applyHandleModeToSegment,
+  type AnchorHandleMode,
 } from "./geometry";
 import {
   hitTestBezierHandle,
   dragBezierHandleTo as applyBezierHandleDrag,
   drawBezierHandlesForSoloPick,
+  type HandleLinkage,
 } from "./bezier-handles";
 
 export type { AnchorHandle, AnchorKey } from "./anchors";
@@ -148,21 +150,16 @@ export class DirectSelectController {
    * Active bezier-handle drag. Only populated while exactly one anchor is
    * picked and the user pointerdown'd on one of that anchor's tangent knobs.
    */
+  /**
+   * Explicit Sharp / Mirrored / Detached mode per anchor (from the popup).
+   * Defaults to detached — never inferred from handle angles.
+   */
+  private anchorHandleModes = new Map<AnchorKey, AnchorHandleMode>();
   private handleDrag: {
     kind: "in" | "out";
     segmentKey: AnchorKey;
-    /**
-     * Linkage between this anchor's two tangent handles, sampled at the
-     * moment the drag starts. If the opposite handle is colinear with the
-     * dragged handle (pointing in the inverse direction), we keep them
-     * linked during the drag:
-     *   - "mirrored": equal length + opposite direction → opposite handle
-     *     tracks symmetrically (|in| = |out|, opposite direction).
-     *   - "asymmetric": colinear-opposite but different lengths → opposite
-     *     handle preserves its length but rotates so it stays colinear.
-     *   - "corner": not colinear → handles move independently.
-     */
-    linkage: "mirrored" | "asymmetric" | "corner";
+    /** From the popup mode only — "mirrored" links the opposite handle. */
+    linkage: HandleLinkage;
   } | null = null;
   private didMoveHandle = false;
   private edgeDrag: {
@@ -396,6 +393,7 @@ export class DirectSelectController {
     }
 
     paper.view.update();
+    for (const key of this.pickedAnchors) this.anchorHandleModes.delete(key);
     this.pickedAnchors.clear();
     this.onSnapshot?.();
     this.publishPickedItems();
@@ -403,10 +401,9 @@ export class DirectSelectController {
     return true;
   }
 
-  setPickedAnchorHandleMode(mode: "corner" | "mirrored" | "asymmetric"): boolean {
+  setPickedAnchorHandleMode(mode: AnchorHandleMode): boolean {
     if (this.pickedAnchors.size === 0) return false;
 
-    const targets: paper.Point[] = [];
     for (const key of this.pickedAnchors) {
       const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
       const item = this.paperRenderer.getPathById(itemId);
@@ -415,18 +412,27 @@ export class DirectSelectController {
       const seg = path?.segments[segmentIndex];
       if (!path || !seg) continue;
 
-      targets.push(seg.point.clone());
       applyHandleModeToSegment(path, segmentIndex, seg, mode);
+      this.anchorHandleModes.set(key, mode);
     }
 
     paper.view.update();
-    this.commitPickedAnchorMutation(targets);
+    // Tangents only — skip reconcile/merge. Running it here can mis-classify
+    // compound holes (containment false-negatives) and union them away.
+    this.onSnapshot?.();
+    this.publishPickedItems();
     this.drawUI();
     return true;
   }
 
+  /** Popup mode for an anchor; unmarked handles drag as detached. */
+  private handleLinkageFor(key: AnchorKey): HandleLinkage {
+    return this.anchorHandleModes.get(key) === "mirrored" ? "mirrored" : "detached";
+  }
+
   clearSelection(): void {
     this.pickedAnchors.clear();
+    // Keep modes so Mirrored / Detached survive deselect/reselect.
     this.exposedItemIds.clear();
     this.lastShapeClick = null;
     this.lastEdgeClick = null;
@@ -482,7 +488,10 @@ export class DirectSelectController {
     // single anchor is picked (its handles are visible and hit-testable).
     const handleHit = hitTestBezierHandle(viewportPoint, this.pickedAnchors, this.paperRenderer, this.camera);
     if (handleHit) {
-      this.handleDrag = handleHit;
+      this.handleDrag = {
+        ...handleHit,
+        linkage: this.handleLinkageFor(handleHit.segmentKey),
+      };
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
       this.didMoveHandle = false;
@@ -1250,38 +1259,6 @@ export class DirectSelectController {
     this.pickedAnchors = newKeys;
 
     this.bringInteractedItemsToFront();
-    this.onSnapshot?.();
-    this.publishPickedItems();
-  }
-
-  private commitPickedAnchorMutation(targets: paper.Point[]): void {
-    if (!this.onReconcile) {
-      this.onSnapshot?.();
-      this.publishPickedItems();
-      return;
-    }
-
-    const affectedIds = new Set<number>();
-    for (const key of this.pickedAnchors) affectedIds.add(parseAnchorKey(key).itemId);
-    const affectedItems = [...affectedIds]
-      .map((id) => this.paperRenderer.getPathById(id))
-      .filter((item): item is paper.PathItem => !!item?.parent);
-    this.onReconcile(affectedItems);
-
-    const epsilon = 1e-3;
-    const remapped = new Set<AnchorKey>();
-    const layerItems = this.paperRenderer.getAllPaths();
-    for (const pos of targets) {
-      for (const candidate of layerItems) {
-        const match = this.findSegmentNear(candidate, pos, epsilon);
-        if (match) {
-          remapped.add(anchorKey(candidate.id, match.childIndex, match.segmentIndex));
-          break;
-        }
-      }
-    }
-    this.pickedAnchors = remapped;
-
     this.onSnapshot?.();
     this.publishPickedItems();
   }

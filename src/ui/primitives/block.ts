@@ -335,6 +335,8 @@ export class Block extends LitElement {
     this.style.top = `${newTop}px`;
     this.style.right = "auto";
     this.style.bottom = "auto";
+
+    this.onDragMove();
   };
 
   private _clearSnapBackTimeout() {
@@ -458,6 +460,7 @@ export class Block extends LitElement {
     window.removeEventListener("pointermove", this._onDragMove);
     window.removeEventListener("pointerup", this._onDragEnd);
     window.removeEventListener("pointercancel", this._onDragEnd);
+    this.onDragEnded();
   }
 
   // ============================================================
@@ -585,6 +588,16 @@ export class Block extends LitElement {
 
   protected onDragCommitted() {
     // Subclasses can react when a drag operation commits a new position.
+  }
+
+  /** Called each pointermove while a drag is active (after position is applied). */
+  protected onDragMove() {
+    // Subclasses can react to live drag position (e.g. dock-hover preview).
+  }
+
+  /** Called when a drag ends (committed or cancelled), after dragging attribute is cleared. */
+  protected onDragEnded() {
+    // Subclasses can clear drag-time preview state.
   }
 
   private _cleanupResize() {

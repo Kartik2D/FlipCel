@@ -98,17 +98,19 @@ function getAveragedHandleTangent(seg: paper.Segment): paper.Point | null {
   return seg.handleIn.multiply(-1).normalize();
 }
 
+export type AnchorHandleMode = "sharp" | "mirrored" | "detached";
+
 export function applyHandleModeToSegment(
   path: paper.Path,
   segmentIndex: number,
   seg: paper.Segment,
-  mode: "corner" | "mirrored" | "asymmetric",
+  mode: AnchorHandleMode,
 ): void {
   const { prev, next } = getAdjacentSegments(path, segmentIndex);
   const hasPrev = prev !== null;
   const hasNext = next !== null;
 
-  if (mode === "corner") {
+  if (mode === "sharp") {
     seg.handleIn = new paper.Point(0, 0);
     seg.handleOut = new paper.Point(0, 0);
     return;
@@ -117,6 +119,8 @@ export function applyHandleModeToSegment(
   const defaultLength = getDefaultHandleLength(seg, prev, next);
   const currentInLength = seg.handleIn.length;
   const currentOutLength = seg.handleOut.length;
+  const inLength = Math.max(currentInLength, defaultLength);
+  const outLength = Math.max(currentOutLength, defaultLength);
 
   if (mode === "mirrored") {
     const tangent =
@@ -137,11 +141,29 @@ export function applyHandleModeToSegment(
     return;
   }
 
-  const tangent = getSegmentTangentDirection(seg, prev, next);
-  if (!tangent) return;
-
-  const inLength = Math.max(currentInLength, defaultLength);
-  const outLength = Math.max(currentOutLength, defaultLength);
-  seg.handleIn = hasPrev ? tangent.multiply(-inLength) : new paper.Point(0, 0);
-  seg.handleOut = hasNext ? tangent.multiply(outLength) : new paper.Point(0, 0);
+  // Detached: independent handles. Prefer existing directions; fill missing
+  // sides from the adjacent segment. Linkage during drag comes from the
+  // popup mode map, not from handle angles.
+  if (hasPrev) {
+    if (currentInLength < 1e-4) {
+      const dir = prev.point.subtract(seg.point);
+      seg.handleIn =
+        dir.length > 1e-4
+          ? dir.normalize().multiply(inLength)
+          : new paper.Point(0, 0);
+    }
+  } else {
+    seg.handleIn = new paper.Point(0, 0);
+  }
+  if (hasNext) {
+    if (currentOutLength < 1e-4) {
+      const dir = next.point.subtract(seg.point);
+      seg.handleOut =
+        dir.length > 1e-4
+          ? dir.normalize().multiply(outLength)
+          : new paper.Point(0, 0);
+    }
+  } else {
+    seg.handleOut = new paper.Point(0, 0);
+  }
 }

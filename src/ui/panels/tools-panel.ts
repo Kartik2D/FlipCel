@@ -36,6 +36,7 @@ export class InkwellToolsPanel extends FloatingPanel {
   connectedCallback() {
     super.connectedCallback();
     this.showPinnedClose = false;
+    this.resizable = false;
   }
 
   protected override showsDragHandlePill(): boolean {

@@ -3,16 +3,17 @@
  *
  * 1. Match top-level items in stages (merge-aware): fill roots first, then
  *    children in each matched parent's frame, then islands under those —
- *    hybrid vector+raster scoring. Unmatched items shrink/grow in place.
+ *    centroid-first travel + blurred residual NCC for shape. Unmatched
+ *    items shrink/grow in place.
  * 2. Factor out a shared per-item frame (centroid + size); everything below
  *    happens on the residual inside that frame, so fast moves don't shear
  *    contours apart
  * 3. Match contours in frame space (area + centroid), preferring same
  *    fill/hole role (evenodd parity). Merge-normalized items only keep one
  *    fill root + its holes in a compound — islands are separate layer items.
- * 4. Sample each matched pair at even arc length, align cyclically
- *    (phase-anchored so band edges share one phase), then pin matched
- *    corner features with soft falloff and lerp the residual
+ * 4. Sample each matched pair at even arc length, phase-anchor, align
+ *    cyclically, pin matched corners with soft falloff, then lerp the
+ *    residual in the shared frame
  * 5. Topology changes: unmatched holes grow/collapse from a parent-local
  *    seed inside the morphing outer; grow is clamped so holes never
  *    intersect or escape the outer
@@ -530,9 +531,8 @@ function finishHandles(out: paper.Path, saliency?: number[]): void {
 /**
  * Morph one contour pair inside the shared item frames: samples are
  * normalized (frame removed), aligned cyclically, corner-pinned with soft
- * falloff, and lerped; the interpolated frame (centroid + size) is
- * reapplied on output. Global motion lives entirely in the frame, so band
- * edges travel together.
+ * falloff, then residual-lerped; the interpolated frame (centroid + size)
+ * is reapplied on output.
  */
 function morphContourSamples(
   na: Sample[],
@@ -542,18 +542,21 @@ function morphContourSamples(
   fA: Frame,
   fB: Frame,
   opts: MorphOptions,
+  align: { start: number; reverse: boolean },
 ): paper.Path {
   const cT = fA.c.add(fB.c.subtract(fA.c).multiply(t));
   const sT = fA.s + (fB.s - fA.s) * t;
 
-  const align = bestAlign(na, nb, closed);
-  const n = na.length;
   const out = new paper.Path();
   out.closed = closed;
+  const n = na.length;
   const outSaliency: number[] = new Array(n);
 
   if (closed) {
-    const bRing = Array.from({ length: n }, (_, k) => nb[(align.start + k) % n]);
+    const bRing = Array.from(
+      { length: n },
+      (_, k) => nb[(align.start + k) % n],
+    );
     const pairs =
       opts.stickiness > 0
         ? matchFeatures(
@@ -565,7 +568,6 @@ function morphContourSamples(
         : [];
     const offsets = featureOffsets(pairs, n);
     // Stickiness scales the pinning warp: 0 = uniform, 1 = full pin.
-    // (Scaling by <= 1 preserves the monotonicity clamp.)
     if (opts.stickiness < 1) {
       for (let i = 0; i < n; i++) offsets[i] *= opts.stickiness;
     }
@@ -930,13 +932,13 @@ function morphItem(
     if (p.closed) p.clockwise = true;
   }
 
-  // One shared frame per keyframe, from every contour (coarse samples are
-  // enough for a centroid + mean radius).
+  const aNest = contourNesting(aContours);
+  const bNest = contourNesting(bContours);
+
+  // One shared frame per keyframe (centroid + mean radius).
   const fA = frameOf(aContours.map((p) => sampleArc(p, 24)));
   const fB = frameOf(bContours.map((p) => sampleArc(p, 24)));
 
-  const aNest = contourNesting(aContours);
-  const bNest = contourNesting(bContours);
   const pairs = matchContours(
     aContours,
     bContours,
@@ -968,7 +970,12 @@ function morphItem(
   const morphOuterByFillA = new Map<paper.Path, paper.Path>();
   const morphOuterByFillB = new Map<paper.Path, paper.Path>();
 
-  for (const { a: ca, b: cb } of pairs) {
+  // Largest first so morphOuter maps exist before topology birth/death.
+  const pairsSorted = [...pairs].sort(
+    (p, q) => pathArea(q.a) - pathArea(p.a),
+  );
+
+  for (const { a: ca, b: cb } of pairsSorted) {
     const closed = !!(ca.closed || cb.closed);
     let na = normalize(sampleArc(ca, sampleCountFor(ca, cb)), fA);
     let nb = normalize(sampleArc(cb, na.length), fB);
@@ -976,7 +983,17 @@ function morphItem(
       na = rotateToPhase(na);
       nb = rotateToPhase(nb);
     }
-    const morphed = morphContourSamples(na, nb, closed, t, fA, fB, opts);
+    const align = bestAlign(na, nb, closed);
+    const morphed = morphContourSamples(
+      na,
+      nb,
+      closed,
+      t,
+      fA,
+      fB,
+      opts,
+      align,
+    );
     children.push(morphed);
     const ai = aContours.indexOf(ca);
     if (ai >= 0 && aNest.depths[ai] % 2 === 0) {
@@ -1061,7 +1078,7 @@ export function morphLayerJson(
     const bItems = topItems(layerB);
     if (aItems.length === 0) return aJson;
 
-    // Hybrid vector + raster mass matching (vector base, mass soft factor).
+    // Centroid-first + blurred residual mass matching (both solvers).
     const pairs = matchItemsWithMass(aItems, bItems);
     for (const a of aItems) {
       const pair = pairs.find((p) => p.a === a);

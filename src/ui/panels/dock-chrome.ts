@@ -18,9 +18,9 @@ export type ToggleablePanel = FloatingPanel & HTMLElement;
 export const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
   { id: "universal-panel", label: "Settings", visible: false, detached: false },
   { id: "layers-panel", label: "Layers", visible: false, detached: false },
-  { id: "wheel-panel", label: "Wheel", visible: false, detached: false },
+  { id: "wheel-panel", label: "Wheel", visible: true, detached: true },
   { id: "view-panel", label: "View", visible: false, detached: false },
-  { id: "tools-panel", label: "Brush", visible: false, detached: false },
+  { id: "tools-panel", label: "Brush", visible: true, detached: true },
   { id: "color-panel", label: "Color", visible: false, detached: false },
 ];
 

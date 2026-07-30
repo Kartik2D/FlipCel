@@ -12,7 +12,7 @@ export const directSelect: ToolDefinition<typeof directSelectSettings> = {
   id: "direct-select",
   name: "Direct Select",
   hotkey: "a",
-  icon: "point-corner",
+  icon: "point-sharp",
   settings: directSelectSettings,
   dockModeSetting: "shape",
 

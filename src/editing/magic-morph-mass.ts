@@ -8,22 +8,38 @@
  *    (eyes / mouth / brows) in that frame
  * 4. Recurse: pupils / islands match only among children of a matched parent
  *
- * Scoring is vector proximity/area with a soft raster mass factor.
+ * Scoring is centroid-first (travel), then blurred residual NCC in a local
+ * patch (shape). Sketchy holes wash out under blur; big translations are
+ * carried by the mass centroid, not by residual correlation.
  */
 import paper from "paper";
 
 const GRID = 128;
 const MIN_PIXELS = 3;
+const PATCH = 40;
+const BLUR_SIGMA = 2;
+/** Centroid+color gate before paying for blur/NCC. */
+const CENTROID_GATE = 0.08;
 
 export interface ItemMass {
   area: number;
   cx: number;
   cy: number;
+  /** Pixel centroid in the layer grid (for patch crops). */
+  cxPix: number;
+  cyPix: number;
   bw: number;
   bh: number;
-  hu1: number;
-  hu2: number;
-  holes: number;
+  minXPix: number;
+  minYPix: number;
+  maxXPix: number;
+  maxYPix: number;
+}
+
+/** Cached raster sample for one item. */
+interface MassSample {
+  mass: ItemMass;
+  mask: Uint8Array | null;
 }
 
 interface WorldFrame {
@@ -142,64 +158,6 @@ function rasterItem(
   return mask;
 }
 
-function countHoles(mask: Uint8Array, n: number): number {
-  const seen = new Uint8Array(n * n);
-  const qx = new Int32Array(n * n);
-  const qy = new Int32Array(n * n);
-
-  const flood = (sx: number, sy: number): boolean => {
-    let head = 0;
-    let tail = 0;
-    let touches = false;
-    qx[tail] = sx;
-    qy[tail] = sy;
-    tail++;
-    seen[sy * n + sx] = 1;
-    while (head < tail) {
-      const x = qx[head];
-      const y = qy[head];
-      head++;
-      if (x === 0 || y === 0 || x === n - 1 || y === n - 1) touches = true;
-      for (const [nx, ny] of [
-        [x - 1, y],
-        [x + 1, y],
-        [x, y - 1],
-        [x, y + 1],
-      ] as const) {
-        if (nx < 0 || ny < 0 || nx >= n || ny >= n) continue;
-        const i = ny * n + nx;
-        if (seen[i] || mask[i]) continue;
-        seen[i] = 1;
-        qx[tail] = nx;
-        qy[tail] = ny;
-        tail++;
-      }
-    }
-    return touches;
-  };
-
-  for (let x = 0; x < n; x++) {
-    if (!mask[x] && !seen[x]) flood(x, 0);
-    const bi = (n - 1) * n + x;
-    if (!mask[bi] && !seen[bi]) flood(x, n - 1);
-  }
-  for (let y = 0; y < n; y++) {
-    if (!mask[y * n] && !seen[y * n]) flood(0, y);
-    const ri = y * n + n - 1;
-    if (!mask[ri] && !seen[ri]) flood(n - 1, y);
-  }
-
-  let holes = 0;
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      const i = y * n + x;
-      if (mask[i] || seen[i]) continue;
-      if (!flood(x, y)) holes++;
-    }
-  }
-  return holes;
-}
-
 function extractMass(
   mask: Uint8Array,
   frame: WorldFrame,
@@ -229,91 +187,186 @@ function extractMass(
 
   const cxPix = sumX / area;
   const cyPix = sumY / area;
-  let mu20 = 0;
-  let mu02 = 0;
-  let mu11 = 0;
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      if (!mask[y * n + x]) continue;
-      const dx = x - cxPix;
-      const dy = y - cyPix;
-      mu20 += dx * dx;
-      mu02 += dy * dy;
-      mu11 += dx * dy;
-    }
-  }
-  const a2 = area * area;
-  const n20 = mu20 / a2;
-  const n02 = mu02 / a2;
-  const n11 = mu11 / a2;
 
   return {
     area,
     cx: frame.minX + (cxPix + 0.5) * frame.cell,
     cy: frame.minY + (cyPix + 0.5) * frame.cell,
+    cxPix,
+    cyPix,
     bw: Math.max(1, maxX - minX + 1) * frame.cell,
     bh: Math.max(1, maxY - minY + 1) * frame.cell,
-    hu1: n20 + n02,
-    hu2: (n20 - n02) * (n20 - n02) + 4 * n11 * n11,
-    holes: countHoles(mask, n),
+    minXPix: minX,
+    minYPix: minY,
+    maxXPix: maxX,
+    maxYPix: maxY,
   };
 }
 
 function boundsMass(item: paper.PathItem, frame: WorldFrame): ItemMass {
   const b = item.bounds;
   const cell2 = frame.cell * frame.cell;
+  const cxPix = (b.center.x - frame.minX) / frame.cell;
+  const cyPix = (b.center.y - frame.minY) / frame.cell;
+  const halfW = b.width / (2 * frame.cell);
+  const halfH = b.height / (2 * frame.cell);
   return {
     area: Math.max(MIN_PIXELS, (b.width * b.height) / cell2),
     cx: b.center.x,
     cy: b.center.y,
+    cxPix,
+    cyPix,
     bw: Math.max(frame.cell, b.width),
     bh: Math.max(frame.cell, b.height),
-    hu1: 0,
-    hu2: 0,
-    holes: 0,
+    minXPix: Math.max(0, Math.floor(cxPix - halfW)),
+    minYPix: Math.max(0, Math.floor(cyPix - halfH)),
+    maxXPix: Math.min(frame.n - 1, Math.ceil(cxPix + halfW)),
+    maxYPix: Math.min(frame.n - 1, Math.ceil(cyPix + halfH)),
   };
 }
 
-function massOf(item: paper.PathItem, frame: WorldFrame): ItemMass {
+function sampleOf(item: paper.PathItem, frame: WorldFrame): MassSample {
   const mask = rasterItem(item, frame);
-  if (!mask) return boundsMass(item, frame);
-  return extractMass(mask, frame) ?? boundsMass(item, frame);
+  if (!mask) return { mass: boundsMass(item, frame), mask: null };
+  const mass = extractMass(mask, frame) ?? boundsMass(item, frame);
+  return { mass, mask };
 }
 
-/** Raster agreement in [0, 1] — soft, never used alone. */
-function massAgreement(
-  a: ItemMass,
-  b: ItemMass,
-  frameSpan: number,
+// ---------------------------------------------------------------------------
+// Blurred residual NCC
+// ---------------------------------------------------------------------------
+
+function gaussianKernel(sigma: number): Float64Array {
+  const radius = Math.max(1, Math.ceil(sigma * 2.5));
+  const k = new Float64Array(radius * 2 + 1);
+  let sum = 0;
+  for (let i = -radius; i <= radius; i++) {
+    const v = Math.exp(-(i * i) / (2 * sigma * sigma));
+    k[i + radius] = v;
+    sum += v;
+  }
+  for (let i = 0; i < k.length; i++) k[i] /= sum;
+  return k;
+}
+
+function blurSeparable(
+  src: Float64Array,
+  w: number,
+  h: number,
+  sigma: number,
+): Float64Array {
+  const k = gaussianKernel(sigma);
+  const r = (k.length - 1) >> 1;
+  const tmp = new Float64Array(w * h);
+  const out = new Float64Array(w * h);
+
+  // Horizontal
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let acc = 0;
+      for (let i = -r; i <= r; i++) {
+        const xx = Math.min(w - 1, Math.max(0, x + i));
+        acc += src[y * w + xx] * k[i + r];
+      }
+      tmp[y * w + x] = acc;
+    }
+  }
+  // Vertical
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let acc = 0;
+      for (let i = -r; i <= r; i++) {
+        const yy = Math.min(h - 1, Math.max(0, y + i));
+        acc += tmp[yy * w + x] * k[i + r];
+      }
+      out[y * w + x] = acc;
+    }
+  }
+  return out;
+}
+
+/**
+ * Extract a PATCH×PATCH float patch centered on the mass centroid,
+ * sampling the item mask (1 = ink). Missing mask → filled disk from bbox.
+ */
+function extractPatch(
+  sample: MassSample,
+  frame: WorldFrame,
+): Float64Array {
+  const patch = new Float64Array(PATCH * PATCH);
+  const n = frame.n;
+  const half = PATCH / 2;
+
+  // Scale crop so the mass roughly fills ~70% of the patch.
+  const massW = Math.max(4, sample.mass.maxXPix - sample.mass.minXPix + 1);
+  const massH = Math.max(4, sample.mass.maxYPix - sample.mass.minYPix + 1);
+  const span = Math.max(massW, massH) * 1.35;
+  const scale = span / PATCH;
+
+  const cx = sample.mass.cxPix;
+  const cy = sample.mass.cyPix;
+  const mask = sample.mask;
+
+  for (let py = 0; py < PATCH; py++) {
+    for (let px = 0; px < PATCH; px++) {
+      const mx = cx + (px - half + 0.5) * scale;
+      const my = cy + (py - half + 0.5) * scale;
+      const ix = Math.round(mx);
+      const iy = Math.round(my);
+      let v = 0;
+      if (mask && ix >= 0 && iy >= 0 && ix < n && iy < n) {
+        v = mask[iy * n + ix];
+      } else if (
+        !mask &&
+        ix >= sample.mass.minXPix &&
+        ix <= sample.mass.maxXPix &&
+        iy >= sample.mass.minYPix &&
+        iy <= sample.mass.maxYPix
+      ) {
+        v = 1;
+      }
+      patch[py * PATCH + px] = v;
+    }
+  }
+  return patch;
+}
+
+/** Zero-mean NCC mapped to [0, 1]. */
+function ncc01(a: Float64Array, b: Float64Array): number {
+  const n = a.length;
+  let meanA = 0;
+  let meanB = 0;
+  for (let i = 0; i < n; i++) {
+    meanA += a[i];
+    meanB += b[i];
+  }
+  meanA /= n;
+  meanB /= n;
+
+  let num = 0;
+  let denA = 0;
+  let denB = 0;
+  for (let i = 0; i < n; i++) {
+    const da = a[i] - meanA;
+    const db = b[i] - meanB;
+    num += da * db;
+    denA += da * da;
+    denB += db * db;
+  }
+  const den = Math.sqrt(denA * denB);
+  if (den < 1e-12) return 0.5; // empty/empty → neutral
+  const ncc = num / den; // [-1, 1]
+  return Math.max(0, Math.min(1, 0.5 + 0.5 * ncc));
+}
+
+function blurredResidualNcc(
+  a: MassSample,
+  b: MassSample,
+  frame: WorldFrame,
 ): number {
-  const areaRatio =
-    Math.min(a.area, b.area) / Math.max(a.area, b.area);
-  const dist =
-    Math.hypot(a.cx - b.cx, a.cy - b.cy) / Math.max(frameSpan, 1e-6);
-  const prox = 1 / (1 + dist * 1.6);
-
-  const aspA = a.bw / Math.max(a.bh, 1e-6);
-  const aspB = b.bw / Math.max(b.bh, 1e-6);
-  const aspRatio =
-    Math.min(aspA, aspB) / Math.max(aspA, aspB);
-
-  let shape = aspRatio;
-  if (a.hu1 > 1e-6 && b.hu1 > 1e-6) {
-    const hu1Sim =
-      1 -
-      Math.min(1, Math.abs(a.hu1 - b.hu1) / Math.max(a.hu1, b.hu1, 1e-9));
-    const hu2Sim =
-      1 -
-      Math.min(1, Math.abs(a.hu2 - b.hu2) / Math.max(a.hu2, b.hu2, 1e-9));
-    shape = hu1Sim * 0.35 + hu2Sim * 0.15 + aspRatio * 0.5;
-  }
-
-  let holeMul = 1;
-  if (a.holes !== b.holes && Math.min(a.area, b.area) >= 40) {
-    holeMul = a.holes === 0 || b.holes === 0 ? 0.7 : 0.85;
-  }
-
-  return holeMul * (areaRatio * 0.35 + prox * 0.45 + shape * 0.2);
+  const pa = blurSeparable(extractPatch(a, frame), PATCH, PATCH, BLUR_SIGMA);
+  const pb = blurSeparable(extractPatch(b, frame), PATCH, PATCH, BLUR_SIGMA);
+  return ncc01(pa, pb);
 }
 
 // ---------------------------------------------------------------------------
@@ -430,8 +483,8 @@ function normFrameOf(item: paper.PathItem): NormFrame {
   };
 }
 
-function toNorm(p: paper.Point, f: NormFrame): paper.Point {
-  return p.subtract(f.c).divide(f.s);
+function toNorm(x: number, y: number, f: NormFrame): { x: number; y: number } {
+  return { x: (x - f.c.x) / f.s, y: (y - f.c.y) / f.s };
 }
 
 // ---------------------------------------------------------------------------
@@ -440,11 +493,16 @@ function toNorm(p: paper.Point, f: NormFrame): paper.Point {
 
 type Cand = { ai: number; bi: number; score: number };
 
+/**
+ * Centroid-first score, then blurred residual NCC.
+ * Travel lives in the centroid term; shape in the residual.
+ */
 function scorePair(
   a: paper.PathItem,
   b: paper.PathItem,
-  aMass: ItemMass | null,
-  bMass: ItemMass | null,
+  aSample: MassSample | null,
+  bSample: MassSample | null,
+  frame: WorldFrame | null,
   frameSpan: number,
   normA: NormFrame | null,
   normB: NormFrame | null,
@@ -452,27 +510,44 @@ function scorePair(
   const col = colorSimilarity(a, b);
   if (col < 0.28) return 0;
 
-  const aArea = Math.max(1, a.bounds.width * a.bounds.height);
-  const bArea = Math.max(1, b.bounds.width * b.bounds.height);
+  const aMass = aSample?.mass;
+  const bMass = bSample?.mass;
+  const aArea = aMass
+    ? aMass.area
+    : Math.max(1, a.bounds.width * a.bounds.height);
+  const bArea = bMass
+    ? bMass.area
+    : Math.max(1, b.bounds.width * b.bounds.height);
   const areaRatio = Math.min(aArea, bArea) / Math.max(aArea, bArea);
+
+  const ax = aMass?.cx ?? a.bounds.center.x;
+  const ay = aMass?.cy ?? a.bounds.center.y;
+  const bx = bMass?.cx ?? b.bounds.center.x;
+  const by = bMass?.cy ?? b.bounds.center.y;
 
   let prox: number;
   if (normA && normB) {
-    const ac = toNorm(a.bounds.center, normA);
-    const bc = toNorm(b.bounds.center, normB);
-    const dist = ac.getDistance(bc);
+    const ac = toNorm(ax, ay, normA);
+    const bc = toNorm(bx, by, normB);
+    const dist = Math.hypot(ac.x - bc.x, ac.y - bc.y);
     prox = 1 / (1 + dist);
   } else {
-    const dist = a.bounds.center.getDistance(b.bounds.center);
-    const size = Math.sqrt(Math.max(aArea, bArea));
-    prox = 1 / (1 + dist / Math.max(size, 1e-6));
+    const dist = Math.hypot(ax - bx, ay - by);
+    // Soft falloff vs layer span so cross-screen travel still scores well.
+    prox = 1 / (1 + dist / Math.max(frameSpan * 0.35, 1e-6));
   }
 
-  let vector = areaRatio * 0.35 + prox * 0.65;
-  if (aMass && bMass) {
-    vector *= 0.55 + 0.45 * massAgreement(aMass, bMass, frameSpan);
+  // Centroid-heavy geometric term.
+  const centroidScore = col * (areaRatio * 0.3 + prox * 0.7);
+  if (centroidScore < CENTROID_GATE) return 0;
+
+  // Blurred residual only after the cheap gate; needs a shared raster frame.
+  let residual = 0.5;
+  if (frame && aSample && bSample) {
+    residual = blurredResidualNcc(aSample, bSample, frame);
   }
-  return col * vector;
+
+  return centroidScore * (0.45 + 0.55 * residual);
 }
 
 function pairCohort(
@@ -480,8 +555,9 @@ function pairCohort(
   bIdx: number[],
   aItems: paper.PathItem[],
   bItems: paper.PathItem[],
-  aMass: Array<ItemMass | null>,
-  bMass: Array<ItemMass | null>,
+  aSamples: Array<MassSample | null>,
+  bSamples: Array<MassSample | null>,
+  frame: WorldFrame | null,
   frameSpan: number,
   normA: NormFrame | null,
   normB: NormFrame | null,
@@ -504,8 +580,9 @@ function pairCohort(
       const s = scorePair(
         aItems[ai],
         bItems[bi],
-        aMass[ai],
-        bMass[bi],
+        aSamples[ai],
+        bSamples[bi],
+        frame,
         frameSpan,
         normA,
         normB,
@@ -559,11 +636,11 @@ export function matchItemsWithMass(
 
   const rasterFrame = layerFrame([...aItems, ...bItems]);
   const frameSpan = rasterFrame ? rasterFrame.cell * rasterFrame.n : 1;
-  const aMass: Array<ItemMass | null> = rasterFrame
-    ? aItems.map((it) => massOf(it, rasterFrame))
+  const aSamples: Array<MassSample | null> = rasterFrame
+    ? aItems.map((it) => sampleOf(it, rasterFrame))
     : aItems.map(() => null);
-  const bMass: Array<ItemMass | null> = rasterFrame
-    ? bItems.map((it) => massOf(it, rasterFrame))
+  const bSamples: Array<MassSample | null> = rasterFrame
+    ? bItems.map((it) => sampleOf(it, rasterFrame))
     : bItems.map(() => null);
 
   const aParents = buildParents(aItems);
@@ -593,8 +670,9 @@ export function matchItemsWithMass(
       bCohort,
       aItems,
       bItems,
-      aMass,
-      bMass,
+      aSamples,
+      bSamples,
+      rasterFrame,
       frameSpan,
       normA,
       normB,
@@ -637,8 +715,9 @@ export function matchItemsWithMass(
       orphanB,
       aItems,
       bItems,
-      aMass,
-      bMass,
+      aSamples,
+      bSamples,
+      rasterFrame,
       frameSpan,
       null,
       null,

@@ -90,14 +90,14 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
     },
   },
   {
-    id: "point-corner",
-    name: "Corner",
+    id: "point-sharp",
+    name: "Sharp",
     isAvailable: (context) =>
       context.tool === "direct-select"
       && context.items.length > 0
       && context.pickedAnchorCount > 0,
     run: (_context, services) => {
-      services.directSelectController.setPickedAnchorHandleMode("corner");
+      services.directSelectController.setPickedAnchorHandleMode("sharp");
     },
   },
   {
@@ -109,6 +109,17 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
       && context.pickedAnchorCount > 0,
     run: (_context, services) => {
       services.directSelectController.setPickedAnchorHandleMode("mirrored");
+    },
+  },
+  {
+    id: "point-detached",
+    name: "Detached",
+    isAvailable: (context) =>
+      context.tool === "direct-select"
+      && context.items.length > 0
+      && context.pickedAnchorCount > 0,
+    run: (_context, services) => {
+      services.directSelectController.setPickedAnchorHandleMode("detached");
     },
   },
   {

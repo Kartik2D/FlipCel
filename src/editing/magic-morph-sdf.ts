@@ -1,8 +1,11 @@
 /**
  * SDF morph solver for Magic Morph.
  *
- * Supersampled raster → signed distance → downsample/smooth → lerp →
- * marching squares on the *smooth* field → Chaikin + simplify to vectors.
+ * Mass-retaining pipeline (matches centroid-first item matching):
+ * 1. Factor each item into centroid + size
+ * 2. Raster / SDF in a shared *local* frame (centered, unit-scaled)
+ * 3. Lerp residual SDFs (shape change only — no travel ghosting)
+ * 4. Marching squares → embed with interpolated centroid + size
  *
  * The contour is a level-set of a blurred distance field, not a trace of
  * pixel edges.
@@ -82,7 +85,7 @@ function gridSize(density: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Shared world domain
+// Mass-local domain (centroid + size factored out)
 // ---------------------------------------------------------------------------
 
 interface WorldFrame {
@@ -90,53 +93,56 @@ interface WorldFrame {
   minY: number;
   maxX: number;
   maxY: number;
-  /** Working-grid cell size in world units. */
+  /** Cell size in *normalized* mass units (shape scaled by 1/s). */
   cell: number;
   n: number;
 }
 
-function worldFrame(
-  a: paper.PathItem,
-  b: paper.PathItem,
-  n: number,
-): WorldFrame | null {
-  const ba = a.bounds;
-  const bb = b.bounds;
-  if (ba.width < 1e-6 && ba.height < 1e-6) return null;
-  if (bb.width < 1e-6 && bb.height < 1e-6) return null;
+interface MassStats {
+  c: paper.Point;
+  s: number;
+}
 
-  let minX = Math.min(ba.left, bb.left);
-  let minY = Math.min(ba.top, bb.top);
-  let maxX = Math.max(ba.right, bb.right);
-  let maxY = Math.max(ba.bottom, bb.bottom);
-  const span = Math.max(maxX - minX, maxY - minY, 1e-3);
-  const pad = span * 0.2 + 2;
-  minX -= pad;
-  minY -= pad;
-  maxX += pad;
-  maxY += pad;
-  const w = maxX - minX;
-  const h = maxY - minY;
-  if (w > h) {
-    const d = (w - h) / 2;
-    minY -= d;
-    maxY += d;
-  } else if (h > w) {
-    const d = (h - w) / 2;
-    minX -= d;
-    maxX += d;
-  }
-  const side = maxX - minX;
-  return { minX, minY, maxX, maxY, cell: side / n, n };
+/** Travel frame for one item: centroid + mean half-diagonal. */
+function massStats(item: paper.PathItem): MassStats | null {
+  const b = item.bounds;
+  if (b.width < 1e-6 && b.height < 1e-6) return null;
+  return {
+    c: b.center.clone(),
+    s: Math.max(1e-6, Math.hypot(b.width, b.height) / 2),
+  };
+}
+
+/**
+ * Shared normalized grid: both shapes are rasterized centered at the origin
+ * with their own size scaled to ~1, so SDF lerp is residual-only.
+ */
+function localMassFrame(n: number): WorldFrame {
+  const pad = 1.65;
+  const side = pad * 2;
+  return {
+    minX: -pad,
+    minY: -pad,
+    maxX: pad,
+    maxY: pad,
+    cell: side / n,
+    n,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Supersampled AA raster → binary mask at high res
 // ---------------------------------------------------------------------------
 
-function rasterizeSuper(
+/**
+ * Rasterize `item` into `frame`'s normalized grid: world points map as
+ * ((p - c) / s) so the mass sits centered with unit size.
+ */
+function rasterizeSuperAligned(
   item: paper.PathItem,
   frame: WorldFrame,
+  c: paper.Point,
+  s: number,
 ): Uint8Array | null {
   const hi = frame.n * SUPER;
   const cell = frame.cell / SUPER;
@@ -155,17 +161,16 @@ function rasterizeSuper(
   if (!ctx) return null;
 
   ctx.clearRect(0, 0, hi, hi);
-  // AA coverage — we threshold after read, but AA still softens edges for
-  // more stable inside/outside decisions under supersampling.
   ctx.imageSmoothingEnabled = true;
   ctx.fillStyle = "#fff";
+  // px = ((world - c) / s - min) / cell
   ctx.setTransform(
-    1 / cell,
+    1 / (s * cell),
     0,
     0,
-    1 / cell,
-    -frame.minX / cell,
-    -frame.minY / cell,
+    1 / (s * cell),
+    (-c.x / s - frame.minX) / cell,
+    (-c.y / s - frame.minY) / cell,
   );
   try {
     ctx.fill(new Path2D(pathData), "evenodd");
@@ -322,8 +327,13 @@ function blurSdf(src: Float64Array, n: number, sigma: number): Float64Array {
   return out;
 }
 
-function buildSdf(item: paper.PathItem, frame: WorldFrame): Float64Array | null {
-  const mask = rasterizeSuper(item, frame);
+function buildSdfAligned(
+  item: paper.PathItem,
+  frame: WorldFrame,
+  c: paper.Point,
+  s: number,
+): Float64Array | null {
+  const mask = rasterizeSuperAligned(item, frame, c, s);
   if (!mask) return null;
   const hiN = frame.n * SUPER;
   let filled = 0;
@@ -334,6 +344,24 @@ function buildSdf(item: paper.PathItem, frame: WorldFrame): Float64Array | null 
   const hiSdf = signedDistance(mask, hiN, hiCell);
   const lo = downsampleSdf(hiSdf, frame.n);
   return blurSdf(lo, frame.n, SDF_BLUR);
+}
+
+/** Map paths from normalized mass space into world via interpolated frame. */
+function embedMassPaths(
+  paths: paper.Path[],
+  cT: paper.Point,
+  sT: number,
+): void {
+  for (const path of paths) {
+    for (const seg of path.segments) {
+      seg.point = new paper.Point(
+        cT.x + seg.point.x * sT,
+        cT.y + seg.point.y * sT,
+      );
+      seg.handleIn = seg.handleIn.multiply(sT);
+      seg.handleOut = seg.handleOut.multiply(sT);
+    }
+  }
 }
 
 function lerpSdf(a: Float64Array, b: Float64Array, t: number): Float64Array {
@@ -560,9 +588,10 @@ function loopsToPaths(
 // ---------------------------------------------------------------------------
 
 /**
- * SDF-blend two filled closed PathItems. Returns null when the pair cannot
- * be handled (open / stroke-only / raster failure) so the caller can fall
- * back to the vector solver.
+ * SDF-blend two filled closed PathItems with mass retention: travel is
+ * carried by the interpolated centroid/size; shape morphs in residual
+ * SDF space. Returns null when the pair cannot be handled (open /
+ * stroke-only / raster failure) so the caller can fall back to vector.
  */
 export function morphItemSdf(
   a: paper.PathItem,
@@ -572,20 +601,28 @@ export function morphItemSdf(
 ): paper.PathItem | null {
   if (!isClosedFillable(a) || !isClosedFillable(b)) return null;
 
-  const n = gridSize(opts.density);
-  const frame = worldFrame(a, b, n);
-  if (!frame) return null;
+  const mA = massStats(a);
+  const mB = massStats(b);
+  if (!mA || !mB) return null;
 
-  const sdfA = buildSdf(a, frame);
-  const sdfB = buildSdf(b, frame);
+  const n = gridSize(opts.density);
+  const frame = localMassFrame(n);
+
+  const sdfA = buildSdfAligned(a, frame, mA.c, mA.s);
+  const sdfB = buildSdfAligned(b, frame, mB.c, mB.s);
   if (!sdfA || !sdfB) return null;
 
   const sdf = blurSdf(lerpSdf(sdfA, sdfB, t), n, SDF_BLUR * 0.5);
   const loops = marchingSquares(sdf, frame);
   if (loops.length === 0) return null;
 
-  const paths = loopsToPaths(loops, opts.simplify, frame.cell);
+  // loops / paths are in normalized mass space; place with lerped frame.
+  const cT = mA.c.add(mB.c.subtract(mA.c).multiply(t));
+  const sT = mA.s + (mB.s - mA.s) * t;
+  // simplify tolerance: cell is normalized — scale to world for the slider.
+  const paths = loopsToPaths(loops, opts.simplify / Math.max(sT, 1e-6), frame.cell);
   if (paths.length === 0) return null;
+  embedMassPaths(paths, cT, sT);
 
   if (paths.length === 1) {
     applyItemStyle(paths[0], a, b, t);

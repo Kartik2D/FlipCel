@@ -54,6 +54,14 @@ export class FloatingPanel extends Block {
       min-height: 0;
       max-height: 100%;
       height: auto;
+      transform-origin: center center;
+      transition: transform var(--inkwell-motion-quad-duration, 220ms)
+        var(--inkwell-motion-quad-easing, cubic-bezier(0.45, 0, 0.55, 1));
+    }
+
+    /* Grabbed + over dock: shrink with quad in-out to show it can re-dock / minimize. */
+    :host([dragging][dock-hover]) .block {
+      transform: scale(var(--inkwell-panel-dock-hover-scale, 0.88));
     }
 
     .face {
@@ -523,6 +531,32 @@ export class FloatingPanel extends Block {
       this.pinned = false;
       this.dispatchPanelDockState({ visible: true, detached: false });
     }
+  }
+
+  protected override onDragMove() {
+    if (!this.canPreviewDockHover()) {
+      this.clearDockHover();
+      return;
+    }
+    this.setDockHover(this.isOverTopDock());
+  }
+
+  protected override onDragEnded() {
+    this.clearDockHover();
+  }
+
+  /** Floating (pinned) non-popup panels preview a shrink when dragged over the dock. */
+  protected canPreviewDockHover(): boolean {
+    return this.pinned && !this.hasAttribute("data-popup");
+  }
+
+  private setDockHover(over: boolean) {
+    if (over) this.setAttribute("dock-hover", "");
+    else this.removeAttribute("dock-hover");
+  }
+
+  private clearDockHover() {
+    this.removeAttribute("dock-hover");
   }
 
   private dispatchPanelDockState(detail: {
