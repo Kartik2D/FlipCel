@@ -19,7 +19,7 @@
             name="viewport"
             content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
         />
-        <title>Inkwell - Pixel to Vector Drawing</title>
+        <title>FlipCel - Pixel to Vector Drawing</title>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
@@ -51,9 +51,13 @@
                     mist: "lagoon",
                     ink: "lagoon",
                     ember: "velvet",
+                    neumorphic: "slab",
+                    glass: "slab",
                 };
                 try {
-                    var stored = localStorage.getItem("inkwell.theme");
+                    var stored =
+                        localStorage.getItem("flipcel.theme") ||
+                        localStorage.getItem("inkwell.theme");
                     if (stored && themes[stored]) mode = stored;
                     else if (stored && migrate[stored]) mode = migrate[stored];
                 } catch (e) {}
@@ -63,485 +67,485 @@
         </script>
         <style>
             :root {
-                --inkwell-font: "Inter", system-ui, sans-serif;
+                --flipcel-font: "Inter", system-ui, sans-serif;
                 /* Flat chrome — no 3D lip / drawn borders. */
-                --inkwell-block-border-width: 0px;
+                --flipcel-block-border-width: 0px;
                 /* App-wide chrome — edit these two: */
-                --inkwell-block-face-padding: 10px;
-                --inkwell-radius: 3px;
+                --flipcel-block-face-padding: 10px;
+                --flipcel-radius: 3px;
                 /* Shell can go tight; content keeps a softer floor. */
-                --inkwell-content-radius: max(8px, var(--inkwell-radius));
-                --inkwell-block-radius: calc(
-                    var(--inkwell-radius) + var(--inkwell-block-face-padding)
+                --flipcel-content-radius: max(8px, var(--flipcel-radius));
+                --flipcel-block-radius: calc(
+                    var(--flipcel-radius) + var(--flipcel-block-face-padding)
                 );
-                --inkwell-flat-button-padding: 6px 5px;
-                --inkwell-flat-button-large-padding: 14px 16px;
-                --inkwell-block-font-size: 12px;
-                --inkwell-block-resize-hit: 22px;
-                --inkwell-scrollbar-size: 8px;
+                --flipcel-flat-button-padding: 6px 5px;
+                --flipcel-flat-button-large-padding: 14px 16px;
+                --flipcel-block-font-size: 12px;
+                --flipcel-block-resize-hit: 22px;
+                --flipcel-scrollbar-size: 8px;
             }
 
             /* Slab (default): dark flat chrome. */
             :root,
             html[data-theme="slab"] {
-                --inkwell-app-bg: #121212;
-                --inkwell-canvas-bg: #1a1a1a;
-                --inkwell-panel-surface: #383838;
-                --inkwell-panel-depth: #070707;
-                --inkwell-panel-inset-bg: #2a2a2a;
-                --inkwell-panel-border: #8a8a8a;
-                --inkwell-topbar-surface: #383838;
-                --inkwell-text-primary: #f0f0f0;
-                --inkwell-text-secondary: #c8c8c8;
-                --inkwell-text-muted: #999999;
-                --inkwell-accent: #7c9eff;
-                --inkwell-accent-hover: #97b2ff;
-                --inkwell-accent-muted: rgba(124, 158, 255, 0.35);
-                --inkwell-track-bg: #3a3a3a;
-                --inkwell-toggle-track: #333333;
-                --inkwell-toggle-border: #5a5a5a;
-                --inkwell-toggle-thumb: #f0f0f0;
-                --inkwell-accent-contrast: #ffffff;
-                --inkwell-positive: #5ecf8e;
-                --inkwell-positive-hover: #78db9f;
-                --inkwell-positive-muted: rgba(94, 207, 142, 0.32);
-                --inkwell-positive-contrast: #0e1a14;
-                --inkwell-negative: #c66d6d;
-                --inkwell-negative-hover: #df8080;
-                --inkwell-negative-muted: color-mix(in srgb, var(--inkwell-negative) 32%, transparent);
-                --inkwell-negative-contrast: #ffffff;
-                --inkwell-neutral: #9aa3b2;
-                --inkwell-neutral-hover: #adb5c2;
-                --inkwell-neutral-muted: rgba(154, 163, 178, 0.32);
-                --inkwell-neutral-contrast: #12141a;
-                --inkwell-shadow-panel: 0 22px 52px rgba(0, 0, 0, 0.58);
-                --inkwell-shadow-soft: 0 12px 28px rgba(0, 0, 0, 0.45);
-                --inkwell-dock-shadow: 0 8px 28px rgba(0, 0, 0, 0.52);
-                --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.15);
-                --inkwell-panel-active-negative: rgba(255, 124, 124, 0.42);
-                --inkwell-scrollbar-thumb: rgba(255, 255, 255, 0.28);
-                --inkwell-playhead: #f2c14e;
-                --inkwell-timeline-cell-bg: color-mix(
+                --flipcel-app-bg: #121212;
+                --flipcel-canvas-bg: #1a1a1a;
+                --flipcel-panel-surface: #383838;
+                --flipcel-panel-depth: #070707;
+                --flipcel-panel-inset-bg: #2a2a2a;
+                --flipcel-panel-border: #8a8a8a;
+                --flipcel-topbar-surface: #383838;
+                --flipcel-text-primary: #f0f0f0;
+                --flipcel-text-secondary: #c8c8c8;
+                --flipcel-text-muted: #999999;
+                --flipcel-accent: #7c9eff;
+                --flipcel-accent-hover: #97b2ff;
+                --flipcel-accent-muted: rgba(124, 158, 255, 0.35);
+                --flipcel-track-bg: #3a3a3a;
+                --flipcel-toggle-track: #333333;
+                --flipcel-toggle-border: #5a5a5a;
+                --flipcel-toggle-thumb: #f0f0f0;
+                --flipcel-accent-contrast: #ffffff;
+                --flipcel-positive: #5ecf8e;
+                --flipcel-positive-hover: #78db9f;
+                --flipcel-positive-muted: rgba(94, 207, 142, 0.32);
+                --flipcel-positive-contrast: #0e1a14;
+                --flipcel-negative: #c66d6d;
+                --flipcel-negative-hover: #df8080;
+                --flipcel-negative-muted: color-mix(in srgb, var(--flipcel-negative) 32%, transparent);
+                --flipcel-negative-contrast: #ffffff;
+                --flipcel-neutral: #9aa3b2;
+                --flipcel-neutral-hover: #adb5c2;
+                --flipcel-neutral-muted: rgba(154, 163, 178, 0.32);
+                --flipcel-neutral-contrast: #12141a;
+                --flipcel-shadow-panel: 0 22px 52px rgba(0, 0, 0, 0.58);
+                --flipcel-shadow-soft: 0 12px 28px rgba(0, 0, 0, 0.45);
+                --flipcel-dock-shadow: 0 8px 28px rgba(0, 0, 0, 0.52);
+                --flipcel-panel-active-overlay: rgba(255, 255, 255, 0.15);
+                --flipcel-panel-active-negative: rgba(255, 124, 124, 0.42);
+                --flipcel-scrollbar-thumb: rgba(255, 255, 255, 0.28);
+                --flipcel-playhead: #f2c14e;
+                --flipcel-timeline-cell-bg: color-mix(
                     in srgb,
-                    var(--inkwell-panel-surface) 38%,
-                    var(--inkwell-panel-depth)
+                    var(--flipcel-panel-surface) 38%,
+                    var(--flipcel-panel-depth)
                 );
-                --inkwell-timeline-active-row-bg: color-mix(
+                --flipcel-timeline-active-row-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 42%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 42%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-playhead-bg: color-mix(
+                --flipcel-timeline-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-playhead) 26%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-playhead) 26%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-active-playhead-bg: color-mix(
+                --flipcel-timeline-active-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-timeline-active-row-bg) 52%,
-                    var(--inkwell-timeline-playhead-bg)
+                    var(--flipcel-timeline-active-row-bg) 52%,
+                    var(--flipcel-timeline-playhead-bg)
                 );
-                --inkwell-timeline-selection-bg: color-mix(
+                --flipcel-timeline-selection-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 48%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 48%,
+                    var(--flipcel-panel-surface)
                 );
             }
 
             /* Light Slab: light flat chrome. */
             html[data-theme="light-slab"] {
-                --inkwell-app-bg: #9a9a9a;
-                --inkwell-canvas-bg: #cfcfcf;
-                --inkwell-panel-surface: #e6e6e6;
-                --inkwell-panel-depth: #a3a3a3;
-                --inkwell-panel-inset-bg: #d4d4d4;
-                --inkwell-panel-border: #484848;
-                --inkwell-topbar-surface: #e6e6e6;
-                --inkwell-text-primary: #1a1a1a;
-                --inkwell-text-secondary: #333333;
-                --inkwell-text-muted: #555555;
-                --inkwell-accent: #4d73d7;
-                --inkwell-accent-hover: #3e61bf;
-                --inkwell-accent-muted: rgba(77, 115, 215, 0.28);
-                --inkwell-track-bg: #c8c8c8;
-                --inkwell-toggle-track: #c8c8c8;
-                --inkwell-toggle-border: #999999;
-                --inkwell-toggle-thumb: #fafafa;
-                --inkwell-accent-contrast: #ffffff;
-                --inkwell-positive: #3d9a6a;
-                --inkwell-positive-hover: #328555;
-                --inkwell-positive-muted: rgba(61, 154, 106, 0.28);
-                --inkwell-positive-contrast: #ffffff;
-                --inkwell-negative: #af5b5b;
-                --inkwell-negative-hover: #924747;
-                --inkwell-negative-muted: color-mix(in srgb, var(--inkwell-negative) 32%, transparent);
-                --inkwell-negative-contrast: #ffffff;
-                --inkwell-neutral: #6b7280;
-                --inkwell-neutral-hover: #565d6b;
-                --inkwell-neutral-muted: rgba(107, 114, 128, 0.28);
-                --inkwell-neutral-contrast: #ffffff;
-                --inkwell-shadow-panel: 0 22px 48px rgba(0, 0, 0, 0.3);
-                --inkwell-shadow-soft: 0 10px 24px rgba(0, 0, 0, 0.2);
-                --inkwell-dock-shadow: 0 8px 28px rgba(0, 0, 0, 0.26);
-                --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.22);
-                --inkwell-panel-active-negative: rgba(255, 122, 122, 0.58);
-                --inkwell-scrollbar-thumb: rgba(0, 0, 0, 0.34);
-                --inkwell-playhead: #c9a227;
-                --inkwell-timeline-cell-bg: color-mix(
+                --flipcel-app-bg: #9a9a9a;
+                --flipcel-canvas-bg: #cfcfcf;
+                --flipcel-panel-surface: #e6e6e6;
+                --flipcel-panel-depth: #a3a3a3;
+                --flipcel-panel-inset-bg: #d4d4d4;
+                --flipcel-panel-border: #484848;
+                --flipcel-topbar-surface: #e6e6e6;
+                --flipcel-text-primary: #1a1a1a;
+                --flipcel-text-secondary: #333333;
+                --flipcel-text-muted: #555555;
+                --flipcel-accent: #4d73d7;
+                --flipcel-accent-hover: #3e61bf;
+                --flipcel-accent-muted: rgba(77, 115, 215, 0.28);
+                --flipcel-track-bg: #c8c8c8;
+                --flipcel-toggle-track: #c8c8c8;
+                --flipcel-toggle-border: #999999;
+                --flipcel-toggle-thumb: #fafafa;
+                --flipcel-accent-contrast: #ffffff;
+                --flipcel-positive: #3d9a6a;
+                --flipcel-positive-hover: #328555;
+                --flipcel-positive-muted: rgba(61, 154, 106, 0.28);
+                --flipcel-positive-contrast: #ffffff;
+                --flipcel-negative: #af5b5b;
+                --flipcel-negative-hover: #924747;
+                --flipcel-negative-muted: color-mix(in srgb, var(--flipcel-negative) 32%, transparent);
+                --flipcel-negative-contrast: #ffffff;
+                --flipcel-neutral: #6b7280;
+                --flipcel-neutral-hover: #565d6b;
+                --flipcel-neutral-muted: rgba(107, 114, 128, 0.28);
+                --flipcel-neutral-contrast: #ffffff;
+                --flipcel-shadow-panel: 0 22px 48px rgba(0, 0, 0, 0.3);
+                --flipcel-shadow-soft: 0 10px 24px rgba(0, 0, 0, 0.2);
+                --flipcel-dock-shadow: 0 8px 28px rgba(0, 0, 0, 0.26);
+                --flipcel-panel-active-overlay: rgba(255, 255, 255, 0.22);
+                --flipcel-panel-active-negative: rgba(255, 122, 122, 0.58);
+                --flipcel-scrollbar-thumb: rgba(0, 0, 0, 0.34);
+                --flipcel-playhead: #c9a227;
+                --flipcel-timeline-cell-bg: color-mix(
                     in srgb,
-                    var(--inkwell-panel-depth) 72%,
+                    var(--flipcel-panel-depth) 72%,
                     #000000
                 );
-                --inkwell-timeline-active-row-bg: color-mix(
+                --flipcel-timeline-active-row-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 42%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 42%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-playhead-bg: color-mix(
+                --flipcel-timeline-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-playhead) 34%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-playhead) 34%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-active-playhead-bg: color-mix(
+                --flipcel-timeline-active-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-timeline-active-row-bg) 58%,
-                    var(--inkwell-timeline-playhead-bg)
+                    var(--flipcel-timeline-active-row-bg) 58%,
+                    var(--flipcel-timeline-playhead-bg)
                 );
-                --inkwell-timeline-selection-bg: color-mix(
+                --flipcel-timeline-selection-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 48%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 48%,
+                    var(--flipcel-panel-surface)
                 );
             }
 
             /* Bubblegum: soft pink/lavender chrome with candy accent — no outline. */
             html[data-theme="bubblegum"] {
-                --inkwell-app-bg: #e8a0c0;
-                --inkwell-canvas-bg: #f6cfe0;
-                --inkwell-panel-surface: #fff0f6;
-                --inkwell-panel-depth: #e09bb8;
-                --inkwell-panel-inset-bg: #f4d4e4;
-                --inkwell-panel-border: #8a3d62;
-                --inkwell-topbar-surface: #fff0f6;
-                --inkwell-text-primary: #4a1630;
-                --inkwell-text-secondary: #6b2a48;
-                --inkwell-text-muted: #8f4a68;
-                --inkwell-accent: #e23d8b;
-                --inkwell-accent-hover: #c92f78;
-                --inkwell-accent-muted: rgba(226, 61, 139, 0.3);
-                --inkwell-track-bg: #efc0d4;
-                --inkwell-toggle-track: #efc0d4;
-                --inkwell-toggle-border: #d48ab0;
-                --inkwell-toggle-thumb: #fffafc;
-                --inkwell-accent-contrast: #ffffff;
-                --inkwell-positive: #3caa78;
-                --inkwell-positive-hover: #319666;
-                --inkwell-positive-muted: rgba(60, 170, 120, 0.3);
-                --inkwell-positive-contrast: #ffffff;
-                --inkwell-negative: #d24a6a;
-                --inkwell-negative-hover: #b83b58;
-                --inkwell-negative-muted: color-mix(in srgb, var(--inkwell-negative) 32%, transparent);
-                --inkwell-negative-contrast: #ffffff;
-                --inkwell-neutral: #9a6a82;
-                --inkwell-neutral-hover: #82556d;
-                --inkwell-neutral-muted: rgba(154, 106, 130, 0.3);
-                --inkwell-neutral-contrast: #ffffff;
-                --inkwell-shadow-panel: 0 22px 48px rgba(120, 40, 80, 0.32);
-                --inkwell-shadow-soft: 0 10px 24px rgba(120, 40, 80, 0.22);
-                --inkwell-dock-shadow: 0 8px 28px rgba(120, 40, 80, 0.28);
-                --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.35);
-                --inkwell-panel-active-negative: rgba(255, 120, 150, 0.55);
-                --inkwell-scrollbar-thumb: rgba(138, 61, 98, 0.4);
-                --inkwell-playhead: #c45ad4;
-                --inkwell-timeline-cell-bg: color-mix(
+                --flipcel-app-bg: #e8a0c0;
+                --flipcel-canvas-bg: #f6cfe0;
+                --flipcel-panel-surface: #fff0f6;
+                --flipcel-panel-depth: #e09bb8;
+                --flipcel-panel-inset-bg: #f4d4e4;
+                --flipcel-panel-border: #8a3d62;
+                --flipcel-topbar-surface: #fff0f6;
+                --flipcel-text-primary: #4a1630;
+                --flipcel-text-secondary: #6b2a48;
+                --flipcel-text-muted: #8f4a68;
+                --flipcel-accent: #e23d8b;
+                --flipcel-accent-hover: #c92f78;
+                --flipcel-accent-muted: rgba(226, 61, 139, 0.3);
+                --flipcel-track-bg: #efc0d4;
+                --flipcel-toggle-track: #efc0d4;
+                --flipcel-toggle-border: #d48ab0;
+                --flipcel-toggle-thumb: #fffafc;
+                --flipcel-accent-contrast: #ffffff;
+                --flipcel-positive: #3caa78;
+                --flipcel-positive-hover: #319666;
+                --flipcel-positive-muted: rgba(60, 170, 120, 0.3);
+                --flipcel-positive-contrast: #ffffff;
+                --flipcel-negative: #d24a6a;
+                --flipcel-negative-hover: #b83b58;
+                --flipcel-negative-muted: color-mix(in srgb, var(--flipcel-negative) 32%, transparent);
+                --flipcel-negative-contrast: #ffffff;
+                --flipcel-neutral: #9a6a82;
+                --flipcel-neutral-hover: #82556d;
+                --flipcel-neutral-muted: rgba(154, 106, 130, 0.3);
+                --flipcel-neutral-contrast: #ffffff;
+                --flipcel-shadow-panel: 0 22px 48px rgba(120, 40, 80, 0.32);
+                --flipcel-shadow-soft: 0 10px 24px rgba(120, 40, 80, 0.22);
+                --flipcel-dock-shadow: 0 8px 28px rgba(120, 40, 80, 0.28);
+                --flipcel-panel-active-overlay: rgba(255, 255, 255, 0.35);
+                --flipcel-panel-active-negative: rgba(255, 120, 150, 0.55);
+                --flipcel-scrollbar-thumb: rgba(138, 61, 98, 0.4);
+                --flipcel-playhead: #c45ad4;
+                --flipcel-timeline-cell-bg: color-mix(
                     in srgb,
-                    var(--inkwell-panel-depth) 72%,
+                    var(--flipcel-panel-depth) 72%,
                     #ffffff
                 );
-                --inkwell-timeline-active-row-bg: color-mix(
+                --flipcel-timeline-active-row-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 36%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 36%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-playhead-bg: color-mix(
+                --flipcel-timeline-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-playhead) 30%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-playhead) 30%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-active-playhead-bg: color-mix(
+                --flipcel-timeline-active-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-timeline-active-row-bg) 58%,
-                    var(--inkwell-timeline-playhead-bg)
+                    var(--flipcel-timeline-active-row-bg) 58%,
+                    var(--flipcel-timeline-playhead-bg)
                 );
-                --inkwell-timeline-selection-bg: color-mix(
+                --flipcel-timeline-selection-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 42%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 42%,
+                    var(--flipcel-panel-surface)
                 );
             }
 
             /* Notebook: desk blotter + ruled-paper panels, fountain-pen indigo — no outline. */
             html[data-theme="notebook"] {
-                --inkwell-app-bg: #6e6458;
-                --inkwell-canvas-bg: #eef2f8;
-                --inkwell-panel-surface: #fffdf6;
-                --inkwell-panel-depth: #c4b8a4;
-                --inkwell-panel-inset-bg: #f0ebe0;
-                --inkwell-panel-border: #3d4f7a;
-                --inkwell-topbar-surface: #fffdf6;
-                --inkwell-text-primary: #1a2438;
-                --inkwell-text-secondary: #3a4560;
-                --inkwell-text-muted: #6a7388;
-                --inkwell-accent: #2f4f9a;
-                --inkwell-accent-hover: #243f80;
-                --inkwell-accent-muted: rgba(47, 79, 154, 0.28);
-                --inkwell-track-bg: #ddd4c4;
-                --inkwell-toggle-track: #ddd4c4;
-                --inkwell-toggle-border: #b8ae9a;
-                --inkwell-toggle-thumb: #fffef8;
-                --inkwell-accent-contrast: #ffffff;
-                --inkwell-positive: #3d8a5a;
-                --inkwell-positive-hover: #32784c;
-                --inkwell-positive-muted: rgba(61, 138, 90, 0.28);
-                --inkwell-positive-contrast: #ffffff;
-                --inkwell-negative: #c45a5a;
-                --inkwell-negative-hover: #a84848;
-                --inkwell-negative-muted: color-mix(in srgb, var(--inkwell-negative) 32%, transparent);
-                --inkwell-negative-contrast: #ffffff;
-                --inkwell-neutral: #7a8498;
-                --inkwell-neutral-hover: #646e82;
-                --inkwell-neutral-muted: rgba(122, 132, 152, 0.28);
-                --inkwell-neutral-contrast: #ffffff;
-                --inkwell-shadow-panel: 0 18px 40px rgba(40, 30, 20, 0.36);
-                --inkwell-shadow-soft: 0 8px 20px rgba(40, 30, 20, 0.24);
-                --inkwell-dock-shadow: 0 8px 26px rgba(40, 30, 20, 0.3);
-                --inkwell-panel-active-overlay: rgba(47, 79, 154, 0.1);
-                --inkwell-panel-active-negative: rgba(196, 90, 90, 0.4);
-                --inkwell-scrollbar-thumb: rgba(61, 79, 122, 0.32);
-                --inkwell-playhead: #c45a4a;
-                --inkwell-timeline-cell-bg: color-mix(
+                --flipcel-app-bg: #6e6458;
+                --flipcel-canvas-bg: #eef2f8;
+                --flipcel-panel-surface: #fffdf6;
+                --flipcel-panel-depth: #c4b8a4;
+                --flipcel-panel-inset-bg: #f0ebe0;
+                --flipcel-panel-border: #3d4f7a;
+                --flipcel-topbar-surface: #fffdf6;
+                --flipcel-text-primary: #1a2438;
+                --flipcel-text-secondary: #3a4560;
+                --flipcel-text-muted: #6a7388;
+                --flipcel-accent: #2f4f9a;
+                --flipcel-accent-hover: #243f80;
+                --flipcel-accent-muted: rgba(47, 79, 154, 0.28);
+                --flipcel-track-bg: #ddd4c4;
+                --flipcel-toggle-track: #ddd4c4;
+                --flipcel-toggle-border: #b8ae9a;
+                --flipcel-toggle-thumb: #fffef8;
+                --flipcel-accent-contrast: #ffffff;
+                --flipcel-positive: #3d8a5a;
+                --flipcel-positive-hover: #32784c;
+                --flipcel-positive-muted: rgba(61, 138, 90, 0.28);
+                --flipcel-positive-contrast: #ffffff;
+                --flipcel-negative: #c45a5a;
+                --flipcel-negative-hover: #a84848;
+                --flipcel-negative-muted: color-mix(in srgb, var(--flipcel-negative) 32%, transparent);
+                --flipcel-negative-contrast: #ffffff;
+                --flipcel-neutral: #7a8498;
+                --flipcel-neutral-hover: #646e82;
+                --flipcel-neutral-muted: rgba(122, 132, 152, 0.28);
+                --flipcel-neutral-contrast: #ffffff;
+                --flipcel-shadow-panel: 0 18px 40px rgba(40, 30, 20, 0.36);
+                --flipcel-shadow-soft: 0 8px 20px rgba(40, 30, 20, 0.24);
+                --flipcel-dock-shadow: 0 8px 26px rgba(40, 30, 20, 0.3);
+                --flipcel-panel-active-overlay: rgba(47, 79, 154, 0.1);
+                --flipcel-panel-active-negative: rgba(196, 90, 90, 0.4);
+                --flipcel-scrollbar-thumb: rgba(61, 79, 122, 0.32);
+                --flipcel-playhead: #c45a4a;
+                --flipcel-timeline-cell-bg: color-mix(
                     in srgb,
-                    var(--inkwell-panel-depth) 55%,
+                    var(--flipcel-panel-depth) 55%,
                     #ffffff
                 );
-                --inkwell-timeline-active-row-bg: color-mix(
+                --flipcel-timeline-active-row-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 22%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 22%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-playhead-bg: color-mix(
+                --flipcel-timeline-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-playhead) 22%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-playhead) 22%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-active-playhead-bg: color-mix(
+                --flipcel-timeline-active-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-timeline-active-row-bg) 58%,
-                    var(--inkwell-timeline-playhead-bg)
+                    var(--flipcel-timeline-active-row-bg) 58%,
+                    var(--flipcel-timeline-playhead-bg)
                 );
-                --inkwell-timeline-selection-bg: color-mix(
+                --flipcel-timeline-selection-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 30%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 30%,
+                    var(--flipcel-panel-surface)
                 );
             }
 
             /* Velvet: deep wine chrome with soft rose accents. */
             html[data-theme="velvet"] {
-                --inkwell-app-bg: #120a10;
-                --inkwell-canvas-bg: #1a1016;
-                --inkwell-panel-surface: #2a1822;
-                --inkwell-panel-depth: #0a0608;
-                --inkwell-panel-inset-bg: #22141c;
-                --inkwell-panel-border: #c890a0;
-                --inkwell-topbar-surface: #2a1822;
-                --inkwell-text-primary: #f5e8ee;
-                --inkwell-text-secondary: #d4b0c0;
-                --inkwell-text-muted: #9a7084;
-                --inkwell-accent: #e8a0b8;
-                --inkwell-accent-hover: #f0b8cc;
-                --inkwell-accent-muted: rgba(232, 160, 184, 0.32);
-                --inkwell-track-bg: #3a2430;
-                --inkwell-toggle-track: #32202a;
-                --inkwell-toggle-border: #6a4050;
-                --inkwell-toggle-thumb: #f5e8ee;
-                --inkwell-accent-contrast: #120a10;
-                --inkwell-positive: #7ecf9a;
-                --inkwell-positive-hover: #96dbb0;
-                --inkwell-positive-muted: rgba(126, 207, 154, 0.3);
-                --inkwell-positive-contrast: #120a10;
-                --inkwell-negative: #e07080;
-                --inkwell-negative-hover: #f08898;
-                --inkwell-negative-muted: color-mix(in srgb, var(--inkwell-negative) 32%, transparent);
-                --inkwell-negative-contrast: #120a10;
-                --inkwell-neutral: #9a7084;
-                --inkwell-neutral-hover: #b0889c;
-                --inkwell-neutral-muted: rgba(154, 112, 132, 0.3);
-                --inkwell-neutral-contrast: #120a10;
-                --inkwell-shadow-panel: 0 24px 56px rgba(40, 8, 24, 0.68);
-                --inkwell-shadow-soft: 0 14px 30px rgba(40, 8, 24, 0.55);
-                --inkwell-dock-shadow: 0 8px 28px rgba(40, 8, 24, 0.6);
-                --inkwell-panel-active-overlay: rgba(232, 160, 184, 0.14);
-                --inkwell-panel-active-negative: rgba(224, 112, 128, 0.42);
-                --inkwell-scrollbar-thumb: rgba(200, 144, 160, 0.32);
-                --inkwell-playhead: #e8c878;
-                --inkwell-timeline-cell-bg: color-mix(
+                --flipcel-app-bg: #120a10;
+                --flipcel-canvas-bg: #1a1016;
+                --flipcel-panel-surface: #2a1822;
+                --flipcel-panel-depth: #0a0608;
+                --flipcel-panel-inset-bg: #22141c;
+                --flipcel-panel-border: #c890a0;
+                --flipcel-topbar-surface: #2a1822;
+                --flipcel-text-primary: #f5e8ee;
+                --flipcel-text-secondary: #d4b0c0;
+                --flipcel-text-muted: #9a7084;
+                --flipcel-accent: #e8a0b8;
+                --flipcel-accent-hover: #f0b8cc;
+                --flipcel-accent-muted: rgba(232, 160, 184, 0.32);
+                --flipcel-track-bg: #3a2430;
+                --flipcel-toggle-track: #32202a;
+                --flipcel-toggle-border: #6a4050;
+                --flipcel-toggle-thumb: #f5e8ee;
+                --flipcel-accent-contrast: #120a10;
+                --flipcel-positive: #7ecf9a;
+                --flipcel-positive-hover: #96dbb0;
+                --flipcel-positive-muted: rgba(126, 207, 154, 0.3);
+                --flipcel-positive-contrast: #120a10;
+                --flipcel-negative: #e07080;
+                --flipcel-negative-hover: #f08898;
+                --flipcel-negative-muted: color-mix(in srgb, var(--flipcel-negative) 32%, transparent);
+                --flipcel-negative-contrast: #120a10;
+                --flipcel-neutral: #9a7084;
+                --flipcel-neutral-hover: #b0889c;
+                --flipcel-neutral-muted: rgba(154, 112, 132, 0.3);
+                --flipcel-neutral-contrast: #120a10;
+                --flipcel-shadow-panel: 0 24px 56px rgba(40, 8, 24, 0.68);
+                --flipcel-shadow-soft: 0 14px 30px rgba(40, 8, 24, 0.55);
+                --flipcel-dock-shadow: 0 8px 28px rgba(40, 8, 24, 0.6);
+                --flipcel-panel-active-overlay: rgba(232, 160, 184, 0.14);
+                --flipcel-panel-active-negative: rgba(224, 112, 128, 0.42);
+                --flipcel-scrollbar-thumb: rgba(200, 144, 160, 0.32);
+                --flipcel-playhead: #e8c878;
+                --flipcel-timeline-cell-bg: color-mix(
                     in srgb,
-                    var(--inkwell-panel-surface) 42%,
-                    var(--inkwell-panel-depth)
+                    var(--flipcel-panel-surface) 42%,
+                    var(--flipcel-panel-depth)
                 );
-                --inkwell-timeline-active-row-bg: color-mix(
+                --flipcel-timeline-active-row-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 30%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 30%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-playhead-bg: color-mix(
+                --flipcel-timeline-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-playhead) 24%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-playhead) 24%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-active-playhead-bg: color-mix(
+                --flipcel-timeline-active-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-timeline-active-row-bg) 52%,
-                    var(--inkwell-timeline-playhead-bg)
+                    var(--flipcel-timeline-active-row-bg) 52%,
+                    var(--flipcel-timeline-playhead-bg)
                 );
-                --inkwell-timeline-selection-bg: color-mix(
+                --flipcel-timeline-selection-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 36%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 36%,
+                    var(--flipcel-panel-surface)
                 );
             }
 
             /* Lagoon: deep teal night with sea-glass accents. */
             html[data-theme="lagoon"] {
-                --inkwell-app-bg: #071214;
-                --inkwell-canvas-bg: #0e1c20;
-                --inkwell-panel-surface: #162a30;
-                --inkwell-panel-depth: #040a0c;
-                --inkwell-panel-inset-bg: #122228;
-                --inkwell-panel-border: #6a9aa8;
-                --inkwell-topbar-surface: #162a30;
-                --inkwell-text-primary: #e4f4f2;
-                --inkwell-text-secondary: #a8d0cc;
-                --inkwell-text-muted: #6a9490;
-                --inkwell-accent: #3ecfbf;
-                --inkwell-accent-hover: #5ee0d0;
-                --inkwell-accent-muted: rgba(62, 207, 191, 0.32);
-                --inkwell-track-bg: #243840;
-                --inkwell-toggle-track: #1e3038;
-                --inkwell-toggle-border: #4a7078;
-                --inkwell-toggle-thumb: #e4f4f2;
-                --inkwell-accent-contrast: #071214;
-                --inkwell-positive: #6ed89a;
-                --inkwell-positive-hover: #88e4b0;
-                --inkwell-positive-muted: rgba(110, 216, 154, 0.3);
-                --inkwell-positive-contrast: #071214;
-                --inkwell-negative: #e87878;
-                --inkwell-negative-hover: #f09090;
-                --inkwell-negative-muted: color-mix(in srgb, var(--inkwell-negative) 32%, transparent);
-                --inkwell-negative-contrast: #071214;
-                --inkwell-neutral: #6a9490;
-                --inkwell-neutral-hover: #88b0ac;
-                --inkwell-neutral-muted: rgba(106, 148, 144, 0.3);
-                --inkwell-neutral-contrast: #071214;
-                --inkwell-shadow-panel: 0 24px 56px rgba(0, 20, 24, 0.68);
-                --inkwell-shadow-soft: 0 14px 30px rgba(0, 20, 24, 0.55);
-                --inkwell-dock-shadow: 0 8px 28px rgba(0, 20, 24, 0.6);
-                --inkwell-panel-active-overlay: rgba(62, 207, 191, 0.12);
-                --inkwell-panel-active-negative: rgba(232, 120, 120, 0.4);
-                --inkwell-scrollbar-thumb: rgba(106, 154, 168, 0.32);
-                --inkwell-playhead: #ff8a70;
-                --inkwell-timeline-cell-bg: color-mix(
+                --flipcel-app-bg: #071214;
+                --flipcel-canvas-bg: #0e1c20;
+                --flipcel-panel-surface: #162a30;
+                --flipcel-panel-depth: #040a0c;
+                --flipcel-panel-inset-bg: #122228;
+                --flipcel-panel-border: #6a9aa8;
+                --flipcel-topbar-surface: #162a30;
+                --flipcel-text-primary: #e4f4f2;
+                --flipcel-text-secondary: #a8d0cc;
+                --flipcel-text-muted: #6a9490;
+                --flipcel-accent: #3ecfbf;
+                --flipcel-accent-hover: #5ee0d0;
+                --flipcel-accent-muted: rgba(62, 207, 191, 0.32);
+                --flipcel-track-bg: #243840;
+                --flipcel-toggle-track: #1e3038;
+                --flipcel-toggle-border: #4a7078;
+                --flipcel-toggle-thumb: #e4f4f2;
+                --flipcel-accent-contrast: #071214;
+                --flipcel-positive: #6ed89a;
+                --flipcel-positive-hover: #88e4b0;
+                --flipcel-positive-muted: rgba(110, 216, 154, 0.3);
+                --flipcel-positive-contrast: #071214;
+                --flipcel-negative: #e87878;
+                --flipcel-negative-hover: #f09090;
+                --flipcel-negative-muted: color-mix(in srgb, var(--flipcel-negative) 32%, transparent);
+                --flipcel-negative-contrast: #071214;
+                --flipcel-neutral: #6a9490;
+                --flipcel-neutral-hover: #88b0ac;
+                --flipcel-neutral-muted: rgba(106, 148, 144, 0.3);
+                --flipcel-neutral-contrast: #071214;
+                --flipcel-shadow-panel: 0 24px 56px rgba(0, 20, 24, 0.68);
+                --flipcel-shadow-soft: 0 14px 30px rgba(0, 20, 24, 0.55);
+                --flipcel-dock-shadow: 0 8px 28px rgba(0, 20, 24, 0.6);
+                --flipcel-panel-active-overlay: rgba(62, 207, 191, 0.12);
+                --flipcel-panel-active-negative: rgba(232, 120, 120, 0.4);
+                --flipcel-scrollbar-thumb: rgba(106, 154, 168, 0.32);
+                --flipcel-playhead: #ff8a70;
+                --flipcel-timeline-cell-bg: color-mix(
                     in srgb,
-                    var(--inkwell-panel-surface) 42%,
-                    var(--inkwell-panel-depth)
+                    var(--flipcel-panel-surface) 42%,
+                    var(--flipcel-panel-depth)
                 );
-                --inkwell-timeline-active-row-bg: color-mix(
+                --flipcel-timeline-active-row-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 30%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 30%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-playhead-bg: color-mix(
+                --flipcel-timeline-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-playhead) 24%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-playhead) 24%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-active-playhead-bg: color-mix(
+                --flipcel-timeline-active-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-timeline-active-row-bg) 52%,
-                    var(--inkwell-timeline-playhead-bg)
+                    var(--flipcel-timeline-active-row-bg) 52%,
+                    var(--flipcel-timeline-playhead-bg)
                 );
-                --inkwell-timeline-selection-bg: color-mix(
+                --flipcel-timeline-selection-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 36%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 36%,
+                    var(--flipcel-panel-surface)
                 );
             }
 
             /* Neon: near-black chrome with electric cyan / magenta accents. */
             html[data-theme="neon"] {
-                --inkwell-block-border-width: 2px;
-                --inkwell-app-bg: #05060c;
-                --inkwell-canvas-bg: #0f1320;
-                --inkwell-panel-surface: #222a42;
-                --inkwell-panel-depth: #0a0c14;
-                --inkwell-panel-inset-bg: #1a2034;
-                --inkwell-panel-border: #3dffe0;
-                --inkwell-topbar-surface: #222a42;
-                --inkwell-text-primary: #e8fff9;
-                --inkwell-text-secondary: #9ef5e4;
-                --inkwell-text-muted: #7ab8bc;
-                --inkwell-accent: #39ff9a;
-                --inkwell-accent-hover: #6dffb4;
-                --inkwell-accent-muted: rgba(57, 255, 154, 0.32);
-                --inkwell-track-bg: #28324c;
-                --inkwell-toggle-track: #242e46;
-                --inkwell-toggle-border: #3dffe0;
-                --inkwell-toggle-thumb: #e8fff9;
-                --inkwell-accent-contrast: #05060c;
-                --inkwell-positive: #39ff9a;
-                --inkwell-positive-hover: #6dffb4;
-                --inkwell-positive-muted: rgba(57, 255, 154, 0.32);
-                --inkwell-positive-contrast: #05060c;
-                --inkwell-negative: #ff3d8a;
-                --inkwell-negative-hover: #ff69a8;
-                --inkwell-negative-muted: color-mix(in srgb, var(--inkwell-negative) 32%, transparent);
-                --inkwell-negative-contrast: #05060c;
-                --inkwell-neutral: #7ab8bc;
-                --inkwell-neutral-hover: #9ad0d4;
-                --inkwell-neutral-muted: rgba(122, 184, 188, 0.32);
-                --inkwell-neutral-contrast: #05060c;
-                --inkwell-shadow-panel: 0 22px 52px rgba(0, 0, 0, 0.62), 0 0 28px rgba(0, 255, 200, 0.18);
-                --inkwell-shadow-soft: 0 12px 28px rgba(0, 0, 0, 0.55);
-                --inkwell-dock-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 18px rgba(0, 255, 200, 0.16);
-                --inkwell-panel-active-overlay: rgba(57, 255, 154, 0.12);
-                --inkwell-panel-active-negative: rgba(255, 61, 138, 0.45);
-                --inkwell-scrollbar-thumb: rgba(61, 255, 224, 0.35);
-                --inkwell-playhead: #ff3d8a;
-                --inkwell-timeline-cell-bg: color-mix(
+                --flipcel-block-border-width: 2px;
+                --flipcel-app-bg: #05060c;
+                --flipcel-canvas-bg: #0f1320;
+                --flipcel-panel-surface: #222a42;
+                --flipcel-panel-depth: #0a0c14;
+                --flipcel-panel-inset-bg: #1a2034;
+                --flipcel-panel-border: #3dffe0;
+                --flipcel-topbar-surface: #222a42;
+                --flipcel-text-primary: #e8fff9;
+                --flipcel-text-secondary: #9ef5e4;
+                --flipcel-text-muted: #7ab8bc;
+                --flipcel-accent: #39ff9a;
+                --flipcel-accent-hover: #6dffb4;
+                --flipcel-accent-muted: rgba(57, 255, 154, 0.32);
+                --flipcel-track-bg: #28324c;
+                --flipcel-toggle-track: #242e46;
+                --flipcel-toggle-border: #3dffe0;
+                --flipcel-toggle-thumb: #e8fff9;
+                --flipcel-accent-contrast: #05060c;
+                --flipcel-positive: #39ff9a;
+                --flipcel-positive-hover: #6dffb4;
+                --flipcel-positive-muted: rgba(57, 255, 154, 0.32);
+                --flipcel-positive-contrast: #05060c;
+                --flipcel-negative: #ff3d8a;
+                --flipcel-negative-hover: #ff69a8;
+                --flipcel-negative-muted: color-mix(in srgb, var(--flipcel-negative) 32%, transparent);
+                --flipcel-negative-contrast: #05060c;
+                --flipcel-neutral: #7ab8bc;
+                --flipcel-neutral-hover: #9ad0d4;
+                --flipcel-neutral-muted: rgba(122, 184, 188, 0.32);
+                --flipcel-neutral-contrast: #05060c;
+                --flipcel-shadow-panel: 0 22px 52px rgba(0, 0, 0, 0.62), 0 0 28px rgba(0, 255, 200, 0.18);
+                --flipcel-shadow-soft: 0 12px 28px rgba(0, 0, 0, 0.55);
+                --flipcel-dock-shadow: 0 8px 28px rgba(0, 0, 0, 0.55), 0 0 18px rgba(0, 255, 200, 0.16);
+                --flipcel-panel-active-overlay: rgba(57, 255, 154, 0.12);
+                --flipcel-panel-active-negative: rgba(255, 61, 138, 0.45);
+                --flipcel-scrollbar-thumb: rgba(61, 255, 224, 0.35);
+                --flipcel-playhead: #ff3d8a;
+                --flipcel-timeline-cell-bg: color-mix(
                     in srgb,
-                    var(--inkwell-panel-surface) 42%,
-                    var(--inkwell-panel-depth)
+                    var(--flipcel-panel-surface) 42%,
+                    var(--flipcel-panel-depth)
                 );
-                --inkwell-timeline-active-row-bg: color-mix(
+                --flipcel-timeline-active-row-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 28%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 28%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-playhead-bg: color-mix(
+                --flipcel-timeline-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-playhead) 24%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-playhead) 24%,
+                    var(--flipcel-panel-surface)
                 );
-                --inkwell-timeline-active-playhead-bg: color-mix(
+                --flipcel-timeline-active-playhead-bg: color-mix(
                     in srgb,
-                    var(--inkwell-timeline-active-row-bg) 52%,
-                    var(--inkwell-timeline-playhead-bg)
+                    var(--flipcel-timeline-active-row-bg) 52%,
+                    var(--flipcel-timeline-playhead-bg)
                 );
-                --inkwell-timeline-selection-bg: color-mix(
+                --flipcel-timeline-selection-bg: color-mix(
                     in srgb,
-                    var(--inkwell-accent) 36%,
-                    var(--inkwell-panel-surface)
+                    var(--flipcel-accent) 36%,
+                    var(--flipcel-panel-surface)
                 );
             }
 
@@ -553,7 +557,7 @@
             }
 
             /* Native scrollbars are hidden app-wide; scrolling surfaces use
-               the custom <inkwell-scrollbar> component instead. */
+               the custom <flipcel-scrollbar> component instead. */
             * {
                 scrollbar-width: none;
             }
@@ -568,13 +572,13 @@
                 height: 100%;
                 overflow: hidden;
                 overscroll-behavior: none;
-                background: var(--inkwell-app-bg);
+                background: var(--flipcel-app-bg);
                 touch-action: none;
                 -webkit-touch-callout: none;
                 -webkit-user-select: none;
                 user-select: none;
-                font-family: var(--inkwell-font);
-                color: var(--inkwell-text-primary);
+                font-family: var(--flipcel-font);
+                color: var(--flipcel-text-primary);
                 transition: background-color 180ms ease, color 180ms ease;
             }
 
@@ -583,7 +587,7 @@
                 width: 100%;
                 height: 100%;
                 touch-action: none;
-                background: var(--inkwell-canvas-bg);
+                background: var(--flipcel-canvas-bg);
                 transition: background-color 180ms ease;
             }
 
@@ -622,7 +626,7 @@
             }
 
         </style>
-      <script type="module" crossorigin src="/inkwell/assets/index-L2C0ImKr.js"></script>
+      <script type="module" crossorigin src="/FlipCel/assets/index-DQeqeIhw.js"></script>
     </head>
     <body>
         <div id="canvas-container">
@@ -633,22 +637,22 @@
             <canvas id="chrome-canvas"></canvas>
         </div>
         <!-- Floating UI Panels (draggable + resizable, positions in %) -->
-        <inkwell-color-panel id="color-panel" draggable resizable style="--panel-top: 2%; --panel-right: 1%; display: none;"></inkwell-color-panel>
-        <inkwell-color-popup id="color-popup" style="display: none;"></inkwell-color-popup>
-        <inkwell-top-bar-panel id="top-bar"></inkwell-top-bar-panel>
-        <inkwell-shortcuts-panel id="shortcuts-panel"></inkwell-shortcuts-panel>
-        <inkwell-tools-panel id="tools-panel" draggable style="--panel-top: 28%; --panel-right: 1%;"></inkwell-tools-panel>
-        <inkwell-tool-settings-panel id="tool-settings-panel" draggable resizable style="--panel-top: 28%; --panel-left: 8%; display: none;"></inkwell-tool-settings-panel>
-        <inkwell-universal-panel id="universal-panel" draggable resizable style="--panel-top: 50%; --panel-left: 1%; display: none;"></inkwell-universal-panel>
-        <inkwell-history-panel id="history-panel" draggable resizable style="--panel-top: 18%; --panel-right: 1%; display: none;"></inkwell-history-panel>
-        <inkwell-view-panel id="view-panel" draggable resizable style="--panel-top: 12%; --panel-right: 1%; display: none;"></inkwell-view-panel>
-        <inkwell-layers-panel id="layers-panel" draggable resizable style="--panel-bottom: 2%; --panel-left: 1%; display: none;"></inkwell-layers-panel>
-        <inkwell-wheel-panel id="wheel-panel" draggable style="--panel-top: calc(75% - 120px); --panel-left: 1%;"></inkwell-wheel-panel>
-        <inkwell-functions-panel id="functions-panel"></inkwell-functions-panel>
-        <inkwell-magic-move-popup id="magic-move-popup"></inkwell-magic-move-popup>
-        <inkwell-magic-morph-popup id="magic-morph-popup"></inkwell-magic-morph-popup>
-        <inkwell-auto-morph-popup id="auto-morph-popup" style="display: none;"></inkwell-auto-morph-popup>
-        <inkwell-startup-panel id="startup-panel" draggable style="display: none;"></inkwell-startup-panel>
+        <flipcel-color-panel id="color-panel" draggable resizable style="--panel-top: 2%; --panel-right: 1%; display: none;"></flipcel-color-panel>
+        <flipcel-color-popup id="color-popup" style="display: none;"></flipcel-color-popup>
+        <flipcel-top-bar-panel id="top-bar"></flipcel-top-bar-panel>
+        <flipcel-shortcuts-panel id="shortcuts-panel"></flipcel-shortcuts-panel>
+        <flipcel-tools-panel id="tools-panel" draggable style="--panel-top: 28%; --panel-right: 1%;"></flipcel-tools-panel>
+        <flipcel-tool-settings-panel id="tool-settings-panel" draggable resizable style="--panel-top: 28%; --panel-left: 8%; display: none;"></flipcel-tool-settings-panel>
+        <flipcel-universal-panel id="universal-panel" draggable resizable style="--panel-top: 50%; --panel-left: 1%; display: none;"></flipcel-universal-panel>
+        <flipcel-history-panel id="history-panel" draggable resizable style="--panel-top: 18%; --panel-right: 1%; display: none;"></flipcel-history-panel>
+        <flipcel-view-panel id="view-panel" draggable resizable style="--panel-top: 12%; --panel-right: 1%; display: none;"></flipcel-view-panel>
+        <flipcel-layers-panel id="layers-panel" draggable resizable style="--panel-bottom: 2%; --panel-left: 1%; display: none;"></flipcel-layers-panel>
+        <flipcel-wheel-panel id="wheel-panel" draggable style="--panel-top: calc(75% - 120px); --panel-left: 1%;"></flipcel-wheel-panel>
+        <flipcel-functions-panel id="functions-panel"></flipcel-functions-panel>
+        <flipcel-magic-move-popup id="magic-move-popup"></flipcel-magic-move-popup>
+        <flipcel-magic-morph-popup id="magic-morph-popup"></flipcel-magic-morph-popup>
+        <flipcel-auto-morph-popup id="auto-morph-popup" style="display: none;"></flipcel-auto-morph-popup>
+        <flipcel-startup-panel id="startup-panel" draggable style="display: none;"></flipcel-startup-panel>
 
     </body>
 </html>
