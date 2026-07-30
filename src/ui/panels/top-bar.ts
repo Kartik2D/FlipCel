@@ -81,6 +81,10 @@ export class InkwellTopBarPanel extends FloatingPanel {
     return false;
   }
 
+  protected override playsShowAnimation(): boolean {
+    return false;
+  }
+
   static styles = css`
     ${FloatingPanel.styles}
 
@@ -408,6 +412,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
       el.style.right = "auto";
       el.style.bottom = "auto";
     }
+    el.playShowAnimation();
 
     this.clearDockBtnGestureListeners();
     this.dockBtnGesture = null;
@@ -441,6 +446,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
       anchorPanelBelowTrigger(el, triggerEl);
     }
     raisePanelZIndex(el);
+    el.playShowAnimation();
     this.panelVisibility = this.panelVisibility.map((p) =>
       p.id === id ? { ...p, visible: true, detached: false } : p,
     );

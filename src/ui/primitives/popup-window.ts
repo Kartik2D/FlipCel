@@ -164,5 +164,6 @@ export class PopupWindow extends FloatingPanel {
     anchorPanelBelowTrigger(this, anchor);
     raisePanelZIndex(this);
     this.startAnchorWatch(anchor);
+    this.playShowAnimation();
   }
 }

@@ -128,6 +128,7 @@ export class InkwellStartupPanel extends FloatingPanel {
     const height = this.offsetHeight || 140;
     this.style.left = `${Math.max(8, (window.innerWidth - width) / 2)}px`;
     this.style.top = `${Math.max(8, (window.innerHeight - height) / 2)}px`;
+    this.playShowAnimation();
   }
 
   private dismiss() {

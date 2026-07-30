@@ -75,6 +75,7 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
     this.style.right = "auto";
     this.style.bottom = "auto";
     raisePanelZIndex(this);
+    this.playShowAnimation();
   }
 
   private renderPixelRes() {

@@ -2,6 +2,10 @@ import { html, css, nothing, type PropertyValues, type TemplateResult } from "li
 import { property } from "lit/decorators.js";
 import { Block } from "./block";
 import { phosphorIcon } from "../icons/phosphor";
+import {
+  INKWELL_MOTION_OVERSHOOT_MS,
+  INKWELL_PANEL_SHOW_KEYFRAMES,
+} from "../motion";
 
 // ============================================================
 // Floating Panel Base Class
@@ -75,6 +79,24 @@ export class FloatingPanel extends Block {
     /* Grabbed + over dock: shrink with quad in-out to show it can re-dock / minimize. */
     :host([dragging][dock-hover]) .block {
       transform: scale(var(--inkwell-panel-dock-hover-scale, 0.88));
+    }
+
+    /* Shown from dock / reveal — overshoot pop-in on the shell. */
+    :host([showing]) .block {
+      transition: none;
+      animation: inkwell-panel-show var(--inkwell-motion-overshoot-duration, 420ms)
+        var(--inkwell-motion-overshoot-easing, cubic-bezier(0.22, 1.7, 0.36, 1)) both;
+    }
+
+    @keyframes inkwell-panel-show {
+      0% {
+        transform: scale(0.88);
+        opacity: 0;
+      }
+      100% {
+        transform: scale(1);
+        opacity: 1;
+      }
     }
 
     .face {
@@ -560,6 +582,7 @@ export class FloatingPanel extends Block {
       // Pulling away from the dock — hide the dock toggle until closed or re-docked.
       this.pinned = true;
       this.dispatchPanelDockState({ visible: true, detached: true });
+      this.playShowAnimation();
       return;
     }
 
@@ -633,6 +656,7 @@ export class FloatingPanel extends Block {
   }
 
   hidePanel() {
+    this.clearShowAnimation();
     this.pinned = false;
     // Keep blockWidth/blockHeight so a resized panel restores its size on reopen.
     this.style.display = "none";
@@ -643,6 +667,53 @@ export class FloatingPanel extends Block {
         composed: true,
       }),
     );
+  }
+
+  private showAnimationClearTimeout: ReturnType<typeof setTimeout> | null = null;
+  private showAnimationTarget: HTMLElement | null = null;
+
+  private onShowAnimationEnd = (e: AnimationEvent) => {
+    if (e.animationName !== INKWELL_PANEL_SHOW_KEYFRAMES) return;
+    this.clearShowAnimation();
+  };
+
+  private clearShowAnimation() {
+    if (this.showAnimationClearTimeout !== null) {
+      clearTimeout(this.showAnimationClearTimeout);
+      this.showAnimationClearTimeout = null;
+    }
+    this.showAnimationTarget?.removeEventListener("animationend", this.onShowAnimationEnd);
+    this.showAnimationTarget = null;
+    this.removeAttribute("showing");
+  }
+
+  /**
+   * Play the overshoot entrance on a newly visible panel.
+   * Call after setting `display` (and any anchoring) so the first paint can animate.
+   */
+  playShowAnimation() {
+    if (!this.playsShowAnimation()) return;
+    if (this.style.display === "none") return;
+
+    this.clearShowAnimation();
+    // Force restart if shown again quickly.
+    void this.offsetWidth;
+    this.setAttribute("showing", "");
+
+    const block = this.renderRoot.querySelector<HTMLElement>(".block");
+    if (block) {
+      this.showAnimationTarget = block;
+      block.addEventListener("animationend", this.onShowAnimationEnd);
+    }
+    this.showAnimationClearTimeout = setTimeout(() => {
+      this.showAnimationClearTimeout = null;
+      this.clearShowAnimation();
+    }, INKWELL_MOTION_OVERSHOOT_MS + 80);
+  }
+
+  /** Docks / always-on chrome can opt out. */
+  protected playsShowAnimation(): boolean {
+    return true;
   }
 
   protected override getFaceScrollbarMount(): HTMLElement | null {

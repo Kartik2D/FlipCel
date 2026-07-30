@@ -29,6 +29,10 @@ export class InkwellShortcutsPanel extends FloatingPanel {
     return false;
   }
 
+  protected override playsShowAnimation(): boolean {
+    return false;
+  }
+
   static styles = css`
     ${FloatingPanel.styles}
     ${dockChipStyles}

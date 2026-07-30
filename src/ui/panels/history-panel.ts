@@ -131,7 +131,10 @@ export class InkwellHistoryPanel extends FloatingPanel {
     raisePanelZIndex(this);
 
     // Keep a prior placement (including after the user dragged the window).
-    if (this.style.left) return;
+    if (this.style.left) {
+      this.playShowAnimation();
+      return;
+    }
 
     this.style.right = "auto";
     this.style.bottom = "auto";
@@ -154,11 +157,13 @@ export class InkwellHistoryPanel extends FloatingPanel {
       }
       this.style.left = `${Math.max(margin, left)}px`;
       this.style.top = `${Math.max(margin, top)}px`;
+      this.playShowAnimation();
       return;
     }
 
     this.style.left = `${Math.max(margin, window.innerWidth - width - 24)}px`;
     this.style.top = `${Math.max(margin, 72)}px`;
+    this.playShowAnimation();
   }
 
   private emitGoTo(index: number) {

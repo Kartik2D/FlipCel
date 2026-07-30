@@ -58,6 +58,10 @@ export const INKWELL_PANEL_SNAP_BACK_KEYFRAMES = "inkwell-panel-snap-back";
 /** Full `animation` shorthand; host sets `--inkwell-snap-x` / `--inkwell-snap-y` before applying. */
 export const INKWELL_PANEL_SNAP_ANIMATION = `${INKWELL_PANEL_SNAP_BACK_KEYFRAMES} var(${INKWELL_CSS_VAR_OVERSHOOT_DURATION}) var(${INKWELL_CSS_VAR_OVERSHOOT_EASING}) both`;
 
+/** Entrance pop when a panel is shown (overshoot scale). */
+export const INKWELL_PANEL_SHOW_KEYFRAMES = "inkwell-panel-show";
+export const INKWELL_PANEL_SHOW_ANIMATION = `${INKWELL_PANEL_SHOW_KEYFRAMES} var(${INKWELL_CSS_VAR_OVERSHOOT_DURATION}) var(${INKWELL_CSS_VAR_OVERSHOOT_EASING}) both`;
+
 /**
  * Center-origin grow/shrink via scaleX FLIP.
  *

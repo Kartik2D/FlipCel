@@ -82,6 +82,7 @@ export class InkwellAutoMorphPopup extends PopupWindow {
     );
     anchorPanelBelowTrigger(this, anchor);
     raisePanelZIndex(this);
+    this.playShowAnimation();
   }
 
   private apply() {
