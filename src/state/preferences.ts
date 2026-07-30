@@ -82,7 +82,7 @@ export function normalizeViewOverlaySettings(
 
 export const viewOverlayStore = new Store<ViewOverlaySettings>(
   normalizeViewOverlaySettings({
-    gridEnabled: true,
+    gridEnabled: false,
     onionSkinOutline: false,
     onionSkinLayers: "active",
     gridSpacing: 100,

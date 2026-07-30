@@ -1190,7 +1190,9 @@ class App {
 
   private pickColorAt(point: Point) {
     const viewportPoint = pixelToViewport(point, this.config);
-    const item = this.paperRenderer.hitTest(viewportPoint);
+    const scope =
+      toolSettingsStore.get().eyedropper.scope === "active" ? "active" : "all";
+    const item = this.paperRenderer.hitTestSelectable(viewportPoint, scope);
     if (!item) return;
 
     let sample: paper.Color | null = null;

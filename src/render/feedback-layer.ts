@@ -20,7 +20,7 @@ export class FeedbackLayer {
   private currentCursor: Point | null = null;
   private brushSizeIndicatorEnabled = true;
   private activeTool: ToolId = "brush";
-  private gridEnabled = true;
+  private gridEnabled = false;
   private gridSpacing = 100;
   private gridMajorEvery = 5;
   private gridMinorOpacity = 0.06;

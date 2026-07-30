@@ -1,6 +1,13 @@
 import type { ToolDefinition, SettingsSchema } from "./types";
 
-const eyedropperSettings = {} as const satisfies SettingsSchema;
+const eyedropperSettings = {
+  scope: {
+    type: "toggle",
+    options: ["active", "all"] as const,
+    default: "all",
+    label: "Layers",
+  },
+} as const satisfies SettingsSchema;
 
 export const eyedropper: ToolDefinition<typeof eyedropperSettings> = {
   id: "eyedropper",

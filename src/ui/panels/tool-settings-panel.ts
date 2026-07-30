@@ -216,9 +216,6 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
       if (currentToolId === "pan") {
         return html`<p class="hint">Drag to pan, scroll to zoom.</p>`;
       }
-      if (currentToolId === "eyedropper") {
-        return html`<p class="hint">Click artwork to pick its color.</p>`;
-      }
       if (currentToolId === "direct-select") {
         return html`<p class="hint">Drag a rectangle or lasso to select vertices on the active layer.</p>`;
       }
@@ -229,6 +226,9 @@ export class InkwellToolSettingsPanel extends FloatingPanel {
       ${schemaKeys.map((key) =>
         this.renderSetting(currentToolId, key, schema[key], toolSettings[key]),
       )}
+      ${currentToolId === "eyedropper"
+        ? html`<p class="hint">Click artwork to pick its color. “All” samples unlocked visible layers.</p>`
+        : ""}
       ${currentToolId === "select"
         ? html`<p class="hint">Drag a rectangle or freeform lasso to extract a selection. “All” selects across unlocked visible layers.</p>`
         : ""}

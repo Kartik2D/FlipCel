@@ -331,6 +331,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   private onDockBtnPointerDown(id: string, e: PointerEvent) {
     if (e.button !== 0) return;
+    // New gesture — drop any stale suppress from a prior drag-out whose
+    // click never fired (button was removed from the dock mid-gesture).
+    this.suppressDockBtnClick = false;
     this.clearDockBtnGestureListeners();
     this.dockBtnGesture = {
       id,
@@ -452,6 +455,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
     // Dropped back on the dock: restore the toggle and minimize the panel.
     if (prev.detached && detached === false && visible) {
+      this.suppressDockBtnClick = false;
       const apply = () => {
         this.panelVisibility = this.panelVisibility.map((panel) =>
           panel.id === id ? { ...panel, visible: false, detached: false } : panel,
