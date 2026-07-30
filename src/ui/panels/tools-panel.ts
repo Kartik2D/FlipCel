@@ -65,7 +65,7 @@ export class InkwellToolsPanel extends FloatingPanel {
       min-height: var(--tools-header-h);
       padding: 0;
       margin: 0;
-      background: var(--inkwell-panel-face-bg, var(--block-face-bg));
+      background: var(--block-face-bg);
       border-radius: calc(var(--block-radius) - var(--block-border-width, 0px))
         calc(var(--block-radius) - var(--block-border-width, 0px)) 0 0;
       cursor: grab;

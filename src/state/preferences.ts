@@ -99,8 +99,7 @@ export type ThemeMode =
   | "notebook"
   | "velvet"
   | "lagoon"
-  | "neon"
-  | "glass";
+  | "neon";
 
 export const THEME_STORAGE_KEY = "inkwell.theme";
 
@@ -112,7 +111,6 @@ export const THEME_OPTIONS: readonly ThemeMode[] = [
   "velvet",
   "lagoon",
   "neon",
-  "glass",
 ];
 
 /** Compact palette used by the settings theme preview glyph. */
@@ -209,17 +207,6 @@ export const THEMES: Record<ThemeMode, ThemeInfo> = {
       accent: "#39ff9a",
     },
   },
-  glass: {
-    id: "glass",
-    label: "Glass",
-    colorScheme: "dark",
-    preview: {
-      app: "#121212",
-      panel: "rgba(56, 56, 56, 0.72)",
-      border: "rgba(255, 255, 255, 0.28)",
-      accent: "#7c9eff",
-    },
-  },
 };
 
 /** Map retired theme ids onto the current set. */
@@ -237,6 +224,7 @@ const THEME_MIGRATIONS: Record<string, ThemeMode> = {
   ink: "lagoon",
   ember: "velvet",
   neumorphic: "slab",
+  glass: "slab",
 };
 
 export function isThemeMode(value: unknown): value is ThemeMode {

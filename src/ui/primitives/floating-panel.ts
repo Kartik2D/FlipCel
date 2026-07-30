@@ -149,7 +149,7 @@ export class FloatingPanel extends Block {
       box-sizing: border-box;
       margin: 0;
       padding: 0 6px;
-      background: var(--inkwell-panel-face-bg, var(--block-face-bg));
+      background: var(--block-face-bg);
       border-radius: 0 0 calc(var(--block-radius) - var(--block-border-width, 0px))
         calc(var(--block-radius) - var(--block-border-width, 0px));
     }
@@ -289,7 +289,7 @@ export class FloatingPanel extends Block {
         var(--panel-header-control-size) + (2 * var(--inkwell-block-face-padding, 12px))
       );
       padding: var(--inkwell-block-face-padding, 12px);
-      background: var(--inkwell-panel-face-bg, var(--block-face-bg));
+      background: var(--block-face-bg);
       border-radius: calc(var(--block-radius) - var(--block-border-width, 2px))
         calc(var(--block-radius) - var(--block-border-width, 2px)) 0 0;
     }

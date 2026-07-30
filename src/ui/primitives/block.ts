@@ -122,8 +122,6 @@ export class Block extends LitElement {
       padding: 0;
       height: 100%;
       box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
-      backdrop-filter: var(--inkwell-panel-backdrop-filter, none);
-      -webkit-backdrop-filter: var(--inkwell-panel-backdrop-filter, none);
       position: relative;
       overflow: hidden;
     }
@@ -131,7 +129,7 @@ export class Block extends LitElement {
     .face {
       position: relative;
       box-sizing: border-box;
-      background: var(--inkwell-panel-face-bg, var(--block-face-bg));
+      background: var(--block-face-bg);
       border-radius: calc(var(--block-radius) - var(--block-border-width));
       padding: var(--block-face-padding);
       height: 100%;
