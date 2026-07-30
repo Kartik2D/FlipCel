@@ -620,6 +620,11 @@ export class Block extends LitElement {
     // Subclasses can react when a drag operation commits a new position.
   }
 
+  /** Last pointer client coords while dragging (useful for drop hit-tests). */
+  protected get dragClient(): { x: number; y: number } {
+    return this._dragLastClient;
+  }
+
   /** Called each pointermove while a drag is active (after position is applied). */
   protected onDragMove() {
     // Subclasses can react to live drag position (e.g. dock-hover preview).

@@ -693,25 +693,20 @@ export class FloatingPanel extends Block {
     );
   }
 
-  /** Hit-test against the top dock (with a little slack below) for re-dock drops. */
+  /** Hit-test the drag pointer against the top dock bounds for re-dock drops. */
   protected isOverTopDock(): boolean {
     const dock = document.querySelector<HTMLElement>("flipcel-top-bar-panel");
     if (!dock || dock.style.display === "none") return false;
 
     const dockRect = dock.getBoundingClientRect();
-    const panelRect = this.getBoundingClientRect();
-    const padX = 32;
-    const padBottom = 56;
-    const zoneLeft = dockRect.left - padX;
-    const zoneRight = dockRect.right + padX;
-    const zoneTop = 0;
-    const zoneBottom = dockRect.bottom + padBottom;
-
-    return !(
-      panelRect.right < zoneLeft ||
-      panelRect.left > zoneRight ||
-      panelRect.bottom < zoneTop ||
-      panelRect.top > zoneBottom
+    // Small slack so the drop feels forgiving without growing into a large zone.
+    const pad = 8;
+    const { x, y } = this.dragClient;
+    return (
+      x >= dockRect.left - pad &&
+      x <= dockRect.right + pad &&
+      y >= dockRect.top - pad &&
+      y <= dockRect.bottom + pad
     );
   }
 
