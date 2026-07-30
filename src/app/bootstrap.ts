@@ -54,6 +54,7 @@ import type {
   FlipCelToolSettingsPanel,
   FlipCelUniversalPanel,
   FlipCelHistoryPanel,
+  FlipCelKeyboardShortcutsPanel,
   FlipCelStartupPanel,
   FlipCelViewPanel,
   FlipCelShortcutsPanel,
@@ -138,6 +139,7 @@ class App {
   private toolSettingsPanel: FlipCelToolSettingsPanel;
   private universalPanel: FlipCelUniversalPanel;
   private historyPanel: FlipCelHistoryPanel;
+  private keyboardShortcutsPanel: FlipCelKeyboardShortcutsPanel;
   private startupPanel: FlipCelStartupPanel;
   private viewPanel: FlipCelViewPanel;
   private shortcutsPanel: FlipCelShortcutsPanel;
@@ -298,6 +300,9 @@ class App {
     ) as FlipCelToolSettingsPanel;
     this.universalPanel = document.getElementById("universal-panel") as FlipCelUniversalPanel;
     this.historyPanel = document.getElementById("history-panel") as FlipCelHistoryPanel;
+    this.keyboardShortcutsPanel = document.getElementById(
+      "keyboard-shortcuts-panel",
+    ) as FlipCelKeyboardShortcutsPanel;
     this.startupPanel = document.getElementById("startup-panel") as FlipCelStartupPanel;
     this.viewPanel = document.getElementById("view-panel") as FlipCelViewPanel;
     this.shortcutsPanel = document.getElementById("shortcuts-panel") as FlipCelShortcutsPanel;
@@ -445,7 +450,9 @@ class App {
   }
 
   private subscribeToInputEvents() {
-    bus.on(Events.TOOL_START, (d: { point: Point; tool: ToolId }) => this.onToolStart(d.point, d.tool));
+    bus.on(Events.TOOL_START, (d: { point: Point; tool: ToolId; fromTouchHold?: boolean }) =>
+      this.onToolStart(d.point, d.tool, d.fromTouchHold),
+    );
     bus.on(Events.TOOL_MOVE, (d: { point: Point; tool: ToolId }) => this.onToolMove(d.point, d.tool));
     bus.on(Events.TOOL_END, (tool: ToolId) => this.onToolEnd(tool));
     bus.on(Events.TOOL_CANCEL, (tool: ToolId) => this.onToolCancel(tool));
@@ -465,6 +472,7 @@ class App {
     bus.on(Events.MODIFIERS_CHANGE, (m: Modifiers) => this.onModifiersChange(m));
     bus.on(Events.UNDO, () => this.onUndo());
     bus.on(Events.REDO, () => this.onRedo());
+    bus.on(Events.PLAY_TOGGLE, () => this.onPlayToggle());
   }
 
   private setupPanelEvents() {
@@ -475,6 +483,7 @@ class App {
       toolSettingsPanel: this.toolSettingsPanel,
       universalPanel: this.universalPanel,
       historyPanel: this.historyPanel,
+      keyboardShortcutsPanel: this.keyboardShortcutsPanel,
       viewPanel: this.viewPanel,
       shortcutsPanel: this.shortcutsPanel,
       layersPanel: this.layersPanel,
@@ -498,6 +507,7 @@ class App {
       onRedo: () => this.onRedo(),
       onHistoryGoTo: (index) => this.onHistoryGoTo(index),
       onHistoryWindowToggle: (visible) => this.onHistoryWindowToggle(visible),
+      onKeyboardShortcutsToggle: (visible) => this.onKeyboardShortcutsToggle(visible),
       setBrushSizeIndicatorEnabled: (enabled) => {
         this.feedbackLayer.setBrushSizeIndicatorEnabled(enabled);
       },
@@ -533,6 +543,8 @@ class App {
       },
       onFramesDuplicateDragStart: (layerIds, layerId, start, end) =>
         this.onFramesDuplicateDragStart(layerIds, layerId, start, end),
+      onFramesMoveDragStart: (layerIds, layerId, start, end) =>
+        this.onFramesMoveDragStart(layerIds, layerId, start, end),
       onFramesDuplicateDragEnd: (layerIds, layerId, start, end, delta) =>
         this.onFramesDuplicateDragEnd(layerIds, layerId, start, end, delta),
       onFramesReverse: (layerIds, layerId, start, end) =>
@@ -933,8 +945,8 @@ class App {
   // Tool Action Handlers (from UnifiedInputManager)
   // ============================================================
 
-  private onToolStart(point: Point, tool: ToolId) {
-    this.toolSession.onToolStart(point, tool);
+  private onToolStart(point: Point, tool: ToolId, fromTouchHold?: boolean) {
+    this.toolSession.onToolStart(point, tool, { fromTouchHold });
   }
 
   private onToolMove(point: Point, tool: ToolId) {
@@ -1343,6 +1355,17 @@ class App {
     }
   }
 
+  private onKeyboardShortcutsToggle(visible: boolean) {
+    this.universalPanel.keyboardShortcutsVisible = visible;
+    if (visible) {
+      void this.keyboardShortcutsPanel.show(this.universalPanel);
+      return;
+    }
+    if (this.keyboardShortcutsPanel.style.display !== "none") {
+      this.keyboardShortcutsPanel.hidePanel();
+    }
+  }
+
   // ============================================================
   // Layer Handlers
   // ============================================================
@@ -1712,6 +1735,15 @@ class App {
     end: number,
   ) {
     this.timelineSession.onFramesDuplicateDragStart(layerIds, layerId, start, end);
+  }
+
+  private onFramesMoveDragStart(
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+  ) {
+    this.timelineSession.onFramesMoveDragStart(layerIds, layerId, start, end);
   }
 
   private onFramesDuplicateDragEnd(

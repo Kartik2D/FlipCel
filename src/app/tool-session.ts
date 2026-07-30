@@ -31,6 +31,7 @@ import {
   hitTestSymmetryHandle,
   setSymmetryGestureSource,
 } from "../geometry/symmetry";
+import { isPaintModeModifierHeld } from "../input/shortcuts";
 
 export interface ToolSessionDeps {
   getConfig: () => CanvasConfig;
@@ -66,7 +67,11 @@ export class ToolSession {
     this.deps = deps;
   }
 
-  onToolStart(point: Point, tool: ToolId): void {
+  onToolStart(
+    point: Point,
+    tool: ToolId,
+    options?: { fromTouchHold?: boolean },
+  ): void {
     if (tool === "pan") return;
 
     const { deps } = this;
@@ -120,7 +125,9 @@ export class ToolSession {
 
     if (tool === "select") {
       deps.setSelectionGestureActive(true);
-      deps.selectionController.handleStart(point);
+      deps.selectionController.handleStart(point, {
+        fromTouchHold: options?.fromTouchHold === true,
+      });
       deps.updateFunctionsPanel();
       return;
     }
@@ -392,7 +399,7 @@ export function getEffectiveMode(tool: ToolId): "add" | "subtract" | "inside" {
   const modifiers = modifiersStore.get();
   const toolSettings = settings[tool] as { mode?: string };
   const baseMode = (toolSettings.mode ?? "add") as "add" | "subtract" | "inside";
-  if (!modifiers.shift) return baseMode;
+  if (!isPaintModeModifierHeld(modifiers)) return baseMode;
 
   const modeCycle: Array<"add" | "subtract" | "inside"> = [
     "add",

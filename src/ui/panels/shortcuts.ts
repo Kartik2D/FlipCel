@@ -9,6 +9,11 @@ import {
   StoreController,
 } from "../../state";
 import { timelineStore } from "../../document/document";
+import {
+  getModifierBinding,
+  isModifierHeld,
+  shortcutsStore,
+} from "../../input/shortcuts";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { dockChipStyles, TOP_BAR_SHORTCUT_CHIPS, type DockInfoChip } from "./dock-chrome";
 import type { SettingsSchema } from "../../tools/types";
@@ -32,6 +37,7 @@ export class FlipCelShortcutsPanel extends FloatingPanel {
   private tool = new StoreController(this, toolStore);
   private settings = new StoreController(this, toolSettingsStore);
   private modifiers = new StoreController(this, modifiersStore);
+  private shortcuts = new StoreController(this, shortcutsStore);
   private timeline = new StoreController(this, timelineStore);
   private dockResizeObserver: ResizeObserver | null = null;
   private readonly onViewportChange = () => this.syncCrowding();
@@ -138,7 +144,8 @@ export class FlipCelShortcutsPanel extends FloatingPanel {
     const raw = String(
       (this.settings.value[tool.id] as Record<string, unknown>)?.[key] ?? def.default,
     );
-    return this.modifiers.value.shift
+    const paintMod = getModifierBinding("mod.paintMode", this.shortcuts.value);
+    return isModifierHeld(this.modifiers.value, paintMod)
       ? options[(options.indexOf(raw) + 1) % options.length]
       : raw;
   }

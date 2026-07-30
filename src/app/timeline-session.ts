@@ -376,6 +376,15 @@ export class TimelineSession {
     this.commitLiveEdits();
   }
 
+  onFramesMoveDragStart(
+    _layerIds: string[] | undefined,
+    _layerId: string | undefined,
+    _start: number,
+    _end: number,
+  ): void {
+    this.commitLiveEdits();
+  }
+
   onFramesDuplicateDragEnd(
     layerIds: string[] | undefined,
     layerId: string | undefined,

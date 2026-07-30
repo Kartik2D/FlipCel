@@ -127,14 +127,16 @@ export const timelinePanelStyles = css`
 
   /* Two real columns: a fixed name/controls column and a frames column
      that is the only horizontal scroller. Vertical scrolling happens in
-     .layer-scroll and moves both columns together. The wrap is the
-     positioning context for the guttered vertical scrollbar. */
+     .layer-scroll and moves both columns together. Wheel + one-finger
+     touch pan on the wrap apply both axes; long-press starts selection.
+     The wrap is the positioning context for the guttered vertical scrollbar. */
   .layer-scroll-wrap {
     position: relative;
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
     min-height: 0;
+    touch-action: none;
     --scrollbar-size: 8px;
     --scrollbar-gutter: calc(var(--scrollbar-size) + 8px);
   }
@@ -363,6 +365,24 @@ export const timelinePanelStyles = css`
     box-shadow: inset 0 0 0 2px var(--flipcel-accent, #4a6fb5);
     /* Clicks pass through to cells; tapping inside the range reopens the popup. */
     pointer-events: none;
+    transform-origin: center center;
+  }
+
+  /* Long-press armed: stronger overshoot than panel show. */
+  .frame-selection.hold-pop {
+    animation: frame-selection-hold-pop var(--flipcel-motion-overshoot-duration, 420ms)
+      cubic-bezier(0.18, 2.8, 0.32, 1) both;
+  }
+
+  @keyframes frame-selection-hold-pop {
+    0% {
+      transform: scale(0.55);
+      opacity: 0;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
   }
 
   .frame-selection.moving {

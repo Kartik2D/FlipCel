@@ -48,6 +48,7 @@ export class FloatingPanel extends Block {
       width: var(--panel-width, 280px);
       min-width: var(--panel-min-width, 200px);
       max-width: calc(100vw - 16px);
+      max-height: calc(100vh - 16px);
       box-sizing: border-box;
       display: flex;
       flex-direction: column;
@@ -415,7 +416,8 @@ export class FloatingPanel extends Block {
       justify-self: stretch;
     }
 
-    /* Pairwise button rows: at most two across, then wrap. */
+    /* Pairwise button rows: at most two across, then wrap.
+       Lone buttons stay one column (do not span the full row). */
     .row {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -426,11 +428,6 @@ export class FloatingPanel extends Block {
     }
     .row > * {
       min-width: 0;
-    }
-
-    /* Lone control (e.g. "New File") still spans the full row. */
-    .row > :only-child {
-      grid-column: 1 / -1;
     }
 
     .row > blocky-button {
@@ -743,12 +740,54 @@ export class FloatingPanel extends Block {
   }
 
   /**
+   * Shrink the panel if it exceeds the viewport, and nudge pixel-positioned
+   * hosts back on-screen. Called when panels spawn via {@link playShowAnimation}.
+   */
+  fitToViewport(margin = 8) {
+    if (this.style.display === "none") return;
+
+    const maxW = Math.max(120, window.innerWidth - margin * 2);
+    const maxH = Math.max(120, window.innerHeight - margin * 2);
+    const rect = this.getBoundingClientRect();
+    if (rect.width < 1 && rect.height < 1) return;
+
+    const width = this.blockWidth ?? rect.width;
+    const height = this.blockHeight ?? rect.height;
+
+    if (width > maxW) this.blockWidth = maxW;
+    if (height > maxH) this.blockHeight = maxH;
+
+    const fittedW = Math.min(width, maxW);
+    const fittedH = Math.min(height, maxH);
+
+    // Only adjust explicit pixel placement (dock CSS vars stay alone).
+    if (this.style.left) {
+      const left = parseFloat(this.style.left);
+      if (!Number.isNaN(left)) {
+        const maxLeft = window.innerWidth - fittedW - margin;
+        if (left > maxLeft) this.style.left = `${Math.max(margin, maxLeft)}px`;
+        else if (left < margin) this.style.left = `${margin}px`;
+      }
+    }
+    if (this.style.top) {
+      const top = parseFloat(this.style.top);
+      if (!Number.isNaN(top)) {
+        const maxTop = window.innerHeight - fittedH - margin;
+        if (top > maxTop) this.style.top = `${Math.max(margin, maxTop)}px`;
+        else if (top < margin) this.style.top = `${margin}px`;
+      }
+    }
+  }
+
+  /**
    * Play the overshoot entrance on a newly visible panel.
    * Call after setting `display` (and any anchoring) so the first paint can animate.
    */
   playShowAnimation() {
     if (!this.playsShowAnimation()) return;
     if (this.style.display === "none") return;
+
+    this.fitToViewport();
 
     this.clearShowAnimation();
     // Force restart if shown again quickly.

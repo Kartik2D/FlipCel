@@ -14,13 +14,20 @@
  * - pinching: Two-finger multitouch gesture (zoom/pan/rotate)
  *
  * Modifier key integration:
- * - Shift: Toggle add/subtract mode for brush/lasso
- * - Hotkeys: Defined per-tool in tools.ts
+ * - Paint-mode / wheel-pan modifiers: remappable via shortcutsStore
+ * - Hotkeys: remappable chords from shortcutsStore (defaults from tool registry)
  */
 import type { Point, CanvasConfig, Modifiers, PointerInfo } from "../geometry/types";
-import { type ToolId, getToolByHotkey } from "../tools/registry";
+import { type ToolId } from "../tools/registry";
 import { bus, Events } from "./event-bus";
 import { getDrawingCrosshairCursorCss } from "./drawing-cursor";
+import {
+  eventHasModifier,
+  getModifierBinding,
+  isShortcutsCaptureActive,
+  matchChordAction,
+  parseToolActionId,
+} from "./shortcuts";
 
 export type GestureState = "idle" | "drawing" | "panning" | "pinching";
 
@@ -50,6 +57,27 @@ export class UnifiedInputManager {
   } | null = null;
   private readonly touchDrawCommitDistancePx = 6; // screen pixels
   private readonly touchDrawCommitDelayMs = 70; // grace period for second finger
+
+  /**
+   * Select / direct-select (mouse + touch):
+   * - Hold → tool start with fromTouchHold (pick shape under pointer)
+   * - Quick tap → tap gesture (double-click / double-tap to pick)
+   * - Drag before hold → touch pans; mouse/pen starts marquee/move
+   */
+  private pendingSelectHold: {
+    pointerId: number;
+    pointerType: string;
+    startScreenX: number;
+    startScreenY: number;
+    startClientX: number;
+    startClientY: number;
+    lastClientX: number;
+    lastClientY: number;
+    lastPressure?: number;
+    holdTimer: ReturnType<typeof setTimeout> | null;
+  } | null = null;
+  private readonly selectHoldMs = 400;
+  private readonly selectHoldSlopPx = 8;
 
   // Modifier keys state
   private modifiers: Modifiers = {
@@ -106,6 +134,7 @@ export class UnifiedInputManager {
     }
     this.activePointers.clear();
     this.pendingTouchDraw = null;
+    this.clearPendingSelectHold();
     this.primaryPointerId = null;
     this.lastPressure = null;
     this.lastPinchDistance = null;
@@ -189,6 +218,8 @@ export class UnifiedInputManager {
 
     // Check for multitouch (2+ pointers)
     if (this.activePointers.size >= 2) {
+      this.clearPendingSelectHold();
+      this.cancelPendingTouchDraw();
       if (this.gestureState !== "pinching") {
         this.startPinchGesture();
       }
@@ -210,7 +241,12 @@ export class UnifiedInputManager {
         return;
       }
 
-      // Other tools = drawing/tool action
+      // Select tools: same hold + double-tap path for mouse and touch.
+      if (this.isSelectHoldTool()) {
+        this.startPendingSelectHold(e, screenCoords);
+        return;
+      }
+
       if (e.pointerType === "touch") {
         this.startPendingTouchDraw(e, screenCoords);
         return;
@@ -229,6 +265,16 @@ export class UnifiedInputManager {
       info.x = screenCoords.x;
       info.y = screenCoords.y;
       info.pressure = e.pressure;
+    }
+
+    // Select-tool hold: touch drag pans; mouse drag marquees; timer picks.
+    if (
+      this.gestureState === "idle" &&
+      this.pendingSelectHold &&
+      this.pendingSelectHold.pointerId === e.pointerId
+    ) {
+      this.maybePromotePendingSelectHold(e, screenCoords);
+      if (this.gestureState !== "idle") return;
     }
 
     // If we have a pending touch draw, decide whether to commit it.
@@ -271,6 +317,25 @@ export class UnifiedInputManager {
 
     if (!wasActive) return;
 
+    // Select-tool quick tap (no drag, no long-press): run a tap (for double-click).
+    if (
+      this.pendingSelectHold &&
+      this.pendingSelectHold.pointerId === e.pointerId &&
+      this.gestureState === "idle"
+    ) {
+      const pending = this.pendingSelectHold;
+      this.clearPendingSelectHold();
+      this.startDrawingFromClient(
+        pending.startClientX,
+        pending.startClientY,
+        pending.lastPressure,
+        e.pointerId,
+        { fromTouchHold: false },
+      );
+      this.endDrawing();
+      return;
+    }
+
     // If we were still deferring a touch draw, end it without creating a dot.
     if (
       this.pendingTouchDraw &&
@@ -303,6 +368,13 @@ export class UnifiedInputManager {
 
   private handlePointerCancel = (e: PointerEvent) => {
     this.activePointers.delete(e.pointerId);
+
+    if (
+      this.pendingSelectHold &&
+      this.pendingSelectHold.pointerId === e.pointerId
+    ) {
+      this.clearPendingSelectHold();
+    }
 
     // Reset gesture state if needed
     if (this.gestureState === "pinching" && this.activePointers.size < 2) {
@@ -382,25 +454,31 @@ export class UnifiedInputManager {
   }
 
   private handleHotkey(e: KeyboardEvent) {
-    const key = e.key.toLowerCase();
+    if (isShortcutsCaptureActive()) return;
 
-    // Undo: Cmd+Z (Mac) or Ctrl+Z (Windows/Linux)
-    if (key === "z" && (e.metaKey || e.ctrlKey)) {
+    const action = matchChordAction(e);
+    if (!action) return;
+
+    if (action === "edit.undo") {
       e.preventDefault();
-      if (e.shiftKey) {
-        // Redo: Cmd+Shift+Z or Ctrl+Shift+Z
-        bus.emit(Events.REDO, null);
-      } else {
-        // Undo: Cmd+Z or Ctrl+Z
-        bus.emit(Events.UNDO, null);
-      }
+      bus.emit(Events.UNDO, null);
+      return;
+    }
+    if (action === "edit.redo") {
+      e.preventDefault();
+      bus.emit(Events.REDO, null);
+      return;
+    }
+    if (action === "edit.playToggle") {
+      e.preventDefault();
+      bus.emit(Events.PLAY_TOGGLE, null);
       return;
     }
 
-    // Tool selection hotkeys - use tool registry
-    const tool = getToolByHotkey(key);
-    if (tool && tool.id !== this.currentTool) {
-      this.currentTool = tool.id as ToolId;
+    const toolId = parseToolActionId(action);
+    if (toolId && toolId !== this.currentTool) {
+      e.preventDefault();
+      this.currentTool = toolId;
       this.updateCanvasCursor();
       bus.emit(Events.TOOL_CHANGE, this.currentTool);
     }
@@ -429,8 +507,8 @@ export class UnifiedInputManager {
     // Normalize delta across browsers
     const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
 
-    // Shift+wheel = pan (uses both deltaX and deltaY for 2D scroll wheels)
-    if (e.shiftKey) {
+    // Modifier+wheel = pan (uses both deltaX and deltaY for 2D scroll wheels)
+    if (eventHasModifier(e, getModifierBinding("mod.wheelPan"))) {
       const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
       const dx = e.deltaMode === 1 ? e.deltaX * 16 : e.deltaX;
       bus.emit(Events.CAMERA_PAN, { deltaX: -dx, deltaY: -dy });
@@ -447,16 +525,36 @@ export class UnifiedInputManager {
   // Drawing State Machine
   // ============================================================
 
-  private startDrawing(e: PointerEvent) {
+  private startDrawing(e: PointerEvent, options?: { fromTouchHold?: boolean }) {
+    this.startDrawingFromClient(
+      e.clientX,
+      e.clientY,
+      e.pressure,
+      e.pointerId,
+      options,
+    );
+  }
+
+  private startDrawingFromClient(
+    clientX: number,
+    clientY: number,
+    pressure: number | undefined,
+    pointerId: number,
+    options?: { fromTouchHold?: boolean },
+  ) {
     if (this.gestureState !== "idle") return;
 
     this.gestureState = "drawing";
-    this.primaryPointerId = e.pointerId;
-    this.canvas.setPointerCapture(e.pointerId);
+    this.primaryPointerId = pointerId;
+    this.canvas.setPointerCapture(pointerId);
 
     this.lastPressure = null; // Reset for fresh stroke
-    const point = this.normalizePoint(e.clientX, e.clientY, e.pressure);
-    bus.emit(Events.TOOL_START, { point, tool: this.currentTool });
+    const point = this.normalizePoint(clientX, clientY, pressure);
+    bus.emit(Events.TOOL_START, {
+      point,
+      tool: this.currentTool,
+      fromTouchHold: options?.fromTouchHold === true,
+    });
   }
 
   private updateDrawing(e: PointerEvent) {
@@ -532,6 +630,7 @@ export class UnifiedInputManager {
       this.safeReleasePointerCapture(this.primaryPointerId);
     }
     if (this.pendingTouchDraw) this.cancelPendingTouchDraw();
+    this.clearPendingSelectHold();
 
     this.gestureState = "pinching";
     this.primaryPointerId = null;
@@ -612,6 +711,106 @@ export class UnifiedInputManager {
   // ============================================================
   // Touch draw deferral + cancellation helpers
   // ============================================================
+
+  private isSelectHoldTool(tool: ToolId = this.currentTool): boolean {
+    return tool === "select" || tool === "direct-select";
+  }
+
+  private clearPendingSelectHold() {
+    if (this.pendingSelectHold?.holdTimer != null) {
+      clearTimeout(this.pendingSelectHold.holdTimer);
+    }
+    this.pendingSelectHold = null;
+  }
+
+  private startPendingSelectHold(
+    e: PointerEvent,
+    screenCoords: { x: number; y: number },
+  ) {
+    if (this.gestureState !== "idle") return;
+
+    this.clearPendingSelectHold();
+    this.primaryPointerId = e.pointerId;
+    try {
+      this.canvas.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    const pending = {
+      pointerId: e.pointerId,
+      pointerType: e.pointerType,
+      startScreenX: screenCoords.x,
+      startScreenY: screenCoords.y,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      lastClientX: e.clientX,
+      lastClientY: e.clientY,
+      lastPressure: e.pressure || undefined,
+      holdTimer: null as ReturnType<typeof setTimeout> | null,
+    };
+    pending.holdTimer = setTimeout(() => {
+      if (!this.pendingSelectHold || this.pendingSelectHold !== pending) return;
+      if (this.gestureState !== "idle") return;
+      const p = this.pendingSelectHold;
+      this.clearPendingSelectHold();
+      this.startDrawingFromClient(
+        p.startClientX,
+        p.startClientY,
+        p.lastPressure,
+        p.pointerId,
+        { fromTouchHold: true },
+      );
+      try {
+        navigator.vibrate?.(10);
+      } catch {
+        // ignore
+      }
+    }, this.selectHoldMs);
+    this.pendingSelectHold = pending;
+
+    const point = this.normalizePoint(e.clientX, e.clientY, e.pressure);
+    bus.emit(Events.POINTER_MOVE, point);
+  }
+
+  private maybePromotePendingSelectHold(
+    e: PointerEvent,
+    screenCoords: { x: number; y: number },
+  ) {
+    if (!this.pendingSelectHold) return;
+    if (this.primaryPointerId !== e.pointerId) return;
+
+    this.pendingSelectHold.lastClientX = e.clientX;
+    this.pendingSelectHold.lastClientY = e.clientY;
+    this.pendingSelectHold.lastPressure = e.pressure || undefined;
+
+    const dx = screenCoords.x - this.pendingSelectHold.startScreenX;
+    const dy = screenCoords.y - this.pendingSelectHold.startScreenY;
+    if (Math.sqrt(dx * dx + dy * dy) < this.selectHoldSlopPx) {
+      const point = this.normalizePoint(e.clientX, e.clientY, e.pressure);
+      bus.emit(Events.POINTER_MOVE, point);
+      return;
+    }
+
+    const pending = this.pendingSelectHold;
+    this.clearPendingSelectHold();
+    if (pending.pointerType === "touch") {
+      // Touch drag before long-press: pan the camera.
+      this.startPanning(screenCoords, pending.pointerId);
+      return;
+    }
+
+    // Mouse / pen drag: start marquee/move from the original down point.
+    this.startDrawingFromClient(
+      pending.startClientX,
+      pending.startClientY,
+      pending.lastPressure,
+      pending.pointerId,
+      { fromTouchHold: false },
+    );
+    if (this.gestureState === "drawing") {
+      this.updateDrawing(e);
+    }
+  }
 
   private startPendingTouchDraw(e: PointerEvent, screenCoords: { x: number; y: number }) {
     if (this.gestureState !== "idle") return;

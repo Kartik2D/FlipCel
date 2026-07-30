@@ -12,6 +12,7 @@ import type {
   FlipCelToolSettingsPanel,
   FlipCelUniversalPanel,
   FlipCelHistoryPanel,
+  FlipCelKeyboardShortcutsPanel,
   FlipCelViewPanel,
   FlipCelShortcutsPanel,
   FlipCelLayersPanel,
@@ -38,6 +39,7 @@ export type PanelBridgeDeps = {
   toolSettingsPanel: FlipCelToolSettingsPanel;
   universalPanel: FlipCelUniversalPanel;
   historyPanel: FlipCelHistoryPanel;
+  keyboardShortcutsPanel: FlipCelKeyboardShortcutsPanel;
   viewPanel: FlipCelViewPanel;
   shortcutsPanel: FlipCelShortcutsPanel;
   layersPanel: FlipCelLayersPanel;
@@ -59,6 +61,7 @@ export type PanelBridgeDeps = {
   onRedo: () => void;
   onHistoryGoTo: (index: number) => void;
   onHistoryWindowToggle: (visible: boolean) => void;
+  onKeyboardShortcutsToggle: (visible: boolean) => void;
   setBrushSizeIndicatorEnabled: (enabled: boolean) => void;
   onOnionToggle: () => void;
   onDockZoomReset: () => void;
@@ -110,6 +113,12 @@ export type PanelBridgeDeps = {
     end: number,
     delta: number,
   ) => void;
+  onFramesMoveDragStart: (
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+  ) => void;
   onFramesReverse: (
     layerIds: string[] | undefined,
     layerId: string | undefined,
@@ -150,6 +159,7 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     toolsPanel,
     universalPanel,
     historyPanel,
+    keyboardShortcutsPanel,
     viewPanel,
     shortcutsPanel,
     layersPanel,
@@ -207,12 +217,19 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
   universalPanel.addEventListener("history-window-toggle", (e: Event) => {
     deps.onHistoryWindowToggle((e as CustomEvent<boolean>).detail);
   });
+  universalPanel.addEventListener("keyboard-shortcuts-toggle", (e: Event) => {
+    deps.onKeyboardShortcutsToggle((e as CustomEvent<boolean>).detail);
+  });
   historyPanel.addEventListener("history-goto", (e: Event) => {
     deps.onHistoryGoTo((e as CustomEvent<number>).detail);
   });
   historyPanel.addEventListener("panel-visibility-change", (e: Event) => {
     const { visible } = (e as CustomEvent<{ id: string; visible: boolean }>).detail;
     if (!visible) deps.onHistoryWindowToggle(false);
+  });
+  keyboardShortcutsPanel.addEventListener("panel-visibility-change", (e: Event) => {
+    const { visible } = (e as CustomEvent<{ id: string; visible: boolean }>).detail;
+    if (!visible) deps.onKeyboardShortcutsToggle(false);
   });
   viewPanel.addEventListener("brush-size-toggle", (e: Event) => {
     deps.setBrushSizeIndicatorEnabled((e as CustomEvent<boolean>).detail);
@@ -266,6 +283,12 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
       e as CustomEvent<FrameRangeDeltaDetail>
     ).detail;
     deps.onFramesMove(layerIds, layerId, start, end, delta);
+  });
+  layersPanel.addEventListener("frames-move-drag-start", (e: Event) => {
+    const { layerId, layerIds, start, end } = (
+      e as CustomEvent<FrameRangeDetail>
+    ).detail;
+    deps.onFramesMoveDragStart(layerIds, layerId, start, end);
   });
   layersPanel.addEventListener("frames-duplicate", (e: Event) => {
     const { layerId, layerIds, start, end } = (

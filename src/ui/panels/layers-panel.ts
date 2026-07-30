@@ -455,6 +455,8 @@ export class FlipCelLayersPanel extends FloatingPanel {
   @state() private emfPreferred = false;
   /** Whether the range actions popover is visible (highlight can persist without it). */
   @state() private frameActionsOpen = false;
+  /** Overshoot pop on the range highlight after a touch long-press. */
+  @state() private selectionHoldPop = false;
   /** Spinning keyframe markers while a frame-range reverse is previewed. */
   @state() private reverseAnimation: {
     layerIds: string[];
@@ -463,12 +465,15 @@ export class FlipCelLayersPanel extends FloatingPanel {
     markersByLayerId: Record<string, ReverseMarker[]>;
   } | null = null;
   private reverseSpinLayersRemaining = 0;
-  /** Live frame offset while dragging the selection to a new time. */
+  /** Live frame offset while dragging Move / Duplicate from the actions popover. */
   @state() private moveDelta = 0;
   /**
-   * Frame-cell gesture state. A press starts as a "tap"; horizontal motion
-   * past half a cell turns it into "select" (drag out a range) or, when the
-   * press landed inside the current selection, "move" (drag the block).
+   * Frame-cell gesture state.
+   * - hold: waiting for long-press (mouse + touch). Hold → one-frame select
+   *   with overshoot. Before that: mouse drag → range select; touch drag → pan.
+   * - select: dragging to expand the range.
+   * - tap: resolved on pointer-up as a quick click (navigate / toggle).
+   * Moving frames is done from the Move quick action.
    */
   private cellDrag: {
     layerId: string;
@@ -476,12 +481,14 @@ export class FlipCelLayersPanel extends FloatingPanel {
     anchor: number;
     startX: number;
     startY: number;
-    mode: "tap" | "select" | "move";
-    /** Selection bounds at drag start; set only in move mode. */
-    base: { start: number; end: number; layerIds: string[] } | null;
-    /** Locked rows: playhead navigate only — no range select/move. */
+    mode: "tap" | "select" | "hold";
+    pointerId?: number;
+    /** Locked rows: playhead navigate only — no range select. */
     lockedNav?: boolean;
   } | null = null;
+  private cellLongPressTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly cellLongPressMs = 400;
+  private readonly cellTouchPanSlopPx = 8;
   /** Live duplicate preview while dragging from the frame-actions popover. */
   private duplicatePlacement: {
     layerIds: string[];
@@ -490,8 +497,16 @@ export class FlipCelLayersPanel extends FloatingPanel {
     anchor: number;
     pointerId: number;
   } | null = null;
+  /** Live move preview while dragging from the Move quick action. */
+  private movePlacement: {
+    layerIds: string[];
+    sourceStart: number;
+    sourceEnd: number;
+    anchor: number;
+    pointerId: number;
+  } | null = null;
   private frameActionDrag: {
-    kind: "duplicate";
+    kind: "duplicate" | "move";
     pointerId: number;
     startX: number;
     startY: number;
@@ -521,6 +536,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.frameSelection = normalizeLayersFrameSelection(sel);
     this.pruneLockedFromFrameSelection();
     this.duplicatePlacement = null;
+    this.movePlacement = null;
     this.moveDelta = 0;
     this.frameActionsOpen = this.frameSelection !== null;
   }
@@ -591,7 +607,28 @@ export class FlipCelLayersPanel extends FloatingPanel {
     anchorFrame: number,
     pointerId: number,
   ) {
+    this.movePlacement = null;
     this.duplicatePlacement = {
+      layerIds: [...layerIds],
+      sourceStart,
+      sourceEnd,
+      anchor: anchorFrame,
+      pointerId,
+    };
+    this.moveDelta = 0;
+    this.requestUpdate();
+  }
+
+  /** Begin a drag-move preview (no document change until release). */
+  beginMoveDragPreview(
+    layerIds: string[],
+    sourceStart: number,
+    sourceEnd: number,
+    anchorFrame: number,
+    pointerId: number,
+  ) {
+    this.duplicatePlacement = null;
+    this.movePlacement = {
       layerIds: [...layerIds],
       sourceStart,
       sourceEnd,
@@ -642,6 +679,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.unbindFrameActionDragListeners();
     this.frameActionDrag = null;
     this.duplicatePlacement = null;
+    this.movePlacement = null;
     this.moveDelta = 0;
   }
 
@@ -652,6 +690,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
       this.cellDrag === null &&
       this.frameActionDrag === null &&
       this.duplicatePlacement === null &&
+      this.movePlacement === null &&
       this.reverseAnimation === null &&
       this.moveDelta === 0
     );
@@ -674,7 +713,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
     }
     const rect = el.getBoundingClientRect();
     const margin = 8;
-    const popW = 150;
+    const popW = 210;
     const popH = 44;
     let x = rect.left + rect.width / 2;
     let y = rect.top - 4;
@@ -799,12 +838,20 @@ export class FlipCelLayersPanel extends FloatingPanel {
   }
 
   private onFrameActionDuplicateDown(e: PointerEvent) {
+    this.beginFrameActionDrag("duplicate", e);
+  }
+
+  private onFrameActionMoveDown(e: PointerEvent) {
+    this.beginFrameActionDrag("move", e);
+  }
+
+  private beginFrameActionDrag(kind: "duplicate" | "move", e: PointerEvent) {
     const sel = this.frameSelection;
     if (!sel || e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
     this.frameActionDrag = {
-      kind: "duplicate",
+      kind,
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
@@ -821,9 +868,17 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.requestUpdate();
   }
 
-  private updateDuplicatePlacementFromPointer(e: PointerEvent) {
-    const placement = this.duplicatePlacement;
+  private updateActionPlacementFromPointer(
+    e: PointerEvent,
+    placement: {
+      anchor: number;
+      sourceStart: number;
+      sourceEnd: number;
+      pointerId: number;
+    } | null,
+  ) {
     if (!placement) return;
+    if (e.pointerId !== placement.pointerId) return;
 
     e.preventDefault();
     const frame = this.frameFromPointer(e);
@@ -852,27 +907,46 @@ export class FlipCelLayersPanel extends FloatingPanel {
       if (!drag.dragging) {
         if (dx < thresholdX && dy < thresholdY) return;
         drag.dragging = true;
-        this.emit("frames-duplicate-drag-start", {
-          layerIds: drag.layerIds,
-          start: drag.sourceStart,
-          end: drag.sourceEnd,
-        });
-        this.beginDuplicateDragPreview(
-          drag.layerIds,
-          drag.sourceStart,
-          drag.sourceEnd,
-          drag.anchorFrame,
-          drag.pointerId,
-        );
+        if (drag.kind === "duplicate") {
+          this.emit("frames-duplicate-drag-start", {
+            layerIds: drag.layerIds,
+            start: drag.sourceStart,
+            end: drag.sourceEnd,
+          });
+          this.beginDuplicateDragPreview(
+            drag.layerIds,
+            drag.sourceStart,
+            drag.sourceEnd,
+            drag.anchorFrame,
+            drag.pointerId,
+          );
+        } else {
+          this.emit("frames-move-drag-start", {
+            layerIds: drag.layerIds,
+            start: drag.sourceStart,
+            end: drag.sourceEnd,
+          });
+          this.beginMoveDragPreview(
+            drag.layerIds,
+            drag.sourceStart,
+            drag.sourceEnd,
+            drag.anchorFrame,
+            drag.pointerId,
+          );
+        }
         this.frameActionDrag = null;
       } else {
         return;
       }
     }
 
-    const placement = this.duplicatePlacement;
-    if (placement && e.pointerId !== placement.pointerId) return;
-    this.updateDuplicatePlacementFromPointer(e);
+    if (this.duplicatePlacement) {
+      this.updateActionPlacementFromPointer(e, this.duplicatePlacement);
+      return;
+    }
+    if (this.movePlacement) {
+      this.updateActionPlacementFromPointer(e, this.movePlacement);
+    }
   };
 
   private onFrameActionDragUp = (e: PointerEvent) => {
@@ -880,8 +954,13 @@ export class FlipCelLayersPanel extends FloatingPanel {
     if (drag) {
       if (e.pointerId !== drag.pointerId) return;
       if (!drag.dragging) {
-        this.suppressFrameActionClick = "duplicate";
-        this.onFrameActionDuplicateClick();
+        if (drag.kind === "duplicate") {
+          this.suppressFrameActionClick = "duplicate";
+          this.onFrameActionDuplicateClick();
+        } else {
+          // Move requires a drag destination — tap alone is a no-op.
+          this.suppressFrameActionClick = "move";
+        }
       }
       this.frameActionDrag = null;
       this.unbindFrameActionDragListeners();
@@ -889,11 +968,14 @@ export class FlipCelLayersPanel extends FloatingPanel {
       return;
     }
 
-    const placement = this.duplicatePlacement;
-    if (placement) {
-      if (e.pointerId !== placement.pointerId) return;
+    if (this.duplicatePlacement) {
+      if (e.pointerId !== this.duplicatePlacement.pointerId) return;
       this.suppressFrameActionClick = "duplicate";
       this.finalizeDuplicatePlacement();
+    } else if (this.movePlacement) {
+      if (e.pointerId !== this.movePlacement.pointerId) return;
+      this.suppressFrameActionClick = "move";
+      this.finalizeMovePlacement();
     }
     this.frameActionDrag = null;
     this.unbindFrameActionDragListeners();
@@ -902,9 +984,12 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
   private onFrameActionDragCancel = (e: PointerEvent) => {
     const activePointerId =
-      this.duplicatePlacement?.pointerId ?? this.frameActionDrag?.pointerId;
+      this.duplicatePlacement?.pointerId ??
+      this.movePlacement?.pointerId ??
+      this.frameActionDrag?.pointerId;
     if (activePointerId !== undefined && e.pointerId !== activePointerId) return;
     this.duplicatePlacement = null;
+    this.movePlacement = null;
     this.moveDelta = 0;
     this.frameActionDrag = null;
     this.unbindFrameActionDragListeners();
@@ -912,7 +997,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
   };
 
   private readonly globalFrameDuplicateDragEndHandler = (e: Event) => {
-    if (!this.duplicatePlacement) return;
+    if (!this.duplicatePlacement && !this.movePlacement) return;
     this.onFrameActionDragUp(e as PointerEvent);
   };
 
@@ -929,6 +1014,39 @@ export class FlipCelLayersPanel extends FloatingPanel {
       end: placement.sourceEnd,
       delta,
     });
+  }
+
+  private finalizeMovePlacement() {
+    const placement = this.movePlacement;
+    if (!placement) return;
+    const delta = this.moveDelta;
+    this.movePlacement = null;
+    this.moveDelta = 0;
+    if (delta === 0) {
+      if (this.frameSelection) this.frameActionsOpen = true;
+      return;
+    }
+    const anchorLayerId =
+      this.frameSelection?.anchorLayerId ?? placement.layerIds[0];
+    this.emit("frames-move", {
+      layerIds: placement.layerIds,
+      start: placement.sourceStart,
+      end: placement.sourceEnd,
+      delta,
+    });
+    const shifted = shiftedFrameRange(
+      placement.sourceStart,
+      placement.sourceEnd,
+      delta,
+      this.timeline.value.duration,
+    );
+    this.frameSelection = {
+      ...shifted,
+      layerIds: placement.layerIds,
+      anchorLayerId,
+    };
+    this.frameActionsOpen = true;
+    this.maybeEnterEmfForSelection();
   }
 
   private renderFrameActionsPopover(sel: { start: number; end: number }) {
@@ -959,6 +1077,19 @@ export class FlipCelLayersPanel extends FloatingPanel {
                 this.onFrameActionDuplicateClick();
               }}
             ><span>Duplicate</span><span class="frame-action-drag-hint" aria-hidden="true">↔</span></button>
+            <button
+              type="button"
+              class="frame-action-btn draggable"
+              title="Move (drag to place)"
+              aria-label="Move"
+              @pointerdown=${this.onFrameActionMoveDown}
+              @click=${() => {
+                if (this.suppressFrameActionClick === "move") {
+                  this.suppressFrameActionClick = null;
+                  return;
+                }
+              }}
+            ><span>Move</span><span class="frame-action-drag-hint" aria-hidden="true">↔</span></button>
             <button
               type="button"
               class="frame-action-btn"
@@ -1029,6 +1160,10 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.emit("layer-select", layerId);
   }
 
+  protected firstUpdated() {
+    this.bindLayersTouchListeners();
+  }
+
   updated(changedProperties: Map<string, unknown>) {
     super.updated(changedProperties);
 
@@ -1046,6 +1181,9 @@ export class FlipCelLayersPanel extends FloatingPanel {
     // handled by the viewport's @scroll listener.
     this.syncTimelineStrip();
 
+    // Re-bind if the wrap was recreated (e.g. mini ↔ full).
+    this.bindLayersTouchListeners();
+
     void this.updateComplete.then(() => this.syncFrameActionsAnchor());
 
     if (!changedProperties.has("editingLayerId") || !this.editingLayerId) return;
@@ -1062,6 +1200,189 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
   private framesViewportEl(): HTMLElement | null {
     return this.renderRoot.querySelector<HTMLElement>(".frames-viewport");
+  }
+
+  private layerScrollEl(): HTMLElement | null {
+    return this.renderRoot.querySelector<HTMLElement>(".layer-scroll");
+  }
+
+  private layerScrollWrapEl(): HTMLElement | null {
+    return this.renderRoot.querySelector<HTMLElement>(".layer-scroll-wrap");
+  }
+
+  /** One-finger touch pan: last point in client coords. */
+  private touchPan: { lastX: number; lastY: number; pointerId?: number } | null =
+    null;
+  /** Wrap element currently holding non-passive touch listeners. */
+  private layersTouchWrap: HTMLElement | null = null;
+
+  /**
+   * Scroll layers (dy) and frames (dx). Returns true if either axis moved.
+   * Positive dy scrolls down; positive dx scrolls right (content leftward).
+   */
+  private applyLayersScroll(dx: number, dy: number): boolean {
+    const layerScroll = this.layerScrollEl();
+    const framesVp = this.framesViewportEl();
+    if (!layerScroll || !framesVp) return false;
+
+    let handled = false;
+    if (dy !== 0) {
+      const prev = layerScroll.scrollTop;
+      const max = Math.max(0, layerScroll.scrollHeight - layerScroll.clientHeight);
+      const next = Math.max(0, Math.min(max, prev + dy));
+      if (next !== prev) {
+        layerScroll.scrollTop = next;
+        handled = true;
+      }
+    }
+    if (dx !== 0) {
+      const prev = framesVp.scrollLeft;
+      const max = Math.max(0, framesVp.scrollWidth - framesVp.clientWidth);
+      const next = Math.max(0, Math.min(max, prev + dx));
+      if (next !== prev) {
+        framesVp.scrollLeft = next;
+        handled = true;
+      }
+    }
+    return handled;
+  }
+
+  private clearCellLongPress() {
+    if (this.cellLongPressTimer !== null) {
+      clearTimeout(this.cellLongPressTimer);
+      this.cellLongPressTimer = null;
+    }
+  }
+
+  /** True while a touch long-press has armed frame-range selection. */
+  private isTouchSelecting(): boolean {
+    const mode = this.cellDrag?.mode;
+    return mode === "select" || mode === "tap";
+  }
+
+  /**
+   * Apply vertical delta to the layer list and horizontal delta to the
+   * frames strip in one gesture (trackpad diagonals, shift+wheel, etc.).
+   */
+  private onLayersWheel = (e: WheelEvent) => {
+    const layerScroll = this.layerScrollEl();
+    const framesVp = this.framesViewportEl();
+    if (!layerScroll || !framesVp) return;
+
+    let dx = e.deltaX;
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) {
+      dx *= 16;
+      dy *= 16;
+    } else if (e.deltaMode === 2) {
+      dx *= framesVp.clientWidth;
+      dy *= layerScroll.clientHeight;
+    }
+
+    // Mouse wheels often report shift+vertical as horizontal intent.
+    if (e.shiftKey && Math.abs(dy) >= Math.abs(dx)) {
+      dx = dy;
+      dy = 0;
+    }
+
+    if (this.applyLayersScroll(dx, dy)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+
+  private onLayersTouchStart = (e: TouchEvent) => {
+    if (e.touches.length !== 1) {
+      // Multi-touch: cancel pending hold / pan; pinch not used here.
+      this.clearCellLongPress();
+      this.touchPan = null;
+      return;
+    }
+    // Don't steal pans while Move/Duplicate drag or an armed selection is active.
+    if (
+      this.frameActionDrag ||
+      this.duplicatePlacement ||
+      this.movePlacement ||
+      this.isTouchSelecting()
+    ) {
+      this.touchPan = null;
+      return;
+    }
+    const t = e.touches[0];
+    this.touchPan = { lastX: t.clientX, lastY: t.clientY };
+  };
+
+  private onLayersTouchMove = (e: TouchEvent) => {
+    if (e.touches.length !== 1) {
+      this.touchPan = null;
+      return;
+    }
+    // Selection / action drags own the gesture.
+    if (
+      this.frameActionDrag ||
+      this.duplicatePlacement ||
+      this.movePlacement ||
+      this.isTouchSelecting()
+    ) {
+      this.touchPan = null;
+      return;
+    }
+
+    const t = e.touches[0];
+    if (!this.touchPan) {
+      this.touchPan = { lastX: t.clientX, lastY: t.clientY };
+      return;
+    }
+
+    // Movement cancels a pending long-press and pans instead.
+    if (this.cellDrag?.mode === "hold") {
+      const holdDx = t.clientX - this.cellDrag.startX;
+      const holdDy = t.clientY - this.cellDrag.startY;
+      if (Math.hypot(holdDx, holdDy) >= this.cellTouchPanSlopPx) {
+        this.clearCellLongPress();
+        this.cellDrag = null;
+        this.touchPan = { lastX: t.clientX, lastY: t.clientY };
+        this.requestUpdate();
+      } else {
+        return;
+      }
+    }
+
+    const dx = this.touchPan.lastX - t.clientX;
+    const dy = this.touchPan.lastY - t.clientY;
+    this.touchPan = { lastX: t.clientX, lastY: t.clientY };
+    if (dx !== 0 || dy !== 0) {
+      this.applyLayersScroll(dx, dy);
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+
+  private onLayersTouchEnd = () => {
+    this.touchPan = null;
+  };
+
+  private bindLayersTouchListeners() {
+    const wrap = this.layerScrollWrapEl();
+    if (!wrap || this.layersTouchWrap === wrap) return;
+    this.unbindLayersTouchListeners();
+    const opts: AddEventListenerOptions = { passive: false };
+    wrap.addEventListener("touchstart", this.onLayersTouchStart, opts);
+    wrap.addEventListener("touchmove", this.onLayersTouchMove, opts);
+    wrap.addEventListener("touchend", this.onLayersTouchEnd, opts);
+    wrap.addEventListener("touchcancel", this.onLayersTouchEnd, opts);
+    this.layersTouchWrap = wrap;
+  }
+
+  private unbindLayersTouchListeners() {
+    const wrap = this.layersTouchWrap;
+    this.layersTouchWrap = null;
+    this.touchPan = null;
+    if (!wrap) return;
+    wrap.removeEventListener("touchstart", this.onLayersTouchStart);
+    wrap.removeEventListener("touchmove", this.onLayersTouchMove);
+    wrap.removeEventListener("touchend", this.onLayersTouchEnd);
+    wrap.removeEventListener("touchcancel", this.onLayersTouchEnd);
   }
 
   /**
@@ -1136,6 +1457,10 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.frameActionsOpen = false;
     this.frameActionsAnchor = null;
     this.lastSelectionTapTime = null;
+    this.selectionHoldPop = false;
+    this.duplicatePlacement = null;
+    this.movePlacement = null;
+    this.moveDelta = 0;
   }
 
   private frameCellWidth(): number {
@@ -1235,15 +1560,47 @@ export class FlipCelLayersPanel extends FloatingPanel {
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
 
-  // ---- Frame range selection + move ------------------------------------
+  // ---- Frame range selection -------------------------------------------
+
+  private beginCellSelectionFromHold(drag: NonNullable<typeof this.cellDrag>) {
+    // Long-press armed: start a one-frame selection the user can drag-expand.
+    if (this.timeline.value.editMultipleFrames && this.frameSelection) {
+      this.emit("frames-edit-multiple", {
+        ...layerActionDetail(this.frameSelection),
+        enabled: false,
+      });
+    }
+    this.frameActionsOpen = false;
+    drag.mode = "select";
+    this.touchPan = null;
+    this.frameSelection = {
+      start: drag.anchor,
+      end: drag.anchor,
+      layerIds: [drag.layerId],
+      anchorLayerId: drag.layerId,
+    };
+    this.selectionHoldPop = true;
+    try {
+      navigator.vibrate?.(10);
+    } catch {
+      // ignore
+    }
+    this.requestUpdate();
+  }
+
+  private onSelectionHoldPopEnd = (e: AnimationEvent) => {
+    if (e.animationName !== "frame-selection-hold-pop") return;
+    this.selectionHoldPop = false;
+  };
 
   private onCellDown(layerId: string, frame: number, e: PointerEvent) {
     if (e.button !== 0 && e.pointerType === "mouse") return;
     e.stopPropagation();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     const displayIds = this.displayLayerIds();
     const anchorLayerIndex = displayIds.indexOf(layerId);
+
     if (this.isLayerLocked(layerId)) {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       this.cellDrag = {
         layerId,
         anchorLayerIndex: anchorLayerIndex >= 0 ? anchorLayerIndex : 0,
@@ -1251,33 +1608,72 @@ export class FlipCelLayersPanel extends FloatingPanel {
         startX: e.clientX,
         startY: e.clientY,
         mode: "tap",
-        base: null,
+        pointerId: e.pointerId,
         lockedNav: true,
       };
       return;
     }
-    const sel = this.frameSelection;
-    const inSelection =
-      sel !== null &&
-      sel.layerIds.includes(layerId) &&
-      frame >= sel.start &&
-      frame <= sel.end;
+
+    // Mouse + touch: long-press starts a one-frame selection (with overshoot).
+    // Before that: mouse drag expands a range; touch drag pans the timeline.
+    this.clearCellLongPress();
+    const target = e.currentTarget as HTMLElement;
+    if (e.pointerType !== "touch") {
+      target.setPointerCapture(e.pointerId);
+    }
     this.cellDrag = {
       layerId,
       anchorLayerIndex: anchorLayerIndex >= 0 ? anchorLayerIndex : 0,
       anchor: frame,
       startX: e.clientX,
       startY: e.clientY,
-      mode: "tap",
-      base: inSelection
-        ? { start: sel.start, end: sel.end, layerIds: [...sel.layerIds] }
-        : null,
+      mode: "hold",
+      pointerId: e.pointerId,
     };
+    this.cellLongPressTimer = setTimeout(() => {
+      this.cellLongPressTimer = null;
+      const drag = this.cellDrag;
+      if (!drag || drag.mode !== "hold") return;
+      try {
+        target.setPointerCapture(drag.pointerId ?? e.pointerId);
+      } catch {
+        // ignore
+      }
+      this.beginCellSelectionFromHold(drag);
+    }, this.cellLongPressMs);
   }
 
   private onCellMove = (e: PointerEvent) => {
     const drag = this.cellDrag;
     if (!drag || drag.lockedNav) return;
+
+    if (drag.mode === "hold") {
+      // Touch pan is handled by the wrap's touch listeners.
+      if (e.pointerType === "touch") return;
+
+      // Mouse: drag past half a cell → range select (skip waiting for hold).
+      const dx = Math.abs(e.clientX - drag.startX);
+      const dy = Math.abs(e.clientY - drag.startY);
+      const thresholdX = this.frameCellWidth() * 0.6;
+      const thresholdY = this.layerRowPitch() * 0.6;
+      if (dx < thresholdX && dy < thresholdY) return;
+      this.clearCellLongPress();
+      drag.mode = "select";
+      if (this.timeline.value.editMultipleFrames && this.frameSelection) {
+        this.emit("frames-edit-multiple", {
+          ...layerActionDetail(this.frameSelection),
+          enabled: false,
+        });
+      }
+      this.frameActionsOpen = false;
+      // Seed a one-frame selection so expand has an anchor.
+      this.frameSelection = {
+        start: drag.anchor,
+        end: drag.anchor,
+        layerIds: [drag.layerId],
+        anchorLayerId: drag.layerId,
+      };
+    }
 
     if (drag.mode === "tap") {
       const dx = Math.abs(e.clientX - drag.startX);
@@ -1285,63 +1681,51 @@ export class FlipCelLayersPanel extends FloatingPanel {
       const thresholdX = this.frameCellWidth() * 0.6;
       const thresholdY = this.layerRowPitch() * 0.6;
       if (dx < thresholdX && dy < thresholdY) return;
-      drag.mode = drag.base !== null && dx > dy ? "move" : "select";
-      if (drag.mode === "select") {
-        // Replacing the range dismisses EMF; a fresh selection gets a new popup.
-        if (this.timeline.value.editMultipleFrames && this.frameSelection) {
-          this.emit("frames-edit-multiple", {
-            ...layerActionDetail(this.frameSelection),
-            enabled: false,
-          });
-        }
-        this.frameActionsOpen = false;
+      drag.mode = "select";
+      // Replacing the range dismisses EMF; a fresh selection gets a new popup.
+      if (this.timeline.value.editMultipleFrames && this.frameSelection) {
+        this.emit("frames-edit-multiple", {
+          ...layerActionDetail(this.frameSelection),
+          enabled: false,
+        });
       }
+      this.frameActionsOpen = false;
     }
     e.preventDefault();
 
+    if (drag.mode !== "select") return;
+
     const frame = this.frameFromPointer(e);
-    if (drag.mode === "select") {
-      const displayIds = this.displayLayerIds();
-      if (displayIds.length === 0) return;
-      const layerIndex = this.layerIndexFromPointer(e);
-      const layerStart = Math.min(drag.anchorLayerIndex, layerIndex);
-      const layerEnd = Math.max(drag.anchorLayerIndex, layerIndex);
-      const layerIds = displayIds
-        .slice(layerStart, layerEnd + 1)
-        .filter((id) => !this.isLayerLocked(id));
-      if (layerIds.length === 0) return;
-      const start = Math.min(drag.anchor, frame);
-      const end = Math.max(drag.anchor, frame);
-      const cur = this.frameSelection;
-      if (
-        !cur ||
-        cur.anchorLayerId !== drag.layerId ||
-        cur.start !== start ||
-        cur.end !== end ||
-        cur.layerIds.length !== layerIds.length ||
-        cur.layerIds.some((id, i) => id !== layerIds[i])
-      ) {
-        this.frameSelection = {
-          start,
-          end,
-          layerIds,
-          anchorLayerId: drag.layerId,
-        };
-      }
-      // Keep the playhead under the pointer while drag-selecting a range.
-      if (frame !== this.timeline.value.currentFrame) {
-        this.emit("frame-select", { frame, navigateOnly: true });
-      }
-    } else if (drag.base) {
-      // Keep at least one frame of the block on the timeline.
-      const duration = this.timeline.value.duration;
-      const raw = frame - drag.anchor;
-      this.moveDelta = clampFrameMoveDelta(
-        raw,
-        drag.base.start,
-        drag.base.end,
-        duration,
-      );
+    const displayIds = this.displayLayerIds();
+    if (displayIds.length === 0) return;
+    const layerIndex = this.layerIndexFromPointer(e);
+    const layerStart = Math.min(drag.anchorLayerIndex, layerIndex);
+    const layerEnd = Math.max(drag.anchorLayerIndex, layerIndex);
+    const layerIds = displayIds
+      .slice(layerStart, layerEnd + 1)
+      .filter((id) => !this.isLayerLocked(id));
+    if (layerIds.length === 0) return;
+    const start = Math.min(drag.anchor, frame);
+    const end = Math.max(drag.anchor, frame);
+    const cur = this.frameSelection;
+    if (
+      !cur ||
+      cur.anchorLayerId !== drag.layerId ||
+      cur.start !== start ||
+      cur.end !== end ||
+      cur.layerIds.length !== layerIds.length ||
+      cur.layerIds.some((id, i) => id !== layerIds[i])
+    ) {
+      this.frameSelection = {
+        start,
+        end,
+        layerIds,
+        anchorLayerId: drag.layerId,
+      };
+    }
+    // Keep the playhead under the pointer while drag-selecting a range.
+    if (frame !== this.timeline.value.currentFrame) {
+      this.emit("frame-select", { frame, navigateOnly: true });
     }
     this.ensureFrameVisible(frame);
   };
@@ -1349,6 +1733,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
   private onCellUp = (e: PointerEvent) => {
     const drag = this.cellDrag;
     if (!drag) return;
+    this.clearCellLongPress();
     this.cellDrag = null;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
 
@@ -1360,6 +1745,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
       });
       this.requestUpdate();
       return;
+    }
+
+    // Released before long-press: treat as a quick tap (navigate / toggle).
+    if (drag.mode === "hold") {
+      drag.mode = "tap";
     }
 
     if (drag.mode === "tap") {
@@ -1417,35 +1807,6 @@ export class FlipCelLayersPanel extends FloatingPanel {
           this.lastCellTap = { layerId: drag.layerId, frame: drag.anchor, time: now };
         }
       }
-    } else if (drag.mode === "move" && drag.base) {
-      const delta = this.moveDelta;
-      this.moveDelta = 0;
-      if (delta !== 0) {
-        const anchorLayerId =
-          this.frameSelection?.anchorLayerId ?? drag.layerId;
-        this.emit("frames-move", {
-          layerIds: drag.base.layerIds,
-          start: drag.base.start,
-          end: drag.base.end,
-          delta,
-        });
-        const shifted = shiftedFrameRange(
-          drag.base.start,
-          drag.base.end,
-          delta,
-          this.timeline.value.duration,
-        );
-        this.frameSelection = {
-          ...shifted,
-          layerIds: drag.base.layerIds,
-          anchorLayerId,
-        };
-        this.frameActionsOpen = true;
-        this.maybeEnterEmfForSelection();
-      } else if (this.frameSelection) {
-        // Click (no move) on the highlighted range reopens the actions popup.
-        this.frameActionsOpen = true;
-      }
     } else if (drag.mode === "select") {
       this.frameActionsOpen = this.frameSelection !== null;
       this.lastSelectionTapTime = null;
@@ -1475,6 +1836,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
   private onCellCancel = (e: PointerEvent) => {
     if (!this.cellDrag) return;
+    this.clearCellLongPress();
     this.cellDrag = null;
     this.moveDelta = 0;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
@@ -1554,6 +1916,8 @@ export class FlipCelLayersPanel extends FloatingPanel {
   }
 
   disconnectedCallback() {
+    this.clearCellLongPress();
+    this.unbindLayersTouchListeners();
     window.removeEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
     window.removeEventListener("pointercancel", this.globalFrameDuplicateDragEndHandler);
     window.removeEventListener("blur", this.globalFrameDuplicateDragEndHandler);
@@ -1799,10 +2163,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
           ? html`<div
               class="frame-selection ${cellMoving ? "moving" : ""} ${reversing ? "reversing" : ""} ${
                 this.timeline.value.editMultipleFrames ? "emf-on" : ""
-              }"
+              } ${this.selectionHoldPop ? "hold-pop" : ""}"
               style="--f: ${selected.start + (cellMoving ? this.moveDelta : 0)}; --len: ${
                 selected.end - selected.start + 1
               }"
+              @animationend=${this.onSelectionHoldPopEnd}
             ></div>`
           : nothing}
         ${selected && dupPreviewing
@@ -2019,7 +2384,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
                     </div>
                   </div>
                 `}
-            <div class="layer-scroll-wrap">
+            <div class="layer-scroll-wrap" @wheel=${this.onLayersWheel}>
               <div class="layer-scroll" @scroll=${this.onLayerScroll}>
               <div class="layers-body">
                 <div class="side-column">

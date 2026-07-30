@@ -4,6 +4,8 @@ import {
   wheelFrictionStore,
   wheelFrictionMotion,
   wheelFrictionTauMs,
+  wheelDirectionStore,
+  wheelDirectionSign,
   StoreController,
 } from "../../state";
 import { timelineStore } from "../../document/document";
@@ -31,6 +33,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
 
   private timeline = new StoreController(this, timelineStore);
   private wheelFriction = new StoreController(this, wheelFrictionStore);
+  private wheelDirection = new StoreController(this, wheelDirectionStore);
   /** Cumulative barrel rotation in degrees; grows clockwise without bound. */
   private rotationDeg = 0;
   @state() private dragging = false;
@@ -384,7 +387,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
     if (notch !== this.lastNotch) {
       const steps = notch - this.lastNotch;
       this.lastNotch = notch;
-      this.emitStep(steps);
+      this.emitStep(steps * wheelDirectionSign(this.wheelDirection.value));
     }
   }
 
@@ -400,11 +403,12 @@ export class FlipCelWheelPanel extends FloatingPanel {
     }
     this.lastFrame = frame;
     if (this.suppressSync || this.dragging || this.coasting) return;
+    const notchDelta = df * wheelDirectionSign(this.wheelDirection.value);
     if (timelineStore.get().playing) {
-      this.lastNotch += df;
+      this.lastNotch += notchDelta;
       return;
     }
-    this.lastNotch += df;
+    this.lastNotch += notchDelta;
     this.settleToChamber();
   }
 
@@ -469,7 +473,9 @@ export class FlipCelWheelPanel extends FloatingPanel {
     }
     const dt = now - this.playbackLastTs;
     this.playbackLastTs = now;
-    const degPerMs = (t.frameRate * WHEEL_DEG_PER_FRAME) / 1000;
+    const degPerMs =
+      ((t.frameRate * WHEEL_DEG_PER_FRAME) / 1000) *
+      wheelDirectionSign(this.wheelDirection.value);
     this.setBarrelRotationLive(this.rotationDeg + degPerMs * dt);
     this.lastNotch = Math.round(this.rotationDeg / WHEEL_DEG_PER_FRAME);
     this.playbackRaf = requestAnimationFrame(this.playbackTick);

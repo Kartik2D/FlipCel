@@ -2,7 +2,9 @@
  * Selection Controller
  *
  * Manages the selection tool state and interactions.
- * Handles selecting, dragging, resizing, rotating, and placing paths on the canvas.
+ * Hold or double-click / double-tap a shape to select it (mouse and touch).
+ * Drag always marquees (rect/lasso) unless something is already selected —
+ * then click-drag moves / transforms it. Touch drag before hold pans.
  */
 import type { Point, CanvasConfig } from "../geometry/types";
 import type {
@@ -23,6 +25,19 @@ export class SelectionController {
   private readonly dragMoveThresholdSq = 5 * 5;
   private dragPointerOrigin: Point | null = null;
   private dragPastThreshold = false;
+
+  /**
+   * Last click on an unselected shape. A second press within
+   * `doubleClickWindowMs` / `doubleClickDistanceSq` selects that shape.
+   * Single click / drag on unselected content always starts a marquee.
+   */
+  private lastShapeClick: {
+    timestampMs: number;
+    point: Point;
+    itemId: number;
+  } | null = null;
+  private readonly doubleClickWindowMs = 350;
+  private readonly doubleClickDistanceSq = 6 * 6;
 
   private selectionShape: "rect" | "lasso" = "rect";
   private layerScope: SelectLayerScope = "all";
@@ -197,6 +212,7 @@ export class SelectionController {
     this.dragStartPoint = null;
     this.resetDragThreshold();
     this.marquee.reset();
+    this.lastShapeClick = null;
     this.clearTransformState();
     selectionStore.set({ items: [] });
     this.drawUI();
@@ -209,13 +225,15 @@ export class SelectionController {
     this.drawUI();
   }
 
-  handleStart(point: Point): void {
+  handleStart(point: Point, options?: { fromTouchHold?: boolean }): void {
     const viewportPoint = pixelToViewport(point, this.config);
+    const fromTouchHold = options?.fromTouchHold === true;
 
     // Check transform handles on existing selection first
     if (this.hasSelection() && this.handles.length > 0) {
       const hitHandle = this.hitTestHandle(viewportPoint);
       if (hitHandle && this.transformGizmo.begin(hitHandle, viewportPoint, this.camera)) {
+        this.lastShapeClick = null;
         this.isDragging = true;
         this.dragStartPoint = viewportPoint;
         this.beginDragThreshold(viewportPoint);
@@ -228,33 +246,56 @@ export class SelectionController {
       this.paperRenderer.hitTestSelectable(viewportPoint, this.layerScope),
     );
 
+    // Already-selected shape: click-drag moves the selection.
     if (initialHitItem && this.isSelectedItem(initialHitItem)) {
+      this.lastShapeClick = null;
       this.activateLayerForItem(initialHitItem);
       this.isDragging = true;
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
       this.didMove = false;
       this.bringSelectionToFront();
-    } else {
-      this.resolvePendingSelectionForNewGesture();
-      const hitItem = this.paperRenderer.resolveSelectableItem(
-        this.paperRenderer.hitTestSelectable(viewportPoint, this.layerScope),
-      );
+      this.drawUI();
+      return;
+    }
 
-      if (hitItem) {
-        // Click inside (or on) another shape: select that whole path, then drag.
-        this.activateLayerForItem(hitItem);
-        this.setSelectedItems([hitItem]);
+    const hitItem = initialHitItem;
+
+    // Hold or double-click / double-tap on an unselected shape selects it.
+    if (hitItem) {
+      const now = performance.now();
+      const shouldSelectShape =
+        fromTouchHold || this.isDoubleClickOnShape(viewportPoint, hitItem.id, now);
+      if (shouldSelectShape) {
+        this.lastShapeClick = null;
+        this.resolvePendingSelectionForNewGesture();
+        const selectItem =
+          this.paperRenderer.resolveSelectableItem(
+            this.paperRenderer.hitTestSelectable(viewportPoint, this.layerScope),
+          ) ?? hitItem;
+        this.activateLayerForItem(selectItem);
+        this.setSelectedItems([selectItem]);
         this.isDragging = true;
         this.dragStartPoint = viewportPoint;
         this.beginDragThreshold(viewportPoint);
         this.didMove = false;
         this.bringSelectionToFront();
-      } else {
-        this.startMarquee(viewportPoint);
+        this.drawUI();
+        return;
       }
+      this.lastShapeClick = {
+        timestampMs: now,
+        point: { ...viewportPoint },
+        itemId: hitItem.id,
+      };
+    } else {
+      this.lastShapeClick = null;
     }
 
+    // Single click / drag on empty space or an unselected shape: marquee only.
+    // Defer placing/clearing the current selection until pointer-up so a tap
+    // outside can deselect without a tiny jitter re-extracting the same shapes.
+    this.startMarquee(viewportPoint);
     this.drawUI();
   }
 
@@ -291,8 +332,14 @@ export class SelectionController {
       const marqueeStartPoint = this.marquee.getStartPoint();
       const marqueeCurrentPoint = this.marquee.getCurrentPoint();
       const lassoPoints = this.marquee.getLassoPoints();
-      if (!marqueeStartPoint || !marqueeCurrentPoint) return;
+      if (!marqueeStartPoint || !marqueeCurrentPoint) {
+        this.marquee.reset();
+        this.drawUI();
+        return;
+      }
       if (this.hasActiveMarquee()) {
+        // Commit/clear whatever was selected before extracting a new range.
+        this.resolvePendingSelectionForNewGesture();
         this.pendingExtractionSnapshot =
           this.paperRenderer.captureSelectableLayersSnapshot(this.layerScope);
         this.selectedItems =
@@ -314,10 +361,9 @@ export class SelectionController {
         }
         selectionStore.set({ items: [...this.selectedItems] });
       } else {
-        this.selectedItems = [];
-        this.pendingExtractionSnapshot = null;
-        this.selectionNeedsPlacement = false;
-        selectionStore.set({ items: [] });
+        // Tap outside / on an unselected shape: deselect only.
+        this.clearSelection();
+        return;
       }
       this.marquee.reset();
       this.isDragging = false;
@@ -350,7 +396,9 @@ export class SelectionController {
   drawUI(): void {
     this.chromeLayer.clear();
 
-    if (this.hasSelection()) {
+    // While marqueeing, hide the prior selection chrome so a tap-outside
+    // deselect doesn't flash the old frame beside the new marquee.
+    if (this.hasSelection() && !this.marquee.isTracking()) {
       const rotating = this.transformGizmo.getRotationOverlay(
         this.camera,
         this.lastViewportPoint,
@@ -461,6 +509,20 @@ export class SelectionController {
     this.dragStartPoint = null;
     this.marquee.start(viewportPoint);
     this.clearTransformState();
+  }
+
+  private isDoubleClickOnShape(
+    viewportPoint: Point,
+    itemId: number,
+    nowMs: number,
+  ): boolean {
+    const last = this.lastShapeClick;
+    if (!last) return false;
+    if (last.itemId !== itemId) return false;
+    if (nowMs - last.timestampMs > this.doubleClickWindowMs) return false;
+    const dx = viewportPoint.x - last.point.x;
+    const dy = viewportPoint.y - last.point.y;
+    return dx * dx + dy * dy <= this.doubleClickDistanceSq;
   }
 
   private resolvePendingSelectionForNewGesture(): void {

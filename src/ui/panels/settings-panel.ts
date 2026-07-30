@@ -3,6 +3,7 @@ import { customElement, property } from "lit/decorators.js";
 import {
   themeModeStore,
   wheelFrictionStore,
+  wheelDirectionStore,
   stageStore,
   clampStageDimension,
   normalizeStageDimensionInput,
@@ -14,6 +15,7 @@ import {
   THEME_OPTIONS,
   THEMES,
   WHEEL_FRICTION_OPTIONS,
+  WHEEL_DIRECTION_OPTIONS,
   StoreController,
 } from "../../state";
 import { historyStateStore } from "../../document/history";
@@ -24,10 +26,12 @@ import { renderThemePreview } from "../theme-preview";
 export class FlipCelUniversalPanel extends FloatingPanel {
   @property({ type: Boolean }) aliasFixEnabled = false;
   @property({ type: Boolean }) historyWindowVisible = false;
+  @property({ type: Boolean }) keyboardShortcutsVisible = false;
 
   private history = new StoreController(this, historyStateStore);
   private themeMode = new StoreController(this, themeModeStore);
   private wheelFriction = new StoreController(this, wheelFrictionStore);
+  private wheelDirection = new StoreController(this, wheelDirectionStore);
   private stage = new StoreController(this, stageStore);
 
   static styles = css`
@@ -409,7 +413,6 @@ export class FlipCelUniversalPanel extends FloatingPanel {
               <div class="row">
                 <blocky-button
                   flat
-                  stretch
                   ?active=${this.historyWindowVisible}
                   @click=${() => {
                     this.historyWindowVisible = !this.historyWindowVisible;
@@ -417,8 +420,22 @@ export class FlipCelUniversalPanel extends FloatingPanel {
                   }}
                   >History</blocky-button
                 >
+                <blocky-button
+                  flat
+                  ?active=${this.keyboardShortcutsVisible}
+                  @click=${() => {
+                    this.keyboardShortcutsVisible = !this.keyboardShortcutsVisible;
+                    this.emit(
+                      "keyboard-shortcuts-toggle",
+                      this.keyboardShortcutsVisible,
+                    );
+                  }}
+                  >Keyboard Shortcuts</blocky-button
+                >
               </div>
+            </flipcel-panel-section>
 
+            <flipcel-panel-section data-interactive>
               <div class="row">
                 <blocky-button flat @click=${() => this.emit("flatten")}
                   >Flatten</blocky-button
@@ -431,7 +448,7 @@ export class FlipCelUniversalPanel extends FloatingPanel {
 
             <flipcel-panel-section title="File" data-interactive>
               <div class="row">
-                <blocky-button flat accent stretch @click=${() => this.emit("doc-new")}
+                <blocky-button flat accent @click=${() => this.emit("doc-new")}
                   >New File</blocky-button
                 >
               </div>
@@ -464,6 +481,23 @@ export class FlipCelUniversalPanel extends FloatingPanel {
                         ?active=${this.wheelFriction.value === level}
                         @click=${() => this.wheelFriction.set(level)}
                         >${level.charAt(0).toUpperCase() + level.slice(1)}</blocky-button
+                      >
+                    `,
+                  )}
+                </div>
+              </label>
+              <label>
+                <span>Direction</span>
+                <div class="row">
+                  ${WHEEL_DIRECTION_OPTIONS.map(
+                    (direction) => html`
+                      <blocky-button
+                        flat
+                        ?active=${this.wheelDirection.value === direction}
+                        @click=${() => this.wheelDirection.set(direction)}
+                        >${direction === "clockwise"
+                          ? "Clockwise"
+                          : "Counterclockwise"}</blocky-button
                       >
                     `,
                   )}

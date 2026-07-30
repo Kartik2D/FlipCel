@@ -76,6 +76,9 @@ export const Events = {
   // History events
   UNDO: "history:undo",
   REDO: "history:redo",
+
+  // Timeline
+  PLAY_TOGGLE: "timeline:play-toggle",
 } as const;
 
 // Type for event names

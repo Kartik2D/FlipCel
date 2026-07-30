@@ -10,6 +10,12 @@ import {
   magicMorphUiStore,
   StoreController,
 } from "../../state";
+import {
+  formatModifier,
+  getModifierBinding,
+  isPaintModeModifierHeld,
+  shortcutsStore,
+} from "../../input/shortcuts";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { raisePanelZIndex } from "../primitives/panel-anchor";
 
@@ -25,6 +31,7 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
   private tool = new StoreController(this, toolStore);
   private modifiers = new StoreController(this, modifiersStore);
   private settings = new StoreController(this, toolSettingsStore);
+  private shortcuts = new StoreController(this, shortcutsStore);
   private magicMoveUi = new StoreController(this, magicMoveUiStore);
   private magicMorphUi = new StoreController(this, magicMorphUiStore);
 
@@ -113,8 +120,11 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
     def: SettingDef,
     currentValue: unknown,
   ): TemplateResult {
+    const paintMod = getModifierBinding("mod.paintMode", this.shortcuts.value);
     const hint =
-      key === "mode" && this.modifiers.value.shift ? "(Shift toggled)" : "";
+      key === "mode" && isPaintModeModifierHeld(this.modifiers.value)
+        ? `(${formatModifier(paintMod)} toggled)`
+        : "";
     const label = def.label ?? this.formatLabel(key);
 
     if (def.type === "toggle") {

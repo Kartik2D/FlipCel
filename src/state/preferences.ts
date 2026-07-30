@@ -295,3 +295,17 @@ export function wheelFrictionTauMs(level: WheelFriction): number {
 }
 
 export const wheelFrictionStore = new Store<WheelFriction>("medium");
+
+/** Which barrel rotation advances the playhead. */
+export type WheelDirection = "clockwise" | "counterclockwise";
+
+export const WHEEL_DIRECTION_OPTIONS: readonly WheelDirection[] = [
+  "clockwise",
+  "counterclockwise",
+];
+
+export function wheelDirectionSign(direction: WheelDirection): 1 | -1 {
+  return direction === "clockwise" ? 1 : -1;
+}
+
+export const wheelDirectionStore = new Store<WheelDirection>("clockwise");
