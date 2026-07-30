@@ -11,7 +11,7 @@ const magnetSettings = {
   },
 } as const satisfies SettingsSchema;
 
-export const magnet: ToolDefinition<typeof magnetSettings> = {
+export const magnet: ToolDefinition<typeof magnetSettings, "magnet"> = {
   id: "magnet",
   name: "Magnet",
   hotkey: "m",

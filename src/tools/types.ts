@@ -48,8 +48,11 @@ export interface ToolContext {
 }
 
 /** Tool definition: metadata, settings schema, and pixel-canvas behavior. */
-export interface ToolDefinition<T extends SettingsSchema = SettingsSchema> {
-  id: string;
+export interface ToolDefinition<
+  T extends SettingsSchema = SettingsSchema,
+  Id extends string = string,
+> {
+  id: Id;
   name: string;
   hotkey: string;
   /** Phosphor icon key for the tools rail (omit for dock-only tools). */

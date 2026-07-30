@@ -46,7 +46,7 @@ function drawLassoShape(tc: ToolContext, preview: "fill" | "stroke") {
   }
 }
 
-export const lasso: ToolDefinition<typeof lassoSettings> = {
+export const lasso: ToolDefinition<typeof lassoSettings, "lasso"> = {
   id: "lasso",
   name: "Lasso Fill",
   hotkey: "l",

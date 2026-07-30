@@ -3,7 +3,7 @@
  * Controllers (select / magnet / etc.) live under editing/; tool modules
  * register hotkeys, icons, and settings schemas for the UI.
  */
-import type { ToolDefinition, InferSettings } from "./types";
+import type { InferSettings, SettingsSchema } from "./types";
 import { brush } from "./brush";
 import { lasso } from "./lasso";
 import { select } from "./select";
@@ -57,14 +57,14 @@ export type DrawMode = "add" | "subtract" | "inside";
 /**
  * Get a tool definition by id
  */
-export function getTool(id: ToolId): ToolDefinition {
+export function getTool(id: ToolId): (typeof tools)[number] {
   return tools.find((t) => t.id === id)!;
 }
 
 /**
  * Get a tool by hotkey
  */
-export function getToolByHotkey(key: string): ToolDefinition | undefined {
+export function getToolByHotkey(key: string): (typeof tools)[number] | undefined {
   return tools.find((t) => t.hotkey === key.toLowerCase());
 }
 
@@ -79,7 +79,7 @@ export function cycleDockMode(
   const tool = getTool(toolId);
   const key = tool.dockModeSetting;
   if (!key) return null;
-  const def = tool.settings[key];
+  const def = (tool.settings as SettingsSchema)[key];
   if (!def || def.type !== "toggle") return null;
   const options = def.options as readonly string[];
   const current = String(currentSettings[key] ?? def.default);
@@ -106,5 +106,5 @@ export function buildDefaultSettings(): Record<ToolId, Record<string, unknown>> 
  * Type for the full settings store (all tools' settings)
  */
 export type AllToolSettings = {
-  [K in ToolId]: InferSettings<Extract<(typeof tools)[number], { id: K }>["settings"]>;
+  [T in (typeof tools)[number] as T["id"]]: InferSettings<T["settings"]>;
 };

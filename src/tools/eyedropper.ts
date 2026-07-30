@@ -9,7 +9,7 @@ const eyedropperSettings = {
   },
 } as const satisfies SettingsSchema;
 
-export const eyedropper: ToolDefinition<typeof eyedropperSettings> = {
+export const eyedropper: ToolDefinition<typeof eyedropperSettings, "eyedropper"> = {
   id: "eyedropper",
   name: "Eyedropper",
   hotkey: "i",

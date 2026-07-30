@@ -57,7 +57,7 @@ const magicMoveSettings = {
   },
 } as const satisfies SettingsSchema;
 
-export const magicMove: ToolDefinition<typeof magicMoveSettings> = {
+export const magicMove: ToolDefinition<typeof magicMoveSettings, "magic-move"> = {
   id: "magic-move",
   name: "Magic Move",
   hotkey: "g",

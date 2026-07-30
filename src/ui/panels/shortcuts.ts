@@ -11,6 +11,7 @@ import {
 import { timelineStore } from "../../document/document";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { dockChipStyles, TOP_BAR_SHORTCUT_CHIPS, type DockInfoChip } from "./dock-chrome";
+import type { SettingsSchema } from "../../tools/types";
 
 // ============================================================
 // Shortcuts Panel (mode / frame / zoom quick actions)
@@ -78,7 +79,7 @@ export class InkwellShortcutsPanel extends FloatingPanel {
     const tool = getTool(this.tool.value);
     const key = tool.dockModeSetting;
     if (!key) return null;
-    const def = tool.settings[key];
+    const def = (tool.settings as SettingsSchema)[key];
     if (!def || def.type !== "toggle") return null;
     const options = def.options as readonly string[];
     const raw = String(

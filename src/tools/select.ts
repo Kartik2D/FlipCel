@@ -14,7 +14,7 @@ const selectSettings = {
   },
 } as const satisfies SettingsSchema;
 
-export const select: ToolDefinition<typeof selectSettings> = {
+export const select: ToolDefinition<typeof selectSettings, "select"> = {
   id: "select",
   name: "Select",
   hotkey: "v",

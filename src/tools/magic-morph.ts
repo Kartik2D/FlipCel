@@ -48,7 +48,7 @@ const magicMorphSettings = {
   },
 } as const satisfies SettingsSchema;
 
-export const magicMorph: ToolDefinition<typeof magicMorphSettings> = {
+export const magicMorph: ToolDefinition<typeof magicMorphSettings, "magic-morph"> = {
   id: "magic-morph",
   name: "Magic Morph",
   hotkey: "t",

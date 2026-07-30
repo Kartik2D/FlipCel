@@ -391,9 +391,7 @@ export class MagicMorphController {
   }
 
   private readSettings(): Settings {
-    const settings = toolSettingsStore.get();
-    const raw = (settings["magic-morph"] ??
-      settings["shape-tween"]) as Partial<Settings>;
+    const raw = toolSettingsStore.get()["magic-morph"] as Partial<Settings>;
     return {
       scope: raw?.scope === "active" ? "active" : "all",
       solver: raw?.solver === "sdf" ? "sdf" : "vector",

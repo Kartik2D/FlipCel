@@ -11,7 +11,7 @@ const brushSettings = {
   sizeMax: { type: "range", min: 1, max: 100, step: 0.1, default: 4 },
 } as const satisfies SettingsSchema;
 
-export const brush: ToolDefinition<typeof brushSettings> = {
+export const brush: ToolDefinition<typeof brushSettings, "brush"> = {
   id: "brush",
   name: "Brush",
   hotkey: "b",

@@ -8,7 +8,7 @@ const directSelectSettings = {
   },
 } as const satisfies SettingsSchema;
 
-export const directSelect: ToolDefinition<typeof directSelectSettings> = {
+export const directSelect: ToolDefinition<typeof directSelectSettings, "direct-select"> = {
   id: "direct-select",
   name: "Direct Select",
   hotkey: "a",
