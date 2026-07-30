@@ -53,6 +53,7 @@ import type {
   InkwellToolsPanel,
   InkwellToolSettingsPanel,
   InkwellUniversalPanel,
+  InkwellHistoryPanel,
   InkwellStartupPanel,
   InkwellViewPanel,
   InkwellShortcutsPanel,
@@ -136,6 +137,7 @@ class App {
   private toolsPanel: InkwellToolsPanel;
   private toolSettingsPanel: InkwellToolSettingsPanel;
   private universalPanel: InkwellUniversalPanel;
+  private historyPanel: InkwellHistoryPanel;
   private startupPanel: InkwellStartupPanel;
   private viewPanel: InkwellViewPanel;
   private shortcutsPanel: InkwellShortcutsPanel;
@@ -295,6 +297,7 @@ class App {
       "tool-settings-panel",
     ) as InkwellToolSettingsPanel;
     this.universalPanel = document.getElementById("universal-panel") as InkwellUniversalPanel;
+    this.historyPanel = document.getElementById("history-panel") as InkwellHistoryPanel;
     this.startupPanel = document.getElementById("startup-panel") as InkwellStartupPanel;
     this.viewPanel = document.getElementById("view-panel") as InkwellViewPanel;
     this.shortcutsPanel = document.getElementById("shortcuts-panel") as InkwellShortcutsPanel;
@@ -471,6 +474,7 @@ class App {
       toolsPanel: this.toolsPanel,
       toolSettingsPanel: this.toolSettingsPanel,
       universalPanel: this.universalPanel,
+      historyPanel: this.historyPanel,
       viewPanel: this.viewPanel,
       shortcutsPanel: this.shortcutsPanel,
       layersPanel: this.layersPanel,
@@ -479,6 +483,9 @@ class App {
 
       onColorPickerChange: (color) => this.onColorPickerChange(color),
       onColorPickerChangeEnd: (color) => this.onColorPickerChangeEnd(color),
+      onDocumentRecolor: (from, to) => this.onDocumentRecolor(from, to),
+      onDocumentRecolorEnd: (from, to) => this.onDocumentRecolorEnd(from, to),
+      onDocumentRecolorCancel: () => this.documentManager.endDocumentRecolor(),
       onStageColorPickerHidden: () => {
         this.stageColorPickerSession = false;
       },
@@ -489,6 +496,8 @@ class App {
       onClear: () => this.onClear(),
       onUndo: () => this.onUndo(),
       onRedo: () => this.onRedo(),
+      onHistoryGoTo: (index) => this.onHistoryGoTo(index),
+      onHistoryWindowToggle: (visible) => this.onHistoryWindowToggle(visible),
       setBrushSizeIndicatorEnabled: (enabled) => {
         this.feedbackLayer.setBrushSizeIndicatorEnabled(enabled);
       },
@@ -1149,6 +1158,7 @@ class App {
   }
 
   private onColorPickerChangeEnd(color: string) {
+    this.documentManager.endDocumentRecolor();
     if (this.stageColorPickerSession || stageSelectedStore.get()) {
       stageStore.update((s) => ({ ...s, color }));
       this.historyManager.snapshot();
@@ -1160,6 +1170,22 @@ class App {
       this.paperRenderer.setItemFillColor(item, color);
     }
     this.historyManager.snapshot();
+  }
+
+  /** Live preview: remap a document color across all keyframe artwork. */
+  private onDocumentRecolor(from: string, to: string) {
+    if (!this.documentManager.recolorDocument(from, to)) return;
+    this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
+  }
+
+  /** Commit a document-wide recolor into history. */
+  private onDocumentRecolorEnd(from: string, to: string) {
+    const changed = this.documentManager.recolorDocument(from, to);
+    this.documentManager.endDocumentRecolor();
+    this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
+    if (changed) this.historyManager.snapshot("Recolor");
   }
 
   private pickColorAt(point: Point) {
@@ -1281,19 +1307,37 @@ class App {
 
   private onUndo() {
     if (this.historyManager.undo()) {
-      this.selectionController.discardSelection();
-      this.directSelectController.clearSelection();
-      this.functionsPanel.close("hidden");
-      this.requestRedraw();
+      this.afterHistoryRestore();
     }
   }
 
   private onRedo() {
     if (this.historyManager.redo()) {
-      this.selectionController.discardSelection();
-      this.directSelectController.clearSelection();
-      this.functionsPanel.close("hidden");
-      this.requestRedraw();
+      this.afterHistoryRestore();
+    }
+  }
+
+  private onHistoryGoTo(index: number) {
+    if (this.historyManager.goTo(index)) {
+      this.afterHistoryRestore();
+    }
+  }
+
+  private afterHistoryRestore() {
+    this.selectionController.discardSelection();
+    this.directSelectController.clearSelection();
+    this.functionsPanel.close("hidden");
+    this.requestRedraw();
+  }
+
+  private onHistoryWindowToggle(visible: boolean) {
+    this.universalPanel.historyWindowVisible = visible;
+    if (visible) {
+      void this.historyPanel.show(this.universalPanel);
+      return;
+    }
+    if (this.historyPanel.style.display !== "none") {
+      this.historyPanel.hidePanel();
     }
   }
 

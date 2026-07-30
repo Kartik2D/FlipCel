@@ -64,13 +64,47 @@ const colorPickerSharedStyles = css`
     min-height: 0;
   }
 
-  .row {
-    flex: 0 0 auto;
+  /* Three picker variants on one equal-width tab row. */
+  .variant-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .variant-tabs > blocky-button {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
   }
 
   .picker-wrap {
     width: 100%;
     min-width: 0;
+  }
+
+  .doc-colors-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0;
+    min-width: 0;
+  }
+
+  .doc-colors-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    font: inherit;
+    font-weight: 600;
+    color: var(--inkwell-text-primary, #1a1a1a);
+  }
+
+  .doc-colors-header blocky-button {
+    flex: 0 0 auto;
   }
 
   .swatches-wrap {
@@ -118,6 +152,10 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
 
     @property({ type: String }) color = "#037ffc";
     @state() protected prevColor = "#000000";
+    /** When on, picker changes remap the selected document color everywhere. */
+    @state() private recolorEnabled = false;
+    /** Document swatch hex currently targeted by Recolor (fixed during a drag). */
+    @state() private recolorFrom: string | null = null;
 
     protected pickerPrefs = new StoreController(this, colorPanelPrefsStore);
     protected documentColors = new StoreController(this, documentColorsStore);
@@ -157,12 +195,41 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
       colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...variant.prefs }));
     }
 
+    private toggleRecolor() {
+      this.recolorEnabled = !this.recolorEnabled;
+      if (!this.recolorEnabled) {
+        this.recolorFrom = null;
+        this.emitColorEvent("document-recolor-cancel");
+        return;
+      }
+      const hex = this.color.trim().toLowerCase();
+      if (this.documentColors.value.some((c) => c === hex)) {
+        this.recolorFrom = hex;
+      }
+    }
+
     private selectSwatch(color: string) {
-      this.color = color;
-      colorStore.set(color);
-      prevColorStore.set(color);
-      this.emitColorEvent("color-change", color);
-      this.emitColorEvent("color-change-end", color);
+      const hex = color.trim().toLowerCase();
+      this.color = hex;
+      this.recolorFrom = hex;
+      colorStore.set(hex);
+      prevColorStore.set(hex);
+      // Selecting a swatch only targets it — do not remap the document yet.
+      this.emitColorEvent("color-change", hex);
+      this.emitColorEvent("color-change-end", hex);
+    }
+
+    private emitPickerColor(color: string, end: boolean) {
+      const from = this.recolorEnabled ? this.recolorFrom : null;
+      if (from && from !== color.trim().toLowerCase()) {
+        this.emitColorEvent(end ? "document-recolor-end" : "document-recolor", {
+          from,
+          to: color,
+        });
+        if (end) this.recolorFrom = color.trim().toLowerCase();
+        return;
+      }
+      this.emitColorEvent(end ? "color-change-end" : "color-change", color);
     }
 
     private renderSwatches() {
@@ -170,9 +237,26 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
       if (colors.length === 0) return nothing;
 
       const activeColor = this.color.trim().toLowerCase();
+      const showRecolor = this.showDocumentColorRecolor();
 
       return html`
         <inkwell-panel-section data-interactive>
+          <div class="doc-colors-header">
+            <h3 class="doc-colors-label">Document Colors</h3>
+            ${showRecolor
+              ? html`
+                  <blocky-button
+                    flat
+                    ?active=${this.recolorEnabled}
+                    title=${this.recolorEnabled
+                      ? "Recolor on — changing the picker remaps the selected document color everywhere"
+                      : "Recolor off — select a document color, then enable to remap it"}
+                    @click=${() => this.toggleRecolor()}
+                    >Recolor</blocky-button
+                  >
+                `
+              : nothing}
+          </div>
           <div class="swatches-wrap">
             <div class="swatches-grid">
               ${repeat(
@@ -205,11 +289,12 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
         ${showVariantTabs
           ? html`
               <inkwell-panel-section data-interactive>
-                <div class="row">
+                <div class="variant-tabs">
                   ${PICKER_VARIANTS.map(
                     (v) => html`
                       <blocky-button
                         flat
+                        stretch
                         ?active=${v.id === activeVariant}
                         @click=${() => this.onVariantChange(v.id)}
                         >${v.label}</blocky-button
@@ -228,11 +313,11 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
             @input=${(e: CustomEvent<{ value: string }>) => {
               this.color = e.detail.value;
               colorStore.set(this.color);
-              this.emitColorEvent("color-change", this.color);
+              this.emitPickerColor(this.color, false);
             }}
             @change=${() => {
               prevColorStore.set(this.color);
-              this.emitColorEvent("color-change-end", this.color);
+              this.emitPickerColor(this.color, true);
             }}
           ></generic-color-picker>
         </div>
@@ -241,10 +326,15 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
     }
 
     protected showPickerVariantTabs(): boolean {
-      return true;
+      return !this.mini;
     }
 
     protected showDocumentColorSwatches(): boolean {
+      return !this.mini;
+    }
+
+    /** Main color panel exposes Recolor; stage popup does not. */
+    protected showDocumentColorRecolor(): boolean {
       return true;
     }
   }
@@ -256,6 +346,10 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
 export class InkwellColorPanel extends ColorPickerFeatures(FloatingPanel) {
   /** Picker flex-fills the panel; keep a single-column stack. */
   @property({ type: Boolean, reflect: true }) override masonry = false;
+
+  protected override showsMiniToggle(): boolean {
+    return true;
+  }
 
   static styles = css`
     ${FloatingPanel.styles}
@@ -306,6 +400,10 @@ export class InkwellColorPopup extends ColorPickerFeatures(PopupWindow) {
   `;
 
   protected showPickerVariantTabs(): boolean {
+    return false;
+  }
+
+  protected showDocumentColorRecolor(): boolean {
     return false;
   }
 

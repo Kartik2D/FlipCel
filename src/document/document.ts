@@ -30,7 +30,12 @@ import {
   type Layer,
   type LayerState,
 } from "../state/index";
-import { collectDocumentColors } from "./colors";
+import {
+  collectDocumentColors,
+  colorsFromPaperJson,
+  normalizeDocumentHex,
+  replaceColorInPaperJson,
+} from "./colors";
 import type { PaperRenderer } from "../render/paper-renderer";
 
 // ============================================================
@@ -1843,6 +1848,68 @@ export class DocumentManager {
     this.updateLayerStoreFromTracks(topLayerId);
     this.reloadCurrentFrame();
     this.publish();
+  }
+
+  // ------------------------------------------------------------
+  // Document-wide recolor
+  // ------------------------------------------------------------
+
+  /**
+   * Live recolor session: originals are captured once per source hex so
+   * continuous picker drags always remap from the starting artwork.
+   */
+  private recolorSession: {
+    fromHex: string;
+    originals: Map<string, string>;
+  } | null = null;
+
+  /**
+   * Replace `fromHex` with `toHex` across every keyframe content blob.
+   * During a drag, pass the same `fromHex` each time; call
+   * `endDocumentRecolor()` when the gesture finishes.
+   */
+  recolorDocument(fromHex: string, toHex: string): boolean {
+    const from = normalizeDocumentHex(fromHex);
+    const to = normalizeDocumentHex(toHex);
+    if (from === to) return false;
+
+    if (!this.recolorSession || this.recolorSession.fromHex !== from) {
+      this.commitDirtyLayerContent();
+      const originals = new Map<string, string>();
+      const seen = new Set<string>();
+      for (const track of this.tracks) {
+        for (const kf of track.keyframes) {
+          const id = kf.contentId;
+          if (id === EMPTY_CONTENT_ID || seen.has(id)) continue;
+          seen.add(id);
+          const json = this.content.get(id) ?? "";
+          if (!json) continue;
+          if (colorsFromPaperJson(json).includes(from)) {
+            originals.set(id, json);
+          }
+        }
+      }
+      this.recolorSession = { fromHex: from, originals };
+    }
+
+    let changed = false;
+    for (const [id, original] of this.recolorSession.originals) {
+      const next = replaceColorInPaperJson(original, from, to);
+      if (next == null) continue;
+      this.content.set(id, next);
+      changed = true;
+    }
+    if (!changed) return false;
+
+    this.loadedContent.clear();
+    this.reloadCurrentFrame();
+    this.publish();
+    return true;
+  }
+
+  /** Clear a live recolor drag session (after history snapshot). */
+  endDocumentRecolor(): void {
+    this.recolorSession = null;
   }
 
   // ------------------------------------------------------------

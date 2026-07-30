@@ -54,6 +54,7 @@ export class GenericColorPicker extends BaseColorPicker {
       min-height: 0;
       display: flex;
       align-items: stretch;
+      justify-content: center;
     }
 
     .plane-square {
@@ -72,12 +73,13 @@ export class GenericColorPicker extends BaseColorPicker {
       border: var(--picker-border-width) solid var(--picker-border-color); box-sizing: border-box;
     }
 
+    /* Sized in JS to stay 1:1; width:100% fallback for first paint. */
     .plane-circle-wrap {
       position: relative;
-      flex: 1 1 auto;
-      width: auto;
-      height: 100%;
-      min-width: 0;
+      flex: 0 0 auto;
+      align-self: center;
+      width: 100%;
+      height: auto;
       max-width: 100%;
       aspect-ratio: 1;
     }
@@ -143,6 +145,7 @@ export class GenericColorPicker extends BaseColorPicker {
     }
     if (changed.has("prefs")) this.syncFromColor(this.color);
     if ((changed.has("color") && !this._isDragging) || changed.has("prefs")) {
+      this.layoutCirclePlane();
       this.syncPlaneCanvasSize();
     }
   }
@@ -158,11 +161,54 @@ export class GenericColorPicker extends BaseColorPicker {
 
   private setupPlaneResizeObserver() {
     this.planeResizeObserver?.disconnect();
+    const planeArea = this.renderRoot.querySelector(".plane-area");
     const planeHost = this.renderRoot.querySelector(".plane-square-inner, .circle-disk");
-    if (!planeHost) return;
-    this.planeResizeObserver = new ResizeObserver(() => this.syncPlaneCanvasSize());
-    this.planeResizeObserver.observe(planeHost);
+    if (!planeArea && !planeHost) return;
+    this.planeResizeObserver = new ResizeObserver(() => {
+      this.layoutCirclePlane();
+      this.syncPlaneCanvasSize();
+    });
+    // Observe the area so circle fitting updates when the panel is resized.
+    if (planeArea) this.planeResizeObserver.observe(planeArea);
+    else if (planeHost) this.planeResizeObserver.observe(planeHost);
+    this.layoutCirclePlane();
     this.syncPlaneCanvasSize();
+  }
+
+  /** True when the floating panel has an explicit height budget (user-resized). */
+  private planeHeightIsBudgeted(): boolean {
+    const panel = this.closest<HTMLElement>("[data-panel]");
+    if (!panel) return false;
+    const inline = panel.style.height.trim();
+    if (inline && inline !== "auto") return true;
+    const blockHeight = (panel as { blockHeight?: number | null }).blockHeight;
+    return typeof blockHeight === "number" && blockHeight > 0;
+  }
+
+  /**
+   * Keep the circle 1:1. Content-sized panels size from width (large default);
+   * resized panels fit the square inside the plane area so it never stretches.
+   */
+  private layoutCirclePlane() {
+    const wrap = this.renderRoot.querySelector<HTMLElement>(".plane-circle-wrap");
+    if (!wrap) return;
+    if (this.prefs?.geometry !== "circle") {
+      wrap.style.removeProperty("width");
+      wrap.style.removeProperty("height");
+      return;
+    }
+    const area = this.renderRoot.querySelector<HTMLElement>(".plane-area");
+    if (!area) return;
+    const w = area.clientWidth;
+    if (w <= 0) return;
+    let side = w;
+    if (this.planeHeightIsBudgeted()) {
+      const h = area.clientHeight;
+      if (h > 0) side = Math.min(w, h);
+    }
+    const px = `${Math.floor(side)}px`;
+    wrap.style.width = px;
+    wrap.style.height = px;
   }
 
   /**

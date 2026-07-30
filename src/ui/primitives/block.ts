@@ -285,7 +285,22 @@ export class Block extends LitElement {
   // Drag Logic
   // ============================================================
 
-  private _startDrag(e: PointerEvent) {
+  /**
+   * Take over an in-flight pointer gesture as a panel drag (e.g. pulling a
+   * dock toggle out). Optional grab offsets pin the panel under the cursor.
+   */
+  beginExternalDrag(
+    e: PointerEvent,
+    options?: { grabOffsetX?: number; grabOffsetY?: number },
+  ): void {
+    if (this._isDragging || this._isResizing || !this.draggable) return;
+    this._startDrag(e, options);
+  }
+
+  private _startDrag(
+    e: PointerEvent,
+    options?: { grabOffsetX?: number; grabOffsetY?: number },
+  ) {
     e.preventDefault();
     this._isDragging = true;
     this.setAttribute("dragging", "");
@@ -312,11 +327,20 @@ export class Block extends LitElement {
     });
     this.style.zIndex = `${maxZIndex + 1}`;
 
-    const rect = this.getBoundingClientRect();
-    this._dragOffset = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    };
+    if (options?.grabOffsetX != null && options?.grabOffsetY != null) {
+      this._dragOffset = { x: options.grabOffsetX, y: options.grabOffsetY };
+      this.style.left = `${e.clientX - this._dragOffset.x}px`;
+      this.style.top = `${e.clientY - this._dragOffset.y}px`;
+      this.style.right = "auto";
+      this.style.bottom = "auto";
+      this.onDragMove();
+    } else {
+      const rect = this.getBoundingClientRect();
+      this._dragOffset = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      };
+    }
 
     window.addEventListener("pointermove", this._onDragMove);
     window.addEventListener("pointerup", this._onDragEnd);

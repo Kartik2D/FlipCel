@@ -23,6 +23,7 @@ import { renderThemePreview } from "../theme-preview";
 @customElement("inkwell-universal-panel")
 export class InkwellUniversalPanel extends FloatingPanel {
   @property({ type: Boolean }) aliasFixEnabled = false;
+  @property({ type: Boolean }) historyWindowVisible = false;
 
   private history = new StoreController(this, historyStateStore);
   private themeMode = new StoreController(this, themeModeStore);
@@ -402,6 +403,19 @@ export class InkwellUniversalPanel extends FloatingPanel {
                   ?disabled=${!this.history.value.canRedo}
                   @click=${() => this.emit("redo")}
                   >Redo</blocky-button
+                >
+              </div>
+
+              <div class="row">
+                <blocky-button
+                  flat
+                  stretch
+                  ?active=${this.historyWindowVisible}
+                  @click=${() => {
+                    this.historyWindowVisible = !this.historyWindowVisible;
+                    this.emit("history-window-toggle", this.historyWindowVisible);
+                  }}
+                  >History</blocky-button
                 >
               </div>
 

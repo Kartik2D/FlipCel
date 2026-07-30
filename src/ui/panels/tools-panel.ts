@@ -7,7 +7,7 @@ import { phosphorIcon } from "../icons/phosphor";
 import type { InkwellToolSettingsPanel } from "./tool-settings-panel";
 
 // ============================================================
-// Tools Panel — compact icon rail (not a titled floating panel)
+// Tools Panel — compact icon rail with a custom drag header
 // ============================================================
 
 const DOUBLE_TAP_MS = 350;
@@ -39,6 +39,7 @@ export class InkwellToolsPanel extends FloatingPanel {
     this.resizable = false;
   }
 
+  /** Use the compact tools header instead of the standard titled bar. */
   protected override showsDragHandlePill(): boolean {
     return false;
   }
@@ -49,32 +50,46 @@ export class InkwellToolsPanel extends FloatingPanel {
     :host {
       --panel-width: 56px;
       --panel-min-width: 48px;
+      --tools-header-h: 28px;
     }
 
-    .panel-body > .face {
-      border-radius: calc(var(--block-radius) - var(--block-border-width, 0px));
-    }
-
-    .tools-shell {
+    /* Compact top bar — full-width grab, not the wide-panel header chrome. */
+    .tools-header {
       display: flex;
-      flex-direction: column;
-      gap: 8px;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      box-sizing: border-box;
       width: 100%;
-      min-width: 0;
+      height: var(--tools-header-h);
+      min-height: var(--tools-header-h);
+      padding: 0;
+      margin: 0;
+      background: var(--block-face-bg);
+      border-radius: calc(var(--block-radius) - var(--block-border-width, 0px))
+        calc(var(--block-radius) - var(--block-border-width, 0px)) 0 0;
+      cursor: grab;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: none;
+      user-select: none;
     }
 
-    .tools-drag {
-      align-self: center;
-      width: 2.5rem;
-      height: 7px;
+    :host([dragging]) .tools-header {
+      cursor: grabbing;
+    }
+
+    .tools-drag-pill {
+      width: 1.75rem;
+      height: 5px;
       border-radius: 999px;
       background: var(--block-border, #555555);
       flex-shrink: 0;
-      cursor: grab;
+      pointer-events: none;
     }
 
-    :host([dragging]) .tools-drag {
-      cursor: grabbing;
+    .panel-body > .face {
+      border-radius: 0 0 calc(var(--block-radius) - var(--block-border-width, 0px))
+        calc(var(--block-radius) - var(--block-border-width, 0px));
     }
 
     .tools-rail {
@@ -156,24 +171,21 @@ export class InkwellToolsPanel extends FloatingPanel {
     `;
   }
 
-  /** Title-less shell: grab pill + body only (no close control). */
+  /** Narrow-rail shell: custom top drag bar + tool icons. */
   private renderToolsBlock(content: TemplateResult) {
     return html`
       <div class="block">
+        <div
+          class="tools-header"
+          data-drag-handle
+          title="Drag to move"
+        >
+          <div class="tools-drag-pill" aria-hidden="true"></div>
+        </div>
         <div class="panel-body">
           <div class="face">
             ${this.renderResizeHandles()}
-            <div class="panel-form">
-              <div class="tools-shell">
-                <div
-                  class="tools-drag"
-                  data-drag-handle
-                  title="Drag to move"
-                  aria-hidden="true"
-                ></div>
-                ${content}
-              </div>
-            </div>
+            <div class="panel-form">${content}</div>
           </div>
         </div>
       </div>

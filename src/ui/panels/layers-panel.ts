@@ -59,6 +59,10 @@ export class InkwellLayersPanel extends FloatingPanel {
     return false;
   }
 
+  protected override showsMiniToggle(): boolean {
+    return true;
+  }
+
   static styles = css`
     ${FloatingPanel.styles}
     ${timelinePanelStyles}
@@ -71,6 +75,114 @@ export class InkwellLayersPanel extends FloatingPanel {
       /* Compact chrome: add/delete, keyframe tools, playback buttons. */
       --layers-control-size: 24px;
       --layers-side-width: 248px;
+    }
+
+    /* Mini: tighter rows, narrower layer column so frames get more width. */
+    :host([mini]) {
+      --layers-row-size: 28px;
+      --layers-control-size: 22px;
+      --layers-side-width: 148px;
+      --frame-cell-w: 16px;
+    }
+
+    :host([mini]) .layers-body {
+      gap: 4px;
+    }
+
+    :host([mini]) .layer-list,
+    :host([mini]) .strip-list {
+      gap: 2px;
+    }
+
+    :host([mini]) .frame-cell {
+      border-radius: 3px;
+      height: calc(var(--layers-row-size) - 2px);
+    }
+
+    :host([mini]) .layer-name-cell {
+      padding: 0 6px;
+    }
+
+    :host([mini]) .layer-control,
+    :host([mini]) .layer-name-cell {
+      border-radius: 4px;
+    }
+
+    /* Mini bottom chrome: layer +/- + playhead scrubber (start → end). */
+    :host([mini]) .mini-bottom-bar {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+      min-width: 0;
+      height: var(--layers-control-size);
+    }
+
+    :host([mini]) .mini-layer-actions {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 3px;
+      flex: 0 0 auto;
+    }
+
+    :host([mini]) .mini-scrubber {
+      position: relative;
+      flex: 1 1 auto;
+      min-width: 0;
+      height: var(--layers-control-size);
+      border-radius: 6px;
+      background: var(--block-depth-color, var(--inkwell-panel-depth));
+      overflow: hidden;
+      touch-action: none;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    :host([mini]) .mini-scrubber-marks {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    :host([mini]) .mini-scrubber-mark {
+      position: absolute;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 9px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      color: var(--inkwell-text-muted, #666);
+      white-space: nowrap;
+    }
+
+    :host([mini]) .mini-scrubber-mark.current {
+      color: var(--inkwell-playhead, #f2c14e);
+    }
+
+    :host([mini]) .mini-scrubber-thumb {
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      z-index: 2;
+      width: 10px;
+      border-radius: 4px;
+      background: var(--inkwell-playhead, #f2c14e);
+      /* Keep the thumb fully inside the clipped track at both ends. */
+      left: calc(
+        5px + (var(--mini-scrub-t, 0) * (100% - 10px))
+      );
+      transform: translateX(-50%);
+      pointer-events: none;
+      box-shadow: var(--inkwell-shadow-soft, 0 1px 3px rgba(0, 0, 0, 0.25));
+    }
+
+    :host([mini]) .mini-scrubber:active {
+      cursor: grabbing;
     }
 
     .block {
@@ -1083,6 +1195,47 @@ export class InkwellLayersPanel extends FloatingPanel {
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
   };
 
+  /** Mini scrubber: left = first frame, right = last frame. */
+  private frameFromMiniScrubber(e: PointerEvent): number {
+    const track = this.renderRoot.querySelector<HTMLElement>(".mini-scrubber");
+    if (!track) return 0;
+    const duration = this.timeline.value.duration;
+    if (duration <= 1) return 0;
+    const rect = track.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    const t = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    return clampFrameToDuration(Math.round(t * (duration - 1)), duration);
+  }
+
+  private scrubMiniTo(e: PointerEvent) {
+    const frame = this.frameFromMiniScrubber(e);
+    if (frame !== this.timeline.value.currentFrame) {
+      this.emit("frame-select", { frame, navigateOnly: true });
+    }
+    this.ensureFrameVisible(frame);
+  }
+
+  private onMiniScrubDown = (e: PointerEvent) => {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    e.preventDefault();
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    this.scrubbing = true;
+    this.scrubMiniTo(e);
+  };
+
+  private onMiniScrubMove = (e: PointerEvent) => {
+    if (!this.scrubbing) return;
+    e.preventDefault();
+    this.scrubMiniTo(e);
+  };
+
+  private onMiniScrubUp = (e: PointerEvent) => {
+    if (!this.scrubbing) return;
+    this.scrubbing = false;
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+
   // ---- Frame range selection + move ------------------------------------
 
   private onCellDown(layerId: string, frame: number, e: PointerEvent) {
@@ -1671,6 +1824,35 @@ export class InkwellLayersPanel extends FloatingPanel {
     `;
   }
 
+  private renderLayerActionButtons(activeLayerId: string, nonStageCount: number) {
+    return html`
+      <button
+        type="button"
+        class="layer-action-button"
+        title="Add layer above selected"
+        aria-label="Add layer"
+        @click=${() => this.addLayer()}
+      >+</button>
+      <button
+        type="button"
+        class="layer-action-button layer-delete-current"
+        title="Delete current layer"
+        aria-label="Delete current layer"
+        ?disabled=${activeLayerId === STAGE_LAYER_ID || nonStageCount <= 1}
+        @click=${() => this.deleteCurrentLayer()}
+      >${phosphorIcon("trash", 14)}</button>
+    `;
+  }
+
+  /** Frame numbers along the mini scrubber: 1, then every 5th, plus the end. */
+  private miniScrubberMarks(duration: number) {
+    if (duration <= 0) return [] as number[];
+    const marks = new Set<number>([1]);
+    for (let n = 5; n < duration; n += 5) marks.add(n);
+    marks.add(duration);
+    return [...marks].sort((a, b) => a - b);
+  }
+
   private renderKeyframeActions() {
     const t = this.timeline.value;
     return html`
@@ -1770,72 +1952,75 @@ export class InkwellLayersPanel extends FloatingPanel {
           <div class="face">
             ${this.renderResizeHandles()}
             <div class="panel-form">
-            <inkwell-panel-section data-interactive>
-              <div class="layers-header">
-                ${this.renderPlaybackActions()}
-              </div>
-            </inkwell-panel-section>
-            <div class="timeline-row">
-              <div class="header-group timeline-actions">
-                <div class="timeline-layer-actions">
-                <button
-                  type="button"
-                  class="layer-action-button"
-                  title="Add layer above selected"
-                  aria-label="Add layer"
-                  @click=${() => this.addLayer()}
-                >+</button>
-                <button
-                  type="button"
-                  class="layer-action-button layer-delete-current"
-                  title="Delete current layer"
-                  aria-label="Delete current layer"
-                  ?disabled=${activeLayerId === STAGE_LAYER_ID || nonStageCount <= 1}
-                  @click=${() => this.deleteCurrentLayer()}
-                >${phosphorIcon("trash", 14)}</button>
-                </div>
-                ${this.renderKeyframeActions()}
-              </div>
-              <div class="timeline-strip" data-interactive style="--timeline-frames: ${t.duration}">
-              <inkwell-scrollbar
-                class="frames-scrollbar"
-                orientation="horizontal"
-                for=".frames-viewport"
-                persistent
-                .gutter=${false}
-              ></inkwell-scrollbar>
-              <div
-                class="strip-ruler"
-                @pointerdown=${this.onScrubDown}
-                @pointermove=${this.onScrubMove}
-                @pointerup=${this.onScrubUp}
-                @pointercancel=${this.onScrubUp}
-              >
-                <div class="strip-ruler-content">
-                  ${frames.map(
-                    (f) => html`
-                      <div
-                        class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
-                        title=${`Go to frame ${f + 1}`}
-                        @click=${() =>
-                          this.emit("frame-select", { frame: f, navigateOnly: true })}
-                      >
-                        ${f === 0 || (f + 1) % 5 === 0 || f === t.currentFrame ? f + 1 : ""}
+            ${this.mini
+              ? nothing
+              : html`
+                  <inkwell-panel-section data-interactive>
+                    <div class="layers-header">
+                      ${this.renderPlaybackActions()}
+                    </div>
+                  </inkwell-panel-section>
+                `}
+            ${this.mini
+              ? nothing
+              : html`
+                  <div class="timeline-row">
+                    <div class="header-group timeline-actions">
+                      <div class="timeline-layer-actions">
+                        ${this.renderLayerActionButtons(activeLayerId, nonStageCount)}
                       </div>
-                    `,
-                  )}
-                </div>
-              </div>
-              <div
-                class="strip-playhead"
-                title="Drag to scrub"
-                @pointerdown=${this.onScrubDown}
-                @pointermove=${this.onScrubMove}
-                @pointerup=${this.onScrubUp}
-                @pointercancel=${this.onScrubUp}
-              ></div>
-              </div>
-            </div>
+                      ${this.renderKeyframeActions()}
+                    </div>
+                    <div
+                      class="timeline-strip"
+                      data-interactive
+                      style="--timeline-frames: ${t.duration}"
+                    >
+                      <inkwell-scrollbar
+                        class="frames-scrollbar"
+                        orientation="horizontal"
+                        for=".frames-viewport"
+                        persistent
+                        .gutter=${false}
+                      ></inkwell-scrollbar>
+                      <div
+                        class="strip-ruler"
+                        @pointerdown=${this.onScrubDown}
+                        @pointermove=${this.onScrubMove}
+                        @pointerup=${this.onScrubUp}
+                        @pointercancel=${this.onScrubUp}
+                      >
+                        <div class="strip-ruler-content">
+                          ${frames.map(
+                            (f) => html`
+                              <div
+                                class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
+                                title=${`Go to frame ${f + 1}`}
+                                @click=${() =>
+                                  this.emit("frame-select", {
+                                    frame: f,
+                                    navigateOnly: true,
+                                  })}
+                              >
+                                ${f === 0 || (f + 1) % 5 === 0 || f === t.currentFrame
+                                  ? f + 1
+                                  : ""}
+                              </div>
+                            `,
+                          )}
+                        </div>
+                      </div>
+                      <div
+                        class="strip-playhead"
+                        title="Drag to scrub"
+                        @pointerdown=${this.onScrubDown}
+                        @pointermove=${this.onScrubMove}
+                        @pointerup=${this.onScrubUp}
+                        @pointercancel=${this.onScrubUp}
+                      ></div>
+                    </div>
+                  </div>
+                `}
             <div class="layer-scroll-wrap">
               <div class="layer-scroll" @scroll=${this.onLayerScroll}>
               <div class="layers-body">
@@ -1963,6 +2148,43 @@ export class InkwellLayersPanel extends FloatingPanel {
                 data-interactive
               ></inkwell-scrollbar>
             </div>
+            ${this.mini
+              ? html`
+                  <div class="mini-bottom-bar" data-interactive>
+                    <div class="mini-layer-actions">
+                      ${this.renderLayerActionButtons(activeLayerId, nonStageCount)}
+                    </div>
+                    <div
+                      class="mini-scrubber"
+                      title="Scrub playhead"
+                      style="--mini-scrub-t:${t.duration <= 1
+                        ? 0.5
+                        : t.currentFrame / (t.duration - 1)}"
+                      @pointerdown=${this.onMiniScrubDown}
+                      @pointermove=${this.onMiniScrubMove}
+                      @pointerup=${this.onMiniScrubUp}
+                      @pointercancel=${this.onMiniScrubUp}
+                    >
+                      <div class="mini-scrubber-marks" aria-hidden="true">
+                        ${this.miniScrubberMarks(t.duration).map((n) => {
+                          const tMark =
+                            t.duration <= 1 ? 0.5 : (n - 1) / (t.duration - 1);
+                          return html`
+                            <span
+                              class="mini-scrubber-mark ${n === t.currentFrame + 1
+                                ? "current"
+                                : ""}"
+                              style="left:calc(5px + ${tMark} * (100% - 10px))"
+                              >${n}</span
+                            >
+                          `;
+                        })}
+                      </div>
+                      <div class="mini-scrubber-thumb"></div>
+                    </div>
+                  </div>
+                `
+              : nothing}
           </div>
         </div>
         </div>

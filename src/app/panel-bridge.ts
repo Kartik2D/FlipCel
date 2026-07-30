@@ -11,6 +11,7 @@ import type {
   InkwellToolsPanel,
   InkwellToolSettingsPanel,
   InkwellUniversalPanel,
+  InkwellHistoryPanel,
   InkwellViewPanel,
   InkwellShortcutsPanel,
   InkwellLayersPanel,
@@ -36,6 +37,7 @@ export type PanelBridgeDeps = {
   toolsPanel: InkwellToolsPanel;
   toolSettingsPanel: InkwellToolSettingsPanel;
   universalPanel: InkwellUniversalPanel;
+  historyPanel: InkwellHistoryPanel;
   viewPanel: InkwellViewPanel;
   shortcutsPanel: InkwellShortcutsPanel;
   layersPanel: InkwellLayersPanel;
@@ -44,6 +46,9 @@ export type PanelBridgeDeps = {
 
   onColorPickerChange: (color: string) => void;
   onColorPickerChangeEnd: (color: string) => void;
+  onDocumentRecolor: (from: string, to: string) => void;
+  onDocumentRecolorEnd: (from: string, to: string) => void;
+  onDocumentRecolorCancel: () => void;
   onStageColorPickerHidden: () => void;
   switchTool: (tool: ToolId) => void;
   onToolSettingsChange: (settings: AllToolSettings) => void;
@@ -52,6 +57,8 @@ export type PanelBridgeDeps = {
   onClear: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onHistoryGoTo: (index: number) => void;
+  onHistoryWindowToggle: (visible: boolean) => void;
   setBrushSizeIndicatorEnabled: (enabled: boolean) => void;
   onOnionToggle: () => void;
   onDockZoomReset: () => void;
@@ -142,6 +149,7 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     colorPopup,
     toolsPanel,
     universalPanel,
+    historyPanel,
     viewPanel,
     shortcutsPanel,
     layersPanel,
@@ -155,6 +163,17 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     });
     picker.addEventListener("color-change-end", (e: Event) => {
       deps.onColorPickerChangeEnd((e as CustomEvent<string>).detail);
+    });
+    picker.addEventListener("document-recolor", (e: Event) => {
+      const { from, to } = (e as CustomEvent<{ from: string; to: string }>).detail;
+      deps.onDocumentRecolor(from, to);
+    });
+    picker.addEventListener("document-recolor-end", (e: Event) => {
+      const { from, to } = (e as CustomEvent<{ from: string; to: string }>).detail;
+      deps.onDocumentRecolorEnd(from, to);
+    });
+    picker.addEventListener("document-recolor-cancel", () => {
+      deps.onDocumentRecolorCancel();
     });
   }
 
@@ -185,6 +204,16 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
   universalPanel.addEventListener("clear", () => deps.onClear());
   universalPanel.addEventListener("undo", () => deps.onUndo());
   universalPanel.addEventListener("redo", () => deps.onRedo());
+  universalPanel.addEventListener("history-window-toggle", (e: Event) => {
+    deps.onHistoryWindowToggle((e as CustomEvent<boolean>).detail);
+  });
+  historyPanel.addEventListener("history-goto", (e: Event) => {
+    deps.onHistoryGoTo((e as CustomEvent<number>).detail);
+  });
+  historyPanel.addEventListener("panel-visibility-change", (e: Event) => {
+    const { visible } = (e as CustomEvent<{ id: string; visible: boolean }>).detail;
+    if (!visible) deps.onHistoryWindowToggle(false);
+  });
   viewPanel.addEventListener("brush-size-toggle", (e: Event) => {
     deps.setBrushSizeIndicatorEnabled((e as CustomEvent<boolean>).detail);
   });

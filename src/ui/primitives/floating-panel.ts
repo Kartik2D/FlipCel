@@ -1,4 +1,4 @@
-import { html, css, nothing, type TemplateResult } from "lit";
+import { html, css, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { property } from "lit/decorators.js";
 import { Block } from "./block";
 import { phosphorIcon } from "../icons/phosphor";
@@ -7,10 +7,23 @@ import { phosphorIcon } from "../icons/phosphor";
 // Floating Panel Base Class
 // ============================================================
 
+type PanelModeSize = { width: number; height: number };
+
 export class FloatingPanel extends Block {
   @property({ type: Boolean, reflect: true }) pinned = false;
   /** When true, the header always shows a close (X) control. */
   @property({ type: Boolean }) showPinnedClose = true;
+  /**
+   * Compact “mini window” mode — panels hide secondary chrome while keeping
+   * their core content. Opt in per panel via `showsMiniToggle()`.
+   */
+  @property({ type: Boolean, reflect: true }) mini = false;
+
+  /** Last resized size for full vs mini — restored when toggling modes. */
+  private modeSizes: { full: PanelModeSize | null; mini: PanelModeSize | null } = {
+    full: null,
+    mini: null,
+  };
   /**
    * Arrange `inkwell-panel-section` groups in a responsive masonry (multi-column)
    * layout when the panel is wide enough. Layers/tools opt out.
@@ -181,11 +194,12 @@ export class FloatingPanel extends Block {
        Sized from the close control, not the title — untitled panels match. */
     .panel-header {
       --panel-header-control-size: 26px;
+      --panel-header-control-gap: 6px;
       position: relative;
       z-index: 20;
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto minmax(
-          var(--panel-header-control-size),
+          var(--panel-header-end-min, var(--panel-header-control-size)),
           1fr
         );
       align-items: center;
@@ -204,6 +218,12 @@ export class FloatingPanel extends Block {
         calc(var(--block-radius) - var(--block-border-width, 2px)) 0 0;
     }
 
+    .panel-header.has-mini.has-close {
+      --panel-header-end-min: calc(
+        (2 * var(--panel-header-control-size)) + var(--panel-header-control-gap)
+      );
+    }
+
     .panel-header-slot {
       display: flex;
       align-items: center;
@@ -220,7 +240,12 @@ export class FloatingPanel extends Block {
 
     .panel-header-end {
       justify-self: end;
-      width: var(--panel-header-control-size, 18px);
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--panel-header-control-gap, 6px);
+      width: auto;
       min-width: var(--panel-header-control-size, 18px);
       height: var(--panel-header-control-size, 18px);
     }
@@ -232,7 +257,8 @@ export class FloatingPanel extends Block {
       flex-shrink: 0;
     }
 
-    .panel-header.has-close .panel-title {
+    .panel-header.has-close .panel-title,
+    .panel-header.has-mini .panel-title {
       max-width: 100%;
       padding-right: 0;
     }
@@ -257,7 +283,8 @@ export class FloatingPanel extends Block {
       pointer-events: auto;
     }
 
-    .panel-header-close {
+    .panel-header-close,
+    .panel-header-mini {
       width: var(--panel-header-control-size, 18px);
       height: var(--panel-header-control-size, 18px);
       box-sizing: border-box;
@@ -271,20 +298,30 @@ export class FloatingPanel extends Block {
       cursor: pointer;
       padding: 0;
       margin: 0;
+      flex-shrink: 0;
       -webkit-tap-highlight-color: transparent;
     }
 
-    .panel-header-close svg {
+    .panel-header-close svg,
+    .panel-header-mini svg {
       display: block;
       flex-shrink: 0;
     }
 
-    .panel-header-close:hover {
+    .panel-header-close:hover,
+    .panel-header-mini:hover {
       filter: brightness(0.96);
     }
 
-    .panel-header-close:focus {
+    .panel-header-close:focus,
+    .panel-header-mini:focus {
       outline: none;
+    }
+
+    .panel-header-mini[aria-pressed="true"] {
+      background: var(--inkwell-accent, #4a6fb5);
+      color: var(--inkwell-accent-contrast, #ffffff);
+      filter: none;
     }
 
     .grid {
@@ -663,23 +700,53 @@ export class FloatingPanel extends Block {
     return false;
   }
 
+  /** Panels that support compact mini-window mode opt in here. */
+  protected showsMiniToggle(): boolean {
+    return false;
+  }
+
+  private persistModeSize(mode: "full" | "mini") {
+    const rect = this.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    this.modeSizes[mode] = { width: rect.width, height: rect.height };
+  }
+
+  private applyModeSize(mode: "full" | "mini") {
+    const saved = this.modeSizes[mode];
+    if (!saved) return;
+    this.blockWidth = saved.width;
+    this.blockHeight = saved.height;
+  }
+
+  protected override willUpdate(changed: PropertyValues<this>) {
+    super.willUpdate(changed);
+    if (!this.showsMiniToggle() || !changed.has("mini")) return;
+    const prev = changed.get("mini") as boolean | undefined;
+    // Initial render — nothing to swap yet.
+    if (prev === undefined) return;
+    // Layout still reflects the previous mode; stash it, then restore the other.
+    this.persistModeSize(prev ? "mini" : "full");
+    this.applyModeSize(this.mini ? "mini" : "full");
+  }
+
   /**
-   * Title bar row: title (left), drag pill (center), close (right).
+   * Title bar row: title (left), drag pill (center), mini + close (right).
    * Close is always shown when `showPinnedClose` is set (not gated on detach).
    */
   protected renderDragHandlePill(title?: string) {
     const showClose = this.showPinnedClose;
+    const showMini = this.showsMiniToggle();
     const showPill = this.draggable && this.showsDragHandlePill();
     // Whole top bar (pill + title chrome) is the move handle when draggable.
     const headerDraggable =
       this.draggable && (showPill || this.headerActsAsDragHandle());
-    if (!showPill && !headerDraggable && !title && !showClose) {
+    if (!showPill && !headerDraggable && !title && !showClose && !showMini) {
       return html``;
     }
 
     return html`
       <div
-        class="panel-header ${title ? "has-title" : ""} ${showClose ? "has-close" : ""} ${headerDraggable ? "is-drag-handle" : ""}"
+        class="panel-header ${title ? "has-title" : ""} ${showMini ? "has-mini" : ""} ${showClose ? "has-close" : ""} ${headerDraggable ? "is-drag-handle" : ""}"
         ?data-drag-handle=${headerDraggable}
         title=${headerDraggable ? "Drag to move" : nothing}
       >
@@ -692,6 +759,7 @@ export class FloatingPanel extends Block {
             : nothing}
         </div>
         <div class="panel-header-slot panel-header-end">
+          ${showMini ? this.renderPanelMiniToggle() : nothing}
           ${showClose ? this.renderPanelClose() : nothing}
         </div>
       </div>
@@ -700,6 +768,25 @@ export class FloatingPanel extends Block {
 
   protected renderPanelTitle(title: string) {
     return html`<h3 class="panel-title"><span>${title}</span></h3>`;
+  }
+
+  protected renderPanelMiniToggle() {
+    return html`
+      <button
+        type="button"
+        class="panel-header-mini"
+        title=${this.mini ? "Expand panel" : "Mini window — hide secondary sections"}
+        aria-label=${this.mini ? "Expand panel" : "Mini window"}
+        aria-pressed=${this.mini ? "true" : "false"}
+        data-interactive
+        @click=${(e: Event) => {
+          e.stopPropagation();
+          this.mini = !this.mini;
+        }}
+      >
+        ${phosphorIcon("mini-window", 14)}
+      </button>
+    `;
   }
 
   protected renderPanelClose() {

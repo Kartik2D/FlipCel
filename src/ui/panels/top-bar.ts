@@ -25,12 +25,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
   @state() private panelVisibility: PanelVisibility[] = PANEL_VISIBILITY_DEFAULTS.map((p) => ({
     ...p,
   }));
-  /** Buttons animating out — painted absolutely so the dock can shrink immediately. */
-  @state() private exitingPanelIds: string[] = [];
   /** Buttons that should play pop-in on their next paint. */
   @state() private enteringPanelIds: string[] = [];
-  /** Last flex-slot geometry for an exiting button (bar-local coords). */
-  private exitGeometry = new Map<string, { left: number; width: number }>();
 
   private dockColor = new StoreController(this, colorStore);
   private tool = new StoreController(this, toolStore);
@@ -43,6 +39,38 @@ export class InkwellTopBarPanel extends FloatingPanel {
   private dockResizeToken = 0;
   private knownTriggerIds = new Set<string>();
   private skipNextDockMotion = true;
+
+  /** In-flight dock-button drag that may spawn a floating panel on leave. */
+  private dockBtnGesture: {
+    id: string;
+    pointerId: number;
+    spawned: boolean;
+    pointerDown: boolean;
+    lastEvent: PointerEvent;
+  } | null = null;
+  /** After a drag-out spawn, ignore the synthetic click on the toggle. */
+  private suppressDockBtnClick = false;
+
+  private readonly onDockBtnGestureMove = (e: PointerEvent) => {
+    const gesture = this.dockBtnGesture;
+    if (!gesture || e.pointerId !== gesture.pointerId) return;
+    gesture.lastEvent = e;
+    if (gesture.spawned) return;
+    if (!this.isPointerOutsideDock(e.clientX, e.clientY)) return;
+    gesture.spawned = true;
+    this.suppressDockBtnClick = true;
+    void this.spawnPanelFromDockButton(gesture.id);
+  };
+
+  private readonly onDockBtnGestureEnd = (e: PointerEvent) => {
+    const gesture = this.dockBtnGesture;
+    if (!gesture || e.pointerId !== gesture.pointerId) return;
+    gesture.lastEvent = e;
+    gesture.pointerDown = false;
+    this.clearDockBtnGestureListeners();
+    // Keep gesture while spawn is in flight so layout can use last coords.
+    if (!gesture.spawned) this.dockBtnGesture = null;
+  };
 
   protected override usesFaceScrollbar(): boolean {
     return false;
@@ -80,7 +108,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
     }
 
     .face {
-      /* Visible so exiting buttons can finish their pop outside the shrinking bar. */
+      /* Visible so entering buttons can overshoot outside the bar. */
       overflow: visible;
       min-height: calc(
         var(--inkwell-dock-row-h) + (2 * var(--inkwell-block-face-padding))
@@ -120,11 +148,15 @@ export class InkwellTopBarPanel extends FloatingPanel {
       font-size: 11px;
       font-weight: 600;
       letter-spacing: 0.01em;
-      cursor: pointer;
+      cursor: grab;
       -webkit-tap-highlight-color: transparent;
-      touch-action: manipulation;
+      touch-action: none;
       user-select: none;
       transform-origin: center center;
+    }
+
+    .dock-btn:active {
+      cursor: grabbing;
     }
 
     .dock-btn:hover {
@@ -164,19 +196,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
         var(--inkwell-motion-overshoot-easing, cubic-bezier(0.22, 1.7, 0.36, 1)) both;
     }
 
-    .dock-btn-exit {
-      /* Out of flex flow so dock width can shrink immediately with the pop. */
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      height: auto;
-      margin: 0;
-      animation: dock-btn-pop-out var(--inkwell-motion-overshoot-duration, 420ms)
-        var(--inkwell-motion-overshoot-easing, cubic-bezier(0.22, 1.7, 0.36, 1)) both;
-      pointer-events: none;
-      z-index: 1;
-    }
-
     @keyframes dock-btn-pop-in {
       0% {
         transform: scale(0.55);
@@ -185,17 +204,6 @@ export class InkwellTopBarPanel extends FloatingPanel {
       100% {
         transform: scale(1);
         opacity: 1;
-      }
-    }
-
-    @keyframes dock-btn-pop-out {
-      0% {
-        transform: scale(1);
-        opacity: 1;
-      }
-      100% {
-        transform: scale(0.55);
-        opacity: 0;
       }
     }
 
@@ -231,6 +239,8 @@ export class InkwellTopBarPanel extends FloatingPanel {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.clearDockBtnGestureListeners();
+    this.dockBtnGesture = null;
     document.removeEventListener("pointerdown", this.outsidePointerHandler, true);
     document.removeEventListener(
       "panel-visibility-change",
@@ -295,34 +305,109 @@ export class InkwellTopBarPanel extends FloatingPanel {
     }, INKWELL_MOTION_OVERSHOOT_MS + 40);
   }
 
+  /** Drop the toggle immediately; dock width still animates closed. */
   private beginButtonExit(id: string, applyVisibility: () => void) {
-    if (this.exitingPanelIds.includes(id)) {
+    void this.runDockResizeAnimation(() => {
       applyVisibility();
+      this.knownTriggerIds.delete(id);
+    });
+  }
+
+  private clearDockBtnGestureListeners() {
+    window.removeEventListener("pointermove", this.onDockBtnGestureMove);
+    window.removeEventListener("pointerup", this.onDockBtnGestureEnd);
+    window.removeEventListener("pointercancel", this.onDockBtnGestureEnd);
+  }
+
+  private isPointerOutsideDock(clientX: number, clientY: number): boolean {
+    const rect = this.getBoundingClientRect();
+    return (
+      clientX < rect.left ||
+      clientX > rect.right ||
+      clientY < rect.top ||
+      clientY > rect.bottom
+    );
+  }
+
+  private onDockBtnPointerDown(id: string, e: PointerEvent) {
+    if (e.button !== 0) return;
+    this.clearDockBtnGestureListeners();
+    this.dockBtnGesture = {
+      id,
+      pointerId: e.pointerId,
+      spawned: false,
+      pointerDown: true,
+      lastEvent: e,
+    };
+    window.addEventListener("pointermove", this.onDockBtnGestureMove);
+    window.addEventListener("pointerup", this.onDockBtnGestureEnd);
+    window.addEventListener("pointercancel", this.onDockBtnGestureEnd);
+  }
+
+  private onDockBtnClick(id: string, triggerEl: HTMLElement, e: Event) {
+    if (this.suppressDockBtnClick) {
+      e.preventDefault();
+      e.stopPropagation();
+      this.suppressDockBtnClick = false;
+      return;
+    }
+    void this.togglePanel(id, triggerEl);
+  }
+
+  /**
+   * Cursor left the dock while dragging a toggle: spawn/detach the panel under
+   * the pointer and continue the gesture as a window drag.
+   */
+  private async spawnPanelFromDockButton(id: string) {
+    const el = document.getElementById(id) as ToggleablePanel | null;
+    const panel = this.panelVisibility.find((p) => p.id === id);
+    if (!el || !panel || panel.detached) {
+      this.suppressDockBtnClick = false;
+      this.clearDockBtnGestureListeners();
+      this.dockBtnGesture = null;
       return;
     }
 
-    const btn = this.renderRoot.querySelector<HTMLElement>(`[data-panel-trigger="${id}"]`);
-    const bar = this.renderRoot.querySelector<HTMLElement>(".bar");
-    if (btn && bar) {
-      const btnRect = btn.getBoundingClientRect();
-      const barRect = bar.getBoundingClientRect();
-      this.exitGeometry.set(id, {
-        left: btnRect.left - barRect.left,
-        width: btnRect.width,
-      });
-    }
-
-    // Pop-out + dock shrink together: button leaves flex flow immediately.
-    void this.runDockResizeAnimation(() => {
-      this.exitingPanelIds = [...this.exitingPanelIds, id];
-      applyVisibility();
+    this.panelVisibility.forEach((p) => {
+      if (p.id === id || !p.visible || p.detached) return;
+      const otherEl = document.getElementById(p.id) as ToggleablePanel | null;
+      if (!otherEl || otherEl.pinned) return;
+      otherEl.hidePanel();
     });
 
-    window.setTimeout(() => {
-      this.exitingPanelIds = this.exitingPanelIds.filter((exitId) => exitId !== id);
-      this.exitGeometry.delete(id);
-      this.knownTriggerIds.delete(id);
-    }, INKWELL_MOTION_OVERSHOOT_MS + 40);
+    el.pinned = true;
+    el.style.display = "";
+    await el.updateComplete;
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+    // Gesture may have ended while the panel was laying out — still spawn at
+    // the last pointer position, and only continue dragging if still down.
+    const gesture = this.dockBtnGesture?.id === id ? this.dockBtnGesture : null;
+    const pointer = gesture?.lastEvent;
+    const stillDragging = gesture?.pointerDown === true;
+
+    const rect = el.getBoundingClientRect();
+    const grabOffsetX = rect.width / 2;
+    const grabOffsetY = Math.min(28, Math.max(14, rect.height * 0.12));
+
+    this.beginButtonExit(id, () => {
+      this.panelVisibility = this.panelVisibility.map((p) =>
+        p.id === id ? { ...p, visible: true, detached: true } : p,
+      );
+    });
+
+    raisePanelZIndex(el);
+    if (pointer && stillDragging) {
+      el.beginExternalDrag(pointer, { grabOffsetX, grabOffsetY });
+    } else if (pointer) {
+      el.style.left = `${pointer.clientX - grabOffsetX}px`;
+      el.style.top = `${pointer.clientY - grabOffsetY}px`;
+      el.style.right = "auto";
+      el.style.bottom = "auto";
+    }
+
+    this.clearDockBtnGestureListeners();
+    this.dockBtnGesture = null;
   }
 
   private async togglePanel(id: string, triggerEl?: HTMLElement) {
@@ -397,7 +482,7 @@ export class InkwellTopBarPanel extends FloatingPanel {
     // Close / other visibility updates — animate when the toggle appears or leaves.
     const nextDetached =
       detached === true ? true : visible ? (detached ?? prev.detached) : false;
-    const wasShown = !prev.detached && !this.exitingPanelIds.includes(id);
+    const wasShown = !prev.detached;
     const willBeShown = !nextDetached;
 
     const apply = () => {
@@ -479,32 +564,9 @@ export class InkwellTopBarPanel extends FloatingPanel {
     );
   }
 
-  /**
-   * Dock buttons to render: attached toggles plus any still finishing pop-out.
-   * Order follows TOP_BAR_PANEL_IDS.
-   */
-  private renderedPanelTriggers(): Array<PanelVisibility & { exiting: boolean }> {
-    const byId = new Map(this.panelVisibility.map((p) => [p.id, p]));
-    const exiting = new Set(this.exitingPanelIds);
-    const out: Array<PanelVisibility & { exiting: boolean }> = [];
-
-    for (const id of TOP_BAR_PANEL_IDS) {
-      const panel = byId.get(id);
-      if (!panel) continue;
-      if (!panel.detached) {
-        out.push({ ...panel, exiting: false });
-        continue;
-      }
-      if (exiting.has(id)) {
-        out.push({ ...panel, detached: false, exiting: true });
-      }
-    }
-    return out;
-  }
-
   render() {
     const currentToolName = getTool(this.tool.value).name;
-    const panelTriggers = this.renderedPanelTriggers();
+    const panelTriggers = this.visiblePanelTriggers();
     const entering = new Set(this.enteringPanelIds);
     return html`
       <div class="block">
@@ -513,21 +575,15 @@ export class InkwellTopBarPanel extends FloatingPanel {
             ${panelTriggers.map((panel) => {
               const isTools = panel.id === "tools-panel";
               const isColor = panel.id === "color-panel";
-              const exitSlot = panel.exiting ? this.exitGeometry.get(panel.id) : undefined;
               const className = [
                 "dock-btn",
                 isTools ? "dock-btn-flex" : "dock-btn-icon",
                 isColor ? "dock-btn-color" : "",
-                panel.exiting ? "dock-btn-exit" : "",
-                !panel.exiting && entering.has(panel.id) ? "dock-btn-enter" : "",
+                entering.has(panel.id) ? "dock-btn-enter" : "",
               ]
                 .filter(Boolean)
                 .join(" ");
-              const exitStyle = exitSlot
-                ? `left:${exitSlot.left}px;width:${exitSlot.width}px;min-width:${exitSlot.width}px;max-width:${exitSlot.width}px;`
-                : "";
-              const colorStyle = isColor ? `background:${this.dockColor.value}` : "";
-              const style = [exitStyle, colorStyle].filter(Boolean).join("") || nothing;
+              const style = isColor ? `background:${this.dockColor.value}` : nothing;
               return html`
                 <button
                   type="button"
@@ -536,10 +592,11 @@ export class InkwellTopBarPanel extends FloatingPanel {
                   title=${isTools ? currentToolName : panel.label}
                   data-interactive
                   aria-pressed=${panel.visible ? "true" : "false"}
-                  ?disabled=${panel.exiting}
                   style=${style}
+                  @pointerdown=${(e: PointerEvent) =>
+                    this.onDockBtnPointerDown(panel.id, e)}
                   @click=${(e: Event) =>
-                    this.togglePanel(panel.id, e.currentTarget as HTMLElement)}
+                    this.onDockBtnClick(panel.id, e.currentTarget as HTMLElement, e)}
                 >
                   ${this.renderPanelTriggerContent(panel.id)}
                 </button>

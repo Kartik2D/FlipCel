@@ -19,6 +19,17 @@ interface HistoryEntry {
   soloLayerId: string | null;
   stageColor: string;
   timestamp: number;
+  label: string;
+}
+
+/** Lightweight stack entry for the undo-history window. */
+export interface HistoryListEntry {
+  index: number;
+  label: string;
+  timestamp: number;
+  isCurrent: boolean;
+  /** True when this entry is ahead of the current index (redo branch). */
+  isFuture: boolean;
 }
 
 /**
@@ -27,6 +38,8 @@ interface HistoryEntry {
 export interface HistoryState {
   canUndo: boolean;
   canRedo: boolean;
+  currentIndex: number;
+  entries: HistoryListEntry[];
 }
 
 /**
@@ -35,7 +48,13 @@ export interface HistoryState {
 export const historyStateStore = new Store<HistoryState>({
   canUndo: false,
   canRedo: false,
+  currentIndex: -1,
+  entries: [],
 });
+
+function defaultLabel(index: number): string {
+  return index <= 0 ? "Document" : `Edit ${index}`;
+}
 
 export class HistoryManager {
   private stack: HistoryEntry[] = [];
@@ -59,7 +78,7 @@ export class HistoryManager {
    * Call this after any action that modifies the canvas, the layer list,
    * or the timeline.
    */
-  snapshot(): void {
+  snapshot(label?: string): void {
     // Don't snapshot while restoring (prevents double-entries)
     if (this.isRestoring) return;
 
@@ -72,12 +91,14 @@ export class HistoryManager {
     // Truncate any redo entries (we're starting a new branch)
     this.stack = this.stack.slice(0, this.index + 1);
 
+    const nextIndex = this.stack.length;
     this.stack.push({
       doc: this.doc.captureState(),
       activeLayerId: layerState.activeLayerId,
       soloLayerId: layerState.soloLayerId,
       stageColor: stageStore.get().color,
       timestamp: Date.now(),
+      label: label?.trim() || defaultLabel(nextIndex),
     });
 
     // Enforce max size (remove oldest entries)
@@ -104,6 +125,21 @@ export class HistoryManager {
     if (!this.canRedo()) return false;
 
     this.index++;
+    this.restore();
+    this.updateState();
+    return true;
+  }
+
+  /**
+   * Jump to a specific history entry without truncating the stack.
+   * New edits after a jump still truncate the redo branch via snapshot().
+   */
+  goTo(index: number): boolean {
+    if (index < 0 || index >= this.stack.length || index === this.index) {
+      return false;
+    }
+
+    this.index = index;
     this.restore();
     this.updateState();
     return true;
@@ -171,6 +207,14 @@ export class HistoryManager {
     historyStateStore.set({
       canUndo: this.canUndo(),
       canRedo: this.canRedo(),
+      currentIndex: this.index,
+      entries: this.stack.map((entry, i) => ({
+        index: i,
+        label: entry.label,
+        timestamp: entry.timestamp,
+        isCurrent: i === this.index,
+        isFuture: i > this.index,
+      })),
     });
   }
 }
