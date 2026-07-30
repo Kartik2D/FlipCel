@@ -47,7 +47,7 @@ export class InkwellFunctionsPanel extends LitElement {
     }
 
     .fn-shell {
-      background: var(--inkwell-panel-depth, #bcbcbc);
+      background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
       border: var(--inkwell-block-border-width, 0px) solid var(--inkwell-panel-border, #555555);
       border-radius: var(--inkwell-block-radius);
       padding: 0;
@@ -64,7 +64,7 @@ export class InkwellFunctionsPanel extends LitElement {
     }
 
     .fn-face {
-      background: var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94));
+      background: var(--inkwell-panel-face-bg, var(--inkwell-panel-surface, rgba(255, 253, 249, 0.94)));
       border-radius: calc(
         var(--inkwell-block-radius) - var(--inkwell-block-border-width, 0px)
       );

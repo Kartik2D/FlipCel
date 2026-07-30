@@ -53,8 +53,10 @@ export class GenericColorPicker extends BaseColorPicker {
       min-width: 0;
       min-height: 0;
       display: flex;
-      align-items: stretch;
+      align-items: center;
       justify-content: center;
+      /* Circle sizes against this box via cqw/cqh. */
+      container-type: size;
     }
 
     .plane-square {
@@ -73,16 +75,28 @@ export class GenericColorPicker extends BaseColorPicker {
       border: var(--picker-border-width) solid var(--picker-border-color); box-sizing: border-box;
     }
 
-    /* Sized in JS to stay 1:1; width:100% fallback for first paint. */
+    /*
+     * Circle plane: fill the plane area (1:1). vmin is only the intrinsic
+     * fallback before the area has a real height budget (content-sized panel).
+     */
     .plane-circle-wrap {
       position: relative;
       flex: 0 0 auto;
       align-self: center;
-      width: 100%;
+      aspect-ratio: 1;
+      width: min(100%, var(--picker-circle-size, 36vmin));
       height: auto;
       max-width: 100%;
-      aspect-ratio: 1;
+      max-height: 100%;
     }
+
+    @container (min-height: 1px) {
+      .plane-circle-wrap {
+        /* Fill available space — don't keep a vmin ceiling on tall panels. */
+        width: min(100cqw, 100cqh);
+      }
+    }
+
     .plane-circle-inner { position: absolute; inset: 0; cursor: crosshair; }
     .circle-disk {
       position: absolute;
@@ -145,7 +159,6 @@ export class GenericColorPicker extends BaseColorPicker {
     }
     if (changed.has("prefs")) this.syncFromColor(this.color);
     if ((changed.has("color") && !this._isDragging) || changed.has("prefs")) {
-      this.layoutCirclePlane();
       this.syncPlaneCanvasSize();
     }
   }
@@ -165,50 +178,11 @@ export class GenericColorPicker extends BaseColorPicker {
     const planeHost = this.renderRoot.querySelector(".plane-square-inner, .circle-disk");
     if (!planeArea && !planeHost) return;
     this.planeResizeObserver = new ResizeObserver(() => {
-      this.layoutCirclePlane();
       this.syncPlaneCanvasSize();
     });
-    // Observe the area so circle fitting updates when the panel is resized.
     if (planeArea) this.planeResizeObserver.observe(planeArea);
     else if (planeHost) this.planeResizeObserver.observe(planeHost);
-    this.layoutCirclePlane();
     this.syncPlaneCanvasSize();
-  }
-
-  /** True when the floating panel has an explicit height budget (user-resized). */
-  private planeHeightIsBudgeted(): boolean {
-    const panel = this.closest<HTMLElement>("[data-panel]");
-    if (!panel) return false;
-    const inline = panel.style.height.trim();
-    if (inline && inline !== "auto") return true;
-    const blockHeight = (panel as { blockHeight?: number | null }).blockHeight;
-    return typeof blockHeight === "number" && blockHeight > 0;
-  }
-
-  /**
-   * Keep the circle 1:1. Content-sized panels size from width (large default);
-   * resized panels fit the square inside the plane area so it never stretches.
-   */
-  private layoutCirclePlane() {
-    const wrap = this.renderRoot.querySelector<HTMLElement>(".plane-circle-wrap");
-    if (!wrap) return;
-    if (this.prefs?.geometry !== "circle") {
-      wrap.style.removeProperty("width");
-      wrap.style.removeProperty("height");
-      return;
-    }
-    const area = this.renderRoot.querySelector<HTMLElement>(".plane-area");
-    if (!area) return;
-    const w = area.clientWidth;
-    if (w <= 0) return;
-    let side = w;
-    if (this.planeHeightIsBudgeted()) {
-      const h = area.clientHeight;
-      if (h > 0) side = Math.min(w, h);
-    }
-    const px = `${Math.floor(side)}px`;
-    wrap.style.width = px;
-    wrap.style.height = px;
   }
 
   /**

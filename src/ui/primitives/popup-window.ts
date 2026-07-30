@@ -45,7 +45,6 @@ export class PopupWindow extends FloatingPanel {
     :host {
       --panel-width: 220px;
       --panel-min-width: 160px;
-      --panel-max-height: min(70vh, 420px);
     }
 
     .panel-body > .face {

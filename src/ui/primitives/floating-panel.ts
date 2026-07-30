@@ -47,12 +47,10 @@ export class FloatingPanel extends Block {
       /* Stable default width so content changes (toggles, tool schema) do not reflow the shell */
       width: var(--panel-width, 280px);
       min-width: var(--panel-min-width, 200px);
-      min-height: var(--panel-min-height, auto);
       max-width: calc(100vw - 16px);
       box-sizing: border-box;
       display: flex;
       flex-direction: column;
-      max-height: var(--panel-max-height, min(85vh, 720px));
       touch-action: auto;
       overscroll-behavior: none;
 
@@ -103,12 +101,12 @@ export class FloatingPanel extends Block {
       flex: 1 1 auto;
       min-height: 0;
       height: auto;
-      overflow-x: hidden;
+      overflow-x: auto;
       overflow-y: auto;
       overscroll-behavior: none;
     }
 
-    /* Fixed title bar; only .panel-body scrolls beneath it. */
+    /* Fixed title bar; only .face scrolls beneath it. Footer sits below. */
     .panel-body {
       position: relative;
       flex: 1 1 auto;
@@ -121,13 +119,69 @@ export class FloatingPanel extends Block {
     .panel-body > .face {
       flex: 1 1 auto;
       min-height: 0;
+      /* Footer owns the bottom corners. */
+      border-radius: 0;
+    }
+
+    .panel-body > .face-scrollbar {
+      top: 6px;
+      bottom: 6px;
+    }
+
+    /*
+     * Compact bottom chrome — houses the horizontal face scrollbar with a
+     * little inset around the track (same idea as the vertical gutter).
+     */
+    .panel-footer {
+      position: relative;
+      z-index: 20;
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 4px;
+      width: 100%;
+      min-width: 0;
+      height: var(--scrollbar-gutter);
+      min-height: var(--scrollbar-gutter);
+      max-height: var(--scrollbar-gutter);
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0 6px;
+      background: var(--inkwell-panel-face-bg, var(--block-face-bg));
       border-radius: 0 0 calc(var(--block-radius) - var(--block-border-width, 0px))
         calc(var(--block-radius) - var(--block-border-width, 0px));
     }
 
-    .panel-body > .face-scrollbar {
-      top: 8px;
-      bottom: 8px;
+    .panel-footer-content {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      flex: 0 0 auto;
+      min-width: 0;
+      max-width: 40%;
+    }
+
+    .panel-footer > .face-hscrollbar {
+      position: relative;
+      z-index: 2;
+      flex: 1 1 auto;
+      align-self: center;
+      min-width: 0;
+      height: var(--scrollbar-size);
+      margin: 0;
+    }
+
+    /* Resize hits fill the thin footer corners (still wide enough to grab). */
+    .panel-footer > .resize-left,
+    .panel-footer > .resize-right {
+      height: 100%;
+      width: max(28px, 22%);
     }
 
     /* Form stack: use inside .face for sliders, fields, toggles */
@@ -235,7 +289,7 @@ export class FloatingPanel extends Block {
         var(--panel-header-control-size) + (2 * var(--inkwell-block-face-padding, 12px))
       );
       padding: var(--inkwell-block-face-padding, 12px);
-      background: var(--block-face-bg);
+      background: var(--inkwell-panel-face-bg, var(--block-face-bg));
       border-radius: calc(var(--block-radius) - var(--block-border-width, 2px))
         calc(var(--block-radius) - var(--block-border-width, 2px)) 0 0;
     }
@@ -573,6 +627,11 @@ export class FloatingPanel extends Block {
     return true;
   }
 
+  /** Horizontal face bar lives in the compact footer strip. */
+  protected override usesFaceHScrollbar(): boolean {
+    return this.usesFaceScrollbar();
+  }
+
   protected dragUsesMinimumMovementThreshold(): boolean {
     return !this.pinned;
   }
@@ -580,9 +639,10 @@ export class FloatingPanel extends Block {
   protected onDragCommitted() {
     if (!this.pinned) {
       // Pulling away from the dock — hide the dock toggle until closed or re-docked.
+      // Don't replay the show animation: the panel is already visible, and the
+      // entrance keyframes start at opacity: 0 (brief flash).
       this.pinned = true;
       this.dispatchPanelDockState({ visible: true, detached: true });
-      this.playShowAnimation();
       return;
     }
 
@@ -723,6 +783,10 @@ export class FloatingPanel extends Block {
     );
   }
 
+  protected override getFaceHScrollbarMount(): HTMLElement | null {
+    return this.renderRoot.querySelector<HTMLElement>(".panel-footer");
+  }
+
   protected override getFaceScrollTarget(): HTMLElement | null {
     return (
       this.renderRoot.querySelector<HTMLElement>(".panel-body > .face") ??
@@ -730,19 +794,45 @@ export class FloatingPanel extends Block {
     );
   }
 
-  /** Standard floating-panel shell: chrome header + scrollable body. */
-  protected renderFloatingBlock(title: string | undefined, content: TemplateResult) {
+  /** Standard floating-panel shell: chrome header + scrollable body + footer. */
+  protected renderFloatingBlock(
+    title: string | undefined,
+    content: TemplateResult,
+    footer?: TemplateResult | typeof nothing,
+  ) {
     return html`
       <div class="block">
         ${this.renderDragHandlePill(title)}
         <div class="panel-body">
           <div class="face">
-            ${this.renderResizeHandles()}
             <div class="panel-form">${content}</div>
           </div>
         </div>
+        ${this.renderPanelFooter(footer)}
       </div>
     `;
+  }
+
+  /**
+   * Compact bottom chrome under the scrollable face (scrollbar-gutter tall).
+   * Hosts resize handles + the horizontal face scrollbar; subclasses can
+   * pass extra content or override `renderPanelFooterContent()`.
+   */
+  protected renderPanelFooter(content?: TemplateResult | typeof nothing) {
+    const inner = content === undefined ? this.renderPanelFooterContent() : content;
+    return html`
+      <div class="panel-footer">
+        ${this.renderResizeHandles()}
+        ${inner !== nothing
+          ? html`<div class="panel-footer-content">${inner}</div>`
+          : nothing}
+      </div>
+    `;
+  }
+
+  /** Optional footer actions / status. Default is chrome-only (+ h-scrollbar). */
+  protected renderPanelFooterContent(): TemplateResult | typeof nothing {
+    return nothing;
   }
 
   /** Floating panels show a center grab pill; popups use the title bar instead. */

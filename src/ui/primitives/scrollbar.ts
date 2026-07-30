@@ -39,7 +39,7 @@ export class InkwellScrollbar extends LitElement {
   static styles = css`
     :host {
       --scrollbar-size: 8px;
-      --scrollbar-gutter: calc(var(--scrollbar-size) + 4px);
+      --scrollbar-gutter: calc(var(--scrollbar-size) + 8px);
       --scrollbar-track-bg: var(--block-depth-color, var(--inkwell-panel-depth, rgba(120, 120, 120, 0.16)));
       --scrollbar-thumb-bg: color-mix(
         in srgb,
@@ -201,23 +201,26 @@ export class InkwellScrollbar extends LitElement {
   private onTargetScroll = () => this.sync();
 
   private clearGutterAttributes(t: HTMLElement) {
-    t.removeAttribute("data-vscroll-gutter");
-    t.removeAttribute("data-hscroll-gutter");
+    // Only clear this bar's axis — panels often mount both V and H bars
+    // on the same scroll target.
+    if (this.horizontal) {
+      t.removeAttribute("data-hscroll-gutter");
+    } else {
+      t.removeAttribute("data-vscroll-gutter");
+    }
   }
 
   private syncGutterAttributes(visible: boolean) {
     const t = this._target;
-    if (!t || !this.gutter) {
-      if (t) this.clearGutterAttributes(t);
+    if (!t) return;
+    if (!this.gutter) {
+      this.clearGutterAttributes(t);
       return;
     }
-    const h = this.horizontal;
-    if (h) {
+    if (this.horizontal) {
       t.toggleAttribute("data-hscroll-gutter", visible);
-      t.removeAttribute("data-vscroll-gutter");
     } else {
       t.toggleAttribute("data-vscroll-gutter", visible);
-      t.removeAttribute("data-hscroll-gutter");
     }
   }
 

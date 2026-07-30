@@ -62,6 +62,7 @@ const colorPickerSharedStyles = css`
   .panel-body .panel-form {
     height: 100%;
     min-height: 0;
+    gap: 10px;
   }
 
   /* Three picker variants on one equal-width tab row. */
@@ -82,6 +83,7 @@ const colorPickerSharedStyles = css`
   .picker-wrap {
     width: 100%;
     min-width: 0;
+    min-height: 0;
   }
 
   .doc-colors-header {
@@ -360,6 +362,8 @@ export class InkwellColorPanel extends ColorPickerFeatures(FloatingPanel) {
       --picker-border-width: 2px;
       --picker-border-color: var(--block-border, #9f9f9f);
       --picker-slider-width: 20px;
+      --picker-gap: 10px;
+      --picker-circle-size: 36vmin;
     }
 
     .picker-wrap {
@@ -386,6 +390,7 @@ export class InkwellColorPopup extends ColorPickerFeatures(PopupWindow) {
       --picker-slider-width: 16px;
       --picker-handle-size: 10px;
       --picker-gap: 6px;
+      --picker-circle-size: 28vmin;
     }
 
     .picker-wrap {

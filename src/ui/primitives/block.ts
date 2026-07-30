@@ -63,7 +63,8 @@ export class Block extends LitElement {
       --block-font-color: var(--inkwell-text-secondary, #6b6b6b);
       --block-resize-hit: var(--inkwell-block-resize-hit, 22px);
       --scrollbar-size: var(--inkwell-scrollbar-size, 8px);
-      --scrollbar-gutter: calc(var(--scrollbar-size) + 4px);
+      /* Track + inset so scrollbars sit in reserved padding, not over content. */
+      --scrollbar-gutter: calc(var(--scrollbar-size) + 8px);
 
       display: block;
       box-sizing: border-box;
@@ -90,14 +91,18 @@ export class Block extends LitElement {
        base class so every panel gets it for free. */
     .face-scrollbar {
       position: absolute;
-      top: 8px;
-      bottom: 8px;
+      top: 6px;
+      bottom: 6px;
       right: 4px;
       z-index: 30;
     }
 
     .face[data-vscroll-gutter] {
       padding-right: calc(var(--block-face-padding) + var(--scrollbar-gutter));
+    }
+
+    .face[data-hscroll-gutter] {
+      padding-bottom: calc(var(--block-face-padding) + var(--scrollbar-gutter));
     }
 
     :host([dragging]) {
@@ -117,6 +122,8 @@ export class Block extends LitElement {
       padding: 0;
       height: 100%;
       box-shadow: var(--inkwell-shadow-panel, 0 0 10px rgba(5, 0, 0, 0.3));
+      backdrop-filter: var(--inkwell-panel-backdrop-filter, none);
+      -webkit-backdrop-filter: var(--inkwell-panel-backdrop-filter, none);
       position: relative;
       overflow: hidden;
     }
@@ -124,7 +131,7 @@ export class Block extends LitElement {
     .face {
       position: relative;
       box-sizing: border-box;
-      background: var(--block-face-bg);
+      background: var(--inkwell-panel-face-bg, var(--block-face-bg));
       border-radius: calc(var(--block-radius) - var(--block-border-width));
       padding: var(--block-face-padding);
       height: 100%;
@@ -134,7 +141,7 @@ export class Block extends LitElement {
       overflow: hidden;
     }
 
-    /* Resize corners live inside .face: above the face fill, under content. */
+    /* Resize corners: absolute to a positioned ancestor (.face or .panel-footer). */
     .resize-left,
     .resize-right {
       position: absolute;
@@ -146,6 +153,7 @@ export class Block extends LitElement {
 
     /* Panel body / slotted chrome sits above the resize hit zones. */
     .panel-form,
+    .panel-footer-content,
     .face-content {
       position: relative;
       z-index: 2;
@@ -651,6 +659,7 @@ export class Block extends LitElement {
   }
 
   protected faceScrollbar: InkwellScrollbar | null = null;
+  protected faceHScrollbar: InkwellScrollbar | null = null;
 
   /**
    * Opt-in face scrollbar. Default off so compact Blocks (buttons) are not
@@ -660,8 +669,18 @@ export class Block extends LitElement {
     return false;
   }
 
+  /** Opt-in horizontal face scrollbar (typically mounted in `.panel-footer`). */
+  protected usesFaceHScrollbar(): boolean {
+    return false;
+  }
+
   protected getFaceScrollbarMount(): HTMLElement | null {
     return this.renderRoot.querySelector<HTMLElement>(".block");
+  }
+
+  /** Where to mount the horizontal face bar. Null skips creation. */
+  protected getFaceHScrollbarMount(): HTMLElement | null {
+    return null;
   }
 
   protected getFaceScrollTarget(): HTMLElement | null {
@@ -672,23 +691,47 @@ export class Block extends LitElement {
     if (!this.usesFaceScrollbar()) {
       this.faceScrollbar?.remove();
       this.faceScrollbar = null;
-      return;
+    } else {
+      const mount = this.getFaceScrollbarMount();
+      const face = this.getFaceScrollTarget();
+      if (mount && face) {
+        if (!this.faceScrollbar || this.faceScrollbar.parentElement !== mount) {
+          const bar = document.createElement("inkwell-scrollbar") as InkwellScrollbar;
+          bar.orientation = "vertical";
+          bar.classList.add("face-scrollbar");
+          bar.setAttribute("data-interactive", "");
+          mount.appendChild(bar);
+          this.faceScrollbar = bar;
+        }
+        this.faceScrollbar.target = face;
+      }
     }
-    const mount = this.getFaceScrollbarMount();
-    const face = this.getFaceScrollTarget();
-    if (!mount || !face) return;
-    if (!this.faceScrollbar || this.faceScrollbar.parentElement !== mount) {
-      const bar = document.createElement("inkwell-scrollbar") as InkwellScrollbar;
-      bar.orientation = "vertical";
-      bar.classList.add("face-scrollbar");
-      bar.setAttribute("data-interactive", "");
-      mount.appendChild(bar);
-      this.faceScrollbar = bar;
-    }
-    this.faceScrollbar.target = face;
+    this.ensureFaceHScrollbar();
   }
 
-  /** Corner resize hit targets — render inside `.face`, under content. */
+  protected ensureFaceHScrollbar() {
+    if (!this.usesFaceHScrollbar()) {
+      this.faceHScrollbar?.remove();
+      this.faceHScrollbar = null;
+      return;
+    }
+    const mount = this.getFaceHScrollbarMount();
+    const face = this.getFaceScrollTarget();
+    if (!mount || !face) return;
+    if (!this.faceHScrollbar || this.faceHScrollbar.parentElement !== mount) {
+      const bar = document.createElement("inkwell-scrollbar") as InkwellScrollbar;
+      bar.orientation = "horizontal";
+      bar.classList.add("face-hscrollbar");
+      bar.setAttribute("data-interactive", "");
+      // Footer is the gutter — don't also pad the face bottom.
+      bar.gutter = false;
+      mount.appendChild(bar);
+      this.faceHScrollbar = bar;
+    }
+    this.faceHScrollbar.target = face;
+  }
+
+  /** Corner resize hit targets — render in `.panel-footer` (or `.face` fallback). */
   protected renderResizeHandles() {
     if (!this.resizable) return nothing;
     return html`

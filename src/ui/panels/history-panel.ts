@@ -19,7 +19,6 @@ export class InkwellHistoryPanel extends FloatingPanel {
     :host {
       --panel-width: 260px;
       --panel-min-width: 200px;
-      --panel-max-height: min(70vh, 480px);
     }
 
     .history-list {

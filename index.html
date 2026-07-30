@@ -37,6 +37,7 @@
                     velvet: "dark",
                     lagoon: "dark",
                     neon: "dark",
+                    glass: "dark",
                 };
                 var migrate = {
                     berry: "neon",
@@ -51,6 +52,7 @@
                     mist: "lagoon",
                     ink: "lagoon",
                     ember: "velvet",
+                    neumorphic: "slab",
                 };
                 try {
                     var stored = localStorage.getItem("inkwell.theme");
@@ -79,6 +81,9 @@
                 --inkwell-block-font-size: 12px;
                 --inkwell-block-resize-hit: 22px;
                 --inkwell-scrollbar-size: 8px;
+                /* Panel glass — themes may set blur / leave face transparent. */
+                --inkwell-panel-backdrop-filter: none;
+                --inkwell-panel-face-bg: var(--inkwell-panel-surface);
             }
 
             /* Slab (default): dark flat chrome. */
@@ -541,6 +546,77 @@
                 --inkwell-timeline-selection-bg: color-mix(
                     in srgb,
                     var(--inkwell-accent) 36%,
+                    var(--inkwell-panel-surface)
+                );
+            }
+
+            /* Glass: slab palette with light frosted panels (cheap blur). */
+            html[data-theme="glass"] {
+                --inkwell-block-border-width: 1px;
+                --inkwell-app-bg: #121212;
+                --inkwell-canvas-bg: #1a1a1a;
+                /* More opaque fill = less reliance on expensive backdrop blur. */
+                --inkwell-panel-surface: rgba(56, 56, 56, 0.78);
+                --inkwell-panel-face-bg: transparent;
+                --inkwell-panel-depth: rgba(20, 20, 20, 0.7);
+                --inkwell-panel-inset-bg: rgba(42, 42, 42, 0.65);
+                --inkwell-panel-border: rgba(255, 255, 255, 0.22);
+                --inkwell-topbar-surface: rgba(56, 56, 56, 0.78);
+                /* Small radius blur only — large blurs + many layers tank GPU. */
+                --inkwell-panel-backdrop-filter: blur(8px);
+                --inkwell-text-primary: #f0f0f0;
+                --inkwell-text-secondary: #c8c8c8;
+                --inkwell-text-muted: #999999;
+                --inkwell-accent: #7c9eff;
+                --inkwell-accent-hover: #97b2ff;
+                --inkwell-accent-muted: rgba(124, 158, 255, 0.35);
+                --inkwell-track-bg: rgba(58, 58, 58, 0.7);
+                --inkwell-toggle-track: rgba(51, 51, 51, 0.7);
+                --inkwell-toggle-border: rgba(255, 255, 255, 0.2);
+                --inkwell-toggle-thumb: #f0f0f0;
+                --inkwell-accent-contrast: #ffffff;
+                --inkwell-positive: #5ecf8e;
+                --inkwell-positive-hover: #78db9f;
+                --inkwell-positive-muted: rgba(94, 207, 142, 0.32);
+                --inkwell-positive-contrast: #0e1a14;
+                --inkwell-negative: #c66d6d;
+                --inkwell-negative-hover: #df8080;
+                --inkwell-negative-muted: color-mix(in srgb, var(--inkwell-negative) 32%, transparent);
+                --inkwell-negative-contrast: #ffffff;
+                --inkwell-neutral: #9aa3b2;
+                --inkwell-neutral-hover: #adb5c2;
+                --inkwell-neutral-muted: rgba(154, 163, 178, 0.32);
+                --inkwell-neutral-contrast: #12141a;
+                --inkwell-shadow-panel: 0 18px 40px rgba(0, 0, 0, 0.4);
+                --inkwell-shadow-soft: 0 10px 24px rgba(0, 0, 0, 0.32);
+                --inkwell-dock-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
+                --inkwell-panel-active-overlay: rgba(255, 255, 255, 0.15);
+                --inkwell-panel-active-negative: rgba(255, 124, 124, 0.42);
+                --inkwell-scrollbar-thumb: rgba(255, 255, 255, 0.28);
+                --inkwell-playhead: #f2c14e;
+                --inkwell-timeline-cell-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-panel-surface) 38%,
+                    var(--inkwell-panel-depth)
+                );
+                --inkwell-timeline-active-row-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-accent) 42%,
+                    var(--inkwell-panel-surface)
+                );
+                --inkwell-timeline-playhead-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-playhead) 26%,
+                    var(--inkwell-panel-surface)
+                );
+                --inkwell-timeline-active-playhead-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-timeline-active-row-bg) 52%,
+                    var(--inkwell-timeline-playhead-bg)
+                );
+                --inkwell-timeline-selection-bg: color-mix(
+                    in srgb,
+                    var(--inkwell-accent) 48%,
                     var(--inkwell-panel-surface)
                 );
             }

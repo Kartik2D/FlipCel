@@ -27,14 +27,12 @@ export class InkwellStartupPanel extends FloatingPanel {
 
     :host {
       --panel-width: 320px;
-      --panel-max-height: none;
       z-index: 1100;
     }
 
     .block {
       flex: 0 0 auto;
       height: auto;
-      max-height: none;
       min-height: 0;
     }
 
@@ -43,7 +41,6 @@ export class InkwellStartupPanel extends FloatingPanel {
       flex: 0 0 auto;
       min-height: 0;
       height: auto;
-      max-height: none;
       overflow: visible;
     }
 

@@ -69,7 +69,6 @@ export class InkwellLayersPanel extends FloatingPanel {
 
     :host {
       --panel-width: 480px;
-      --panel-max-height: none;
       /* Row/frame pitch (layer rows, row controls, timeline cells). */
       --layers-row-size: 42px;
       /* Compact chrome: add/delete, keyframe tools, playback buttons. */
@@ -1950,7 +1949,6 @@ export class InkwellLayersPanel extends FloatingPanel {
         ${this.renderDragHandlePill("Layers")}
         <div class="panel-body">
           <div class="face">
-            ${this.renderResizeHandles()}
             <div class="panel-form">
             ${this.mini
               ? nothing
@@ -2188,6 +2186,7 @@ export class InkwellLayersPanel extends FloatingPanel {
           </div>
         </div>
         </div>
+        ${this.renderPanelFooter()}
         ${this.frameSelection && this.showFrameActionsForSelection()
           ? this.renderFrameActionsPopover(this.frameSelection)
           : nothing}

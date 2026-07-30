@@ -84,6 +84,9 @@ export class BlockyButton extends Block {
       border: none;
       background: transparent;
       box-shadow: none;
+      /* Buttons inherit Block blur — kill it; many tiny blurs are the lag source. */
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
       min-width: 0;
       max-width: 100%;
     }

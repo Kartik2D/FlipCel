@@ -6,7 +6,7 @@ export const pickerVars = css`
     --picker-border-color: var(--block-border, #9f9f9f);
     --picker-handle-size: 12px;
     --picker-slider-width: 20px;
-    --picker-gap: 8px;
+    --picker-gap: 10px;
   }
 `;
 
