@@ -1018,6 +1018,9 @@ export class UnifiedInputManager {
       case "eyedropper":
         this.canvas.style.cursor = "copy";
         break;
+      case "fill":
+        this.canvas.style.cursor = "cell";
+        break;
       case "brush":
       case "lasso":
       case "magnet":

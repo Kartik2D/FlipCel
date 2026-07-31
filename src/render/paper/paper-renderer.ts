@@ -2314,6 +2314,21 @@ export class PaperRenderer {
     paper.view.update();
   }
 
+  /**
+   * Recolor a path and merge with same-color neighbors (paint-bucket on ink).
+   * Returns false when the item is gone or already that color.
+   */
+  recolorItem(item: paper.PathItem, color: string): boolean {
+    if (!item.parent) return false;
+    const paperColor = new paper.Color(color);
+    const before = item.fillColor?.toCSS(true) ?? null;
+    if (before === paperColor.toCSS(true)) return false;
+    this.applyPathStyle(item, paperColor);
+    this.reconcileItem(item);
+    paper.view.update();
+    return true;
+  }
+
   strokeSelectionShapeOutline(ctx: CanvasRenderingContext2D, item: paper.Item): void {
     strokeSelectionShapeOutlineHelper(ctx, item, (x, y) => this.worldToScreen(x, y));
   }

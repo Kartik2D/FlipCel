@@ -13,6 +13,7 @@ import { magicMove } from "./magic-move";
 import { magicMorph } from "./magic-morph";
 import { pan } from "./pan";
 import { eyedropper } from "./eyedropper";
+import { fill } from "./fill";
 
 export type {
   ToggleSetting,
@@ -34,6 +35,7 @@ export { magicMove } from "./magic-move";
 export { magicMorph } from "./magic-morph";
 export { pan } from "./pan";
 export { eyedropper } from "./eyedropper";
+export { fill } from "./fill";
 
 // ============================================================
 // Tool Registry
@@ -42,6 +44,7 @@ export { eyedropper } from "./eyedropper";
 export const tools = [
   brush,
   lasso,
+  fill,
   select,
   directSelect,
   magnet,

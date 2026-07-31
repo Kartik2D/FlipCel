@@ -11,6 +11,8 @@ import type { FlipCelToolSettingsPanel } from "./tool-settings-panel";
 // ============================================================
 
 const DOUBLE_TAP_MS = 350;
+const HOLD_OPEN_MS = 400;
+const HOLD_SLOP_PX = 10;
 
 @customElement("flipcel-tools-panel")
 export class FlipCelToolsPanel extends FloatingPanel {
@@ -21,6 +23,13 @@ export class FlipCelToolsPanel extends FloatingPanel {
   /** Last tool icon tap, for touch double-tap → open settings. */
   private lastTap: { toolId: ToolId; time: number } | null = null;
 
+  /** Press-and-hold on a tool icon → open settings. */
+  private holdTimer: ReturnType<typeof setTimeout> | null = null;
+  private holdToolId: ToolId | null = null;
+  private holdOrigin: { x: number; y: number } | null = null;
+  private holdOpened = false;
+  private suppressNextClick = false;
+
   /** Panel tool order; pan is dock-only and omitted here. */
   private static readonly TOOLS: ToolId[] = [
     "select",
@@ -29,6 +38,7 @@ export class FlipCelToolsPanel extends FloatingPanel {
     "magic-morph",
     "brush",
     "lasso",
+    "fill",
     "magnet",
     "eyedropper",
   ];
@@ -136,7 +146,64 @@ export class FlipCelToolsPanel extends FloatingPanel {
     void panel.showNear(this);
   }
 
+  private clearHoldTimer() {
+    if (this.holdTimer !== null) {
+      clearTimeout(this.holdTimer);
+      this.holdTimer = null;
+    }
+    this.holdToolId = null;
+    this.holdOrigin = null;
+  }
+
+  private onToolPointerDown(toolId: ToolId, e: PointerEvent) {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+
+    this.clearHoldTimer();
+    this.holdOpened = false;
+    this.holdToolId = toolId;
+    this.holdOrigin = { x: e.clientX, y: e.clientY };
+
+    this.holdTimer = setTimeout(() => {
+      this.holdTimer = null;
+      if (this.holdToolId !== toolId) return;
+      this.holdOpened = true;
+      this.suppressNextClick = true;
+      this.lastTap = null;
+      this.setTool(toolId);
+      this.openToolSettings();
+      try {
+        navigator.vibrate?.(10);
+      } catch {
+        /* ignore */
+      }
+    }, HOLD_OPEN_MS);
+
+    const onMove = (ev: PointerEvent) => {
+      const origin = this.holdOrigin;
+      if (!origin || this.holdOpened) return;
+      const dx = ev.clientX - origin.x;
+      const dy = ev.clientY - origin.y;
+      if (dx * dx + dy * dy >= HOLD_SLOP_PX * HOLD_SLOP_PX) {
+        this.clearHoldTimer();
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+      if (!this.holdOpened) this.clearHoldTimer();
+    };
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+  }
+
   private onToolActivate(toolId: ToolId) {
+    if (this.suppressNextClick) {
+      this.suppressNextClick = false;
+      return;
+    }
+
     const now = performance.now();
     const prev = this.lastTap;
     const isDouble =
@@ -161,9 +228,10 @@ export class FlipCelToolsPanel extends FloatingPanel {
     return html`
       <blocky-button
         flat
-        title=${`${t.name} (double-tap for settings)`}
+        title=${`${t.name} (hold or double-tap for settings)`}
         aria-label=${t.name}
         ?active=${this.tool.value === toolId}
+        @pointerdown=${(e: PointerEvent) => this.onToolPointerDown(toolId, e)}
         @click=${() => this.onToolActivate(toolId)}
       >
         <span class="tool-icon">${phosphorIcon(icon, 18)}</span>

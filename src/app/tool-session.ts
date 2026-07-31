@@ -44,6 +44,7 @@ import {
 import { isPaintModeModifierHeld } from "../input/shortcuts";
 import { stampBrushStroke } from "../tools/brush";
 import { replaceLassoStroke } from "../tools/lasso";
+import { fillAt } from "../editing/fill-region";
 
 interface PixelQuickShapeState {
   tool: "brush" | "lasso";
@@ -96,9 +97,38 @@ export class ToolSession {
   private quickShapeStillAnchor: Point | null = null;
   private quickShapeStillTimer: ReturnType<typeof setTimeout> | null = null;
   private pixelQuickShape: PixelQuickShapeState | null = null;
+  /** Prevent overlapping paint-bucket operations from stacked clicks. */
+  private fillBusy = false;
 
   constructor(deps: ToolSessionDeps) {
     this.deps = deps;
+  }
+
+  private async runFill(viewportPoint: Point): Promise<void> {
+    if (this.fillBusy) return;
+    this.fillBusy = true;
+    try {
+      const fillSettings = toolSettingsStore.get().fill;
+      const gapPx = Number(fillSettings.gap ?? 0);
+      const algorithm =
+        fillSettings.algorithm === "vector" ? "vector" : "screen";
+      const changed = await fillAt(
+        {
+          paperRenderer: this.deps.paperRenderer,
+          tracer: this.deps.tracer,
+          camera: this.deps.camera,
+          getConfig: this.deps.getConfig,
+        },
+        viewportPoint,
+        colorStore.get(),
+        { gapPx, algorithm },
+      );
+      if (changed) this.deps.historyManager.snapshot();
+    } catch (error) {
+      console.error("Fill failed:", error);
+    } finally {
+      this.fillBusy = false;
+    }
   }
 
   private clearQuickShapeStillTimer(): void {
@@ -243,7 +273,8 @@ export class ToolSession {
         tool === "direct-select" ||
         tool === "magnet" ||
         tool === "magic-move" ||
-        tool === "magic-morph")
+        tool === "magic-morph" ||
+        tool === "fill")
     ) {
       deps.documentManager.setPlaying(false);
     }
@@ -315,6 +346,11 @@ export class ToolSession {
 
     if (tool === "eyedropper") {
       deps.pickColorAt(point);
+      return;
+    }
+
+    if (tool === "fill") {
+      void this.runFill(viewportPoint);
       return;
     }
 
@@ -393,6 +429,8 @@ export class ToolSession {
       deps.pickColorAt(point);
       return;
     }
+
+    if (tool === "fill") return;
 
     // Quick Shape adjust: scale+rotate snapped preview; do not append freehand.
     if (
@@ -478,7 +516,7 @@ export class ToolSession {
       return;
     }
 
-    if (tool === "eyedropper") return;
+    if (tool === "eyedropper" || tool === "fill") return;
 
     this.clearQuickShapeStillTimer();
     // Leave snapped raster on the canvas; endTool still returns points for the gate.
@@ -568,7 +606,7 @@ export class ToolSession {
       return;
     }
 
-    if (tool === "eyedropper") return;
+    if (tool === "eyedropper" || tool === "fill") return;
 
     this.resetPixelQuickShape();
     this.insideClipForStroke = undefined;

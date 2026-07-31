@@ -198,7 +198,7 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     deps.switchTool(tool);
   });
 
-  // Tool settings panel (opened via double-tap on a tool icon; not dock-toggled)
+  // Tool settings panel (opened via hold/double-tap on a tool icon; not dock-toggled)
   const { toolSettingsPanel } = deps;
   toolSettingsPanel.addEventListener("settings-change", (e: Event) => {
     const settings = (e as CustomEvent<AllToolSettings>).detail;

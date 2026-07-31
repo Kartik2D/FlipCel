@@ -20,7 +20,7 @@ import { FloatingPanel } from "../primitives/floating-panel";
 import { raisePanelZIndex } from "../primitives/panel-anchor";
 
 // ============================================================
-// Tool Settings Panel — normal floating panel (opened via tool double-tap)
+// Tool Settings Panel — floating panel (opened via tool hold or double-tap)
 // ============================================================
 
 @customElement("flipcel-tool-settings-panel")
@@ -237,6 +237,15 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
       ${schemaKeys.map((key) =>
         this.renderSetting(currentToolId, key, schema[key], toolSettings[key]),
       )}
+      ${currentToolId === "fill"
+        ? (() => {
+            const algo =
+              toolSettings.algorithm === "vector" ? "vector" : "screen";
+            return algo === "vector"
+              ? html`<p class="hint">Vector: click a shape to recolor, or an enclosed empty pocket to fill. Fill gap morph-closes outline openings up to that width (zoom-relative). Regions open to the view edge won’t fill.</p>`
+              : html`<p class="hint">Screen: click a chamber — inside a fill or empty space — to replace it. Fill gap stops spill through openings in empty pockets, and on existing strokes splits arms at crossings so one branch can be recolored.</p>`;
+          })()
+        : ""}
       ${currentToolId === "eyedropper"
         ? html`<p class="hint">Click artwork to pick its color. “All” samples unlocked visible layers.</p>`
         : ""}
