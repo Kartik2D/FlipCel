@@ -693,14 +693,15 @@ return module.exports;`;var _=z.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
       container-type: size;
     }
 
+    /* Square planes (hsv1 / okhsl2): fill the plane area; no forced 1:1. */
     .plane-square {
       position: relative;
       flex: 1 1 auto;
-      width: auto;
+      align-self: stretch;
+      width: 100%;
       height: 100%;
       min-width: 0;
-      max-width: 100%;
-      aspect-ratio: 1;
+      min-height: 0;
     }
     .plane-square-inner {
       position: absolute; inset: 0; cursor: crosshair;
@@ -710,8 +711,8 @@ return module.exports;`;var _=z.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
     }
 
     /*
-     * Circle plane: fill the plane area (1:1). vmin is only the intrinsic
-     * fallback before the area has a real height budget (content-sized panel).
+     * Circle plane (okhsl1): must stay 1:1. vmin is the intrinsic fallback
+     * before the area has a real height budget (content-sized panel).
      */
     .plane-circle-wrap {
       position: relative;
@@ -726,7 +727,7 @@ return module.exports;`;var _=z.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
 
     @container (min-height: 1px) {
       .plane-circle-wrap {
-        /* Fill available space — don't keep a vmin ceiling on tall panels. */
+        /* Largest square that fits — don't keep a vmin ceiling on tall panels. */
         width: min(100cqw, 100cqh);
       }
     }
@@ -1598,6 +1599,10 @@ return module.exports;`;var _=z.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
 
     :host {
       --panel-width: 288px;
+      /* Square plane is height:100% — without a default height the picker collapses. */
+      --panel-height: 400px;
+      height: var(--panel-height);
+      min-height: 280px;
       --picker-border-width: 2px;
       --picker-border-color: var(--block-border, #9f9f9f);
       --picker-slider-width: 20px;
@@ -1607,9 +1612,9 @@ return module.exports;`;var _=z.agent;if(i&&(_.chrome||_.firefox&&_.versionNumbe
 
     .picker-wrap {
       flex: 1 1 auto;
-      min-height: 0;
+      min-height: 200px;
     }
-  `;render(){return this.renderFloatingBlock(`Color`,this.renderColorPickerContent())}};$([Q({type:Boolean,reflect:!0})],eu.prototype,`masonry`,void 0),eu=$([fl(`flipcel-color-panel`)],eu);var tu=class extends $l(Yl){static#e=this.styles=cc`
+  `;getResizeMinHeight(e){return 280}render(){return this.renderFloatingBlock(`Color`,this.renderColorPickerContent())}};$([Q({type:Boolean,reflect:!0})],eu.prototype,`masonry`,void 0),eu=$([fl(`flipcel-color-panel`)],eu);var tu=class extends $l(Yl){static#e=this.styles=cc`
     ${Yl.styles}
     ${Ql}
 
