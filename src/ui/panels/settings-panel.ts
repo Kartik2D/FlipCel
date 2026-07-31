@@ -562,7 +562,7 @@ export class FlipCelUniversalPanel extends FloatingPanel {
                 />
               </label>
               <label>
-                <span>Path style</span>
+                <span>Style</span>
                 <input
                   type="range"
                   min="0"
@@ -587,7 +587,7 @@ export class FlipCelUniversalPanel extends FloatingPanel {
                   ?data-disabled=${!this.quickShapeEnabled.value}
                 >
                   <span>Straight</span>
-                  <span>Bezier</span>
+                  <span>Curvy</span>
                 </div>
               </label>
             </flipcel-panel-section>

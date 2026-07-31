@@ -318,10 +318,10 @@ export const wheelDirectionStore = new Store<WheelDirection>("clockwise");
 export const quickShapeEnabledStore = new Store<boolean>(true);
 
 /**
- * Continuum for freehand cleanup when no primitive wins.
- * 0 = Straight (sharp polyline), 1 = Bezier (smooth curves).
+ * Bias for straight vs curved cleanup.
+ * 0 = straight segments, 1 = curvy (aggressive semicircles).
  */
-export const quickShapeCurveStyleStore = new Store<number>(0.45);
+export const quickShapeCurveStyleStore = new Store<number>(0.55);
 
 /** Still-hold delay before Quick Shape snaps (milliseconds). */
 export const QUICK_SHAPE_HOLD_MS_MIN = 100;
@@ -331,7 +331,7 @@ export const QUICK_SHAPE_HOLD_MS_DEFAULT = 400;
 export const quickShapeHoldMsStore = new Store<number>(QUICK_SHAPE_HOLD_MS_DEFAULT);
 
 export function clampQuickShapeCurveStyle(value: number): number {
-  if (!Number.isFinite(value)) return 0.45;
+  if (!Number.isFinite(value)) return 0.55;
   return Math.max(0, Math.min(1, value));
 }
 

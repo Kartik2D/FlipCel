@@ -53,7 +53,9 @@ interface PixelQuickShapeState {
   base: QuickShapeResult;
   /** Latest adjusted result. */
   result: QuickShapeResult;
-  /** Pointer position when snap fired. */
+  /** Stroke start — scale/rotate pivot. */
+  pivot: Point;
+  /** Pointer position when snap fired (reference tip). */
   adjustOrigin: Point;
 }
 
@@ -158,6 +160,7 @@ export class ToolSession {
       originalPoints,
       base: recognized,
       result: recognized,
+      pivot: { ...originalPoints[0] },
       adjustOrigin: { ...holdPoint },
     };
     this.applyPixelQuickShapePreview();
@@ -399,6 +402,7 @@ export class ToolSession {
     ) {
       const adjusted = adjustQuickShape(
         this.pixelQuickShape.base,
+        this.pixelQuickShape.pivot,
         this.pixelQuickShape.adjustOrigin,
         point,
       );
