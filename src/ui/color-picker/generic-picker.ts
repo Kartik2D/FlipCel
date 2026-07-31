@@ -59,14 +59,15 @@ export class GenericColorPicker extends BaseColorPicker {
       container-type: size;
     }
 
+    /* Square planes (hsv1 / okhsl2): fill the plane area; no forced 1:1. */
     .plane-square {
       position: relative;
       flex: 1 1 auto;
-      width: auto;
+      align-self: stretch;
+      width: 100%;
       height: 100%;
       min-width: 0;
-      max-width: 100%;
-      aspect-ratio: 1;
+      min-height: 0;
     }
     .plane-square-inner {
       position: absolute; inset: 0; cursor: crosshair;
@@ -76,8 +77,8 @@ export class GenericColorPicker extends BaseColorPicker {
     }
 
     /*
-     * Circle plane: fill the plane area (1:1). vmin is only the intrinsic
-     * fallback before the area has a real height budget (content-sized panel).
+     * Circle plane (okhsl1): must stay 1:1. vmin is the intrinsic fallback
+     * before the area has a real height budget (content-sized panel).
      */
     .plane-circle-wrap {
       position: relative;
@@ -92,7 +93,7 @@ export class GenericColorPicker extends BaseColorPicker {
 
     @container (min-height: 1px) {
       .plane-circle-wrap {
-        /* Fill available space — don't keep a vmin ceiling on tall panels. */
+        /* Largest square that fits — don't keep a vmin ceiling on tall panels. */
         width: min(100cqw, 100cqh);
       }
     }

@@ -359,6 +359,10 @@ export class FlipCelColorPanel extends ColorPickerFeatures(FloatingPanel) {
 
     :host {
       --panel-width: 288px;
+      /* Square plane is height:100% — without a default height the picker collapses. */
+      --panel-height: 400px;
+      height: var(--panel-height);
+      min-height: 280px;
       --picker-border-width: 2px;
       --picker-border-color: var(--block-border, #9f9f9f);
       --picker-slider-width: 20px;
@@ -368,9 +372,13 @@ export class FlipCelColorPanel extends ColorPickerFeatures(FloatingPanel) {
 
     .picker-wrap {
       flex: 1 1 auto;
-      min-height: 0;
+      min-height: 200px;
     }
   `;
+
+  protected override getResizeMinHeight(_width: number): number {
+    return 280;
+  }
 
   render() {
     return this.renderFloatingBlock("Color", this.renderColorPickerContent());
