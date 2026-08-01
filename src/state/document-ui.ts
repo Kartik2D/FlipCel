@@ -150,3 +150,20 @@ function createInitialLayerState(): LayerState {
 }
 
 export const layerStore = new Store<LayerState>(createInitialLayerState());
+
+/** Display / download name for the open document (not part of serialized JSON). */
+export const DEFAULT_DOCUMENT_NAME = "Untitled";
+
+export const documentNameStore = new Store<string>(DEFAULT_DOCUMENT_NAME);
+
+/** Strip a trailing `.json` (any case) for compact dock display. */
+export function displayDocumentName(name: string): string {
+  const trimmed = name.trim() || DEFAULT_DOCUMENT_NAME;
+  return trimmed.replace(/\.json$/i, "");
+}
+
+/** Ensure a download filename ends with `.json`. */
+export function downloadDocumentName(name: string): string {
+  const trimmed = name.trim() || DEFAULT_DOCUMENT_NAME;
+  return /\.json$/i.test(trimmed) ? trimmed : `${trimmed}.json`;
+}

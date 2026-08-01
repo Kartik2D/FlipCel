@@ -136,6 +136,33 @@ export const dockChipStyles = css`
     outline-offset: 1px;
   }
 
+  button.dock-chip-reset:disabled {
+    opacity: 0.35;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  button.dock-chip-reset:disabled:hover {
+    background: transparent;
+  }
+
+  .dock-cell-filename {
+    flex: 0 1 auto;
+    width: auto;
+    min-width: 72px;
+    max-width: 140px;
+  }
+
+  .dock-cell-filename .dock-chip-stacked {
+    align-items: flex-start;
+    text-align: left;
+    padding: 2px 8px 2px 6px;
+  }
+
+  .dock-cell-filename .dock-value {
+    max-width: 126px;
+  }
+
   .dock-value.mode-positive,
   .dock-value.mode-negative,
   .dock-value.mode-neutral {

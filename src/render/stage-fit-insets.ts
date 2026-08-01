@@ -18,8 +18,8 @@ const DOCK_TOP_EXTRA_PX = 10;
 /** Bottom margin so the stage does not sit flush against the window edge. */
 const FIT_BOTTOM_MARGIN_PX = 16;
 
-/** Horizontal reserve per side so the stage stays centered (corner docks / breathing room). */
-const DOCK_SIDE_RESERVE_PX = 160;
+/** Horizontal reserve per side so the stage stays centered with breathing room. */
+const DOCK_SIDE_RESERVE_PX = 48;
 
 /** Do not use more than this fraction of viewport height for the top inset (safety on short windows). */
 const TOP_INSET_MAX_FRAC = 0.42;

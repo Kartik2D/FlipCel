@@ -1,7 +1,25 @@
-import { html, css, nothing, type PropertyValues } from "lit";
-import { customElement, state } from "lit/decorators.js";
+import { html, css, nothing, type PropertyValues, type TemplateResult } from "lit";
+import { customElement, property, state } from "lit/decorators.js";
 import { getTool } from "../../tools/registry";
-import { colorStore, toolStore, StoreController } from "../../state";
+import { paintModeAccent, type PaintModeAccent } from "../../tools/paint-mode";
+import type { SettingsSchema } from "../../tools/types";
+import {
+  colorStore,
+  toolStore,
+  toolSettingsStore,
+  modifiersStore,
+  documentNameStore,
+  displayDocumentName,
+  DEFAULT_DOCUMENT_NAME,
+  StoreController,
+} from "../../state";
+import { timelineStore } from "../../document/document";
+import { historyStateStore } from "../../document/history";
+import {
+  getModifierBinding,
+  isModifierHeld,
+  shortcutsStore,
+} from "../../input/shortcuts";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { phosphorIcon, PANEL_ICON_MAP } from "../icons/phosphor";
 import { anchorPanelBelowTrigger, raisePanelZIndex } from "../primitives/panel-anchor";
@@ -12,24 +30,37 @@ import {
 import {
   PANEL_VISIBILITY_DEFAULTS,
   TOP_BAR_PANEL_IDS,
+  TOP_BAR_SHORTCUT_CHIPS,
+  dockChipStyles,
+  type DockInfoChip,
   type PanelVisibility,
   type ToggleablePanel,
 } from "./dock-chrome";
 
 // ============================================================
-// Top Bar Panel (panel visibility toggles)
+// Top Bar Panel — unified dock (file, panels, status)
 // ============================================================
 
 @customElement("flipcel-top-bar-panel")
 export class FlipCelTopBarPanel extends FloatingPanel {
+  @property({ type: Number }) zoomLevel = 100;
+
   @state() private panelVisibility: PanelVisibility[] = PANEL_VISIBILITY_DEFAULTS.map((p) => ({
     ...p,
   }));
   /** Buttons that should play pop-in on their next paint. */
   @state() private enteringPanelIds: string[] = [];
+  @state() private renaming = false;
+  @state() private editingName = "";
 
   private dockColor = new StoreController(this, colorStore);
   private tool = new StoreController(this, toolStore);
+  private settings = new StoreController(this, toolSettingsStore);
+  private modifiers = new StoreController(this, modifiersStore);
+  private shortcuts = new StoreController(this, shortcutsStore);
+  private timeline = new StoreController(this, timelineStore);
+  private history = new StoreController(this, historyStateStore);
+  private documentName = new StoreController(this, documentNameStore);
   private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
   private readonly panelVisibilityChangeHandler = (e: Event) =>
     this.onPanelVisibilityChange(
@@ -87,6 +118,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
 
   static styles = css`
     ${FloatingPanel.styles}
+    ${dockChipStyles}
 
     :host {
       /* Below Safari iOS / iPadOS chrome; env() needs viewport-fit=cover. */
@@ -99,7 +131,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
       --block-face-bg: var(--flipcel-topbar-surface, var(--flipcel-panel-surface, #ffffff));
       z-index: 1200;
       width: auto;
-      max-width: min(calc(100vw - 32px), 640px);
+      max-width: calc(100vw - 24px);
       /* Slightly lighter than the full floating-panels default on compact docks. */
       --flipcel-shadow-panel: var(--flipcel-dock-shadow);
       /* Panel row; icon / control column width. */
@@ -125,11 +157,109 @@ export class FlipCelTopBarPanel extends FloatingPanel {
       flex-direction: row;
       flex-wrap: nowrap;
       align-items: stretch;
-      gap: 6px;
+      gap: 10px;
       height: var(--flipcel-dock-row-h);
       min-height: var(--flipcel-dock-row-h);
       max-height: var(--flipcel-dock-row-h);
       box-sizing: border-box;
+    }
+
+    .dock-group {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .dock-group-status {
+      /* Never shrink — shrinking panels under status caused chip overlap. */
+      flex: 0 0 auto;
+    }
+
+    .dock-group-file {
+      flex: 0 1 auto;
+      min-width: 0;
+      gap: 2px;
+    }
+
+    .dock-group-panels {
+      /* Keep panel buttons at their intrinsic width (no crush / overlap). */
+      flex: 0 0 auto;
+    }
+
+    .dock-sep {
+      flex: 0 0 1px;
+      align-self: stretch;
+      margin: 6px 0;
+      background: color-mix(in srgb, var(--flipcel-text-primary, #222) 14%, transparent);
+    }
+
+    .dock-status {
+      min-height: var(--flipcel-dock-row-h);
+      align-items: center;
+      gap: 6px;
+    }
+
+    .dock-cell-icon {
+      flex: 0 0 28px;
+      width: 28px;
+      min-width: 28px;
+      max-width: 28px;
+    }
+
+    .dock-chip-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      min-height: var(--flipcel-dock-row-h);
+      line-height: 0;
+      color: var(--flipcel-text-primary, #222);
+      padding: 0;
+    }
+
+    .dock-cell-filename {
+      height: 100%;
+      align-self: stretch;
+      flex: 1 1 auto;
+      width: auto;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .dock-cell-filename .dock-chip-stacked {
+      height: 100%;
+      max-height: 100%;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    /* Match .dock-value metrics so rename doesn't reflow the dock. */
+    .filename-input {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      max-width: 126px;
+      height: 1.15em;
+      margin: 0;
+      padding: 0;
+      border: none;
+      border-radius: 0;
+      box-sizing: content-box;
+      font: inherit;
+      font-size: inherit;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.15;
+      color: var(--flipcel-text-primary, #222);
+      background: transparent;
+      outline: none;
+      box-shadow: inset 0 -1.5px 0 var(--flipcel-accent, #4a6fb5);
+      appearance: none;
+      -webkit-appearance: none;
     }
 
     .dock-btn {
@@ -259,6 +389,14 @@ export class FlipCelTopBarPanel extends FloatingPanel {
       this.knownTriggerIds.add(panel.id);
     }
     this.skipNextDockMotion = false;
+  }
+
+  updated(changedProperties: Map<string, unknown>) {
+    super.updated(changedProperties);
+    if (!changedProperties.has("renaming") || !this.renaming) return;
+    const input = this.renderRoot.querySelector<HTMLInputElement>("[data-filename-edit]");
+    input?.focus();
+    input?.select();
   }
 
   /** Apply defaults: hide closed panels; float default-open ones at their CSS positions. */
@@ -574,44 +712,288 @@ export class FlipCelTopBarPanel extends FloatingPanel {
     );
   }
 
-  render() {
+  private emitDock(name: string) {
+    this.dispatchEvent(new CustomEvent(name, { bubbles: true, composed: true }));
+  }
+
+  private startRename(e: Event) {
+    e.preventDefault();
+    e.stopPropagation();
+    this.editingName = displayDocumentName(this.documentName.value);
+    this.renaming = true;
+  }
+
+  private commitRename() {
+    if (!this.renaming) return;
+    const next = displayDocumentName(this.editingName);
+    this.renaming = false;
+    this.editingName = "";
+    if (next === displayDocumentName(this.documentName.value)) return;
+    documentNameStore.set(next || DEFAULT_DOCUMENT_NAME);
+  }
+
+  private cancelRename() {
+    this.renaming = false;
+    this.editingName = "";
+  }
+
+  private onRenameKeydown(e: KeyboardEvent) {
+    // Keep tool/edit shortcuts from seeing rename keystrokes (shadow-retargeted).
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      (e.target as HTMLInputElement).blur();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      this.cancelRename();
+    }
+  }
+
+  private renderActionChip(opts: {
+    icon: TemplateResult;
+    title: string;
+    disabled?: boolean;
+    onClick: () => void;
+  }) {
+    return html`
+      <div class="dock-cell dock-cell-icon">
+        <button
+          type="button"
+          class="dock-chip dock-chip-icon dock-chip-reset"
+          title=${opts.title}
+          aria-label=${opts.title}
+          ?disabled=${opts.disabled ?? false}
+          data-interactive
+          @click=${opts.onClick}
+        >
+          ${opts.icon}
+        </button>
+      </div>
+    `;
+  }
+
+  private renderFilenameChip() {
+    const filename = displayDocumentName(this.documentName.value);
+
+    if (this.renaming) {
+      return html`
+        <div class="dock-cell dock-cell-filename">
+          <div class="dock-chip dock-chip-stacked">
+            <span class="dock-prefix">file</span>
+            <input
+              type="text"
+              class="filename-input dock-value"
+              data-filename-edit
+              data-interactive
+              .value=${this.editingName}
+              aria-label="Rename file"
+              spellcheck="false"
+              autocomplete="off"
+              @input=${(e: Event) => {
+                this.editingName = (e.target as HTMLInputElement).value;
+              }}
+              @keydown=${(e: KeyboardEvent) => this.onRenameKeydown(e)}
+              @blur=${() => this.commitRename()}
+              @pointerdown=${(e: Event) => e.stopPropagation()}
+            />
+          </div>
+        </div>
+      `;
+    }
+
+    return html`
+      <div class="dock-cell dock-cell-filename">
+        <button
+          type="button"
+          class="dock-chip dock-chip-stacked dock-chip-reset"
+          title="Click to rename"
+          aria-label="Rename file, current name ${filename}"
+          data-interactive
+          @click=${(e: Event) => this.startRename(e)}
+        >
+          <span class="dock-prefix">file</span>
+          <span class="dock-value">${filename}</span>
+        </button>
+      </div>
+    `;
+  }
+
+  private effectivePaintMode(): string | null {
+    const tool = getTool(this.tool.value);
+    const key = tool.dockModeSetting;
+    if (!key) return null;
+    const def = (tool.settings as SettingsSchema)[key];
+    if (!def || def.type !== "toggle") return null;
+    const options = def.options as readonly string[];
+    const raw = String(
+      (this.settings.value[tool.id] as Record<string, unknown>)?.[key] ?? def.default,
+    );
+    const paintMod = getModifierBinding("mod.paintMode", this.shortcuts.value);
+    return isModifierHeld(this.modifiers.value, paintMod)
+      ? options[(options.indexOf(raw) + 1) % options.length]
+      : raw;
+  }
+
+  private effectivePaintModeLabel(): string {
+    const mode = this.effectivePaintMode();
+    if (!mode) return "—";
+    if (mode === "subtract") return "Sub";
+    return mode.charAt(0).toUpperCase() + mode.slice(1);
+  }
+
+  private renderDockWidget(opts: {
+    label: string;
+    value: string;
+    title: string;
+    onClick?: () => void;
+    modeAccent?: PaintModeAccent | null;
+  }) {
+    const valueClass = opts.modeAccent
+      ? `dock-value mode-${opts.modeAccent}`
+      : "dock-value";
+    const inner = html`
+      <span class="dock-prefix">${opts.label}</span>
+      <span class=${valueClass}>${opts.value}</span>
+    `;
+    return html`
+      <div class="dock-cell">
+        ${opts.onClick
+          ? html`
+              <button
+                type="button"
+                class="dock-chip dock-chip-stacked dock-chip-reset"
+                title=${opts.title}
+                aria-label=${opts.title}
+                data-interactive
+                @click=${opts.onClick}
+              >${inner}</button>
+            `
+          : html`
+              <span class="dock-chip dock-chip-stacked" title=${opts.title}
+                >${inner}</span
+              >
+            `}
+      </div>
+    `;
+  }
+
+  private buildInfoChip(kind: DockInfoChip) {
+    switch (kind) {
+      case "mode": {
+        const mode = this.effectivePaintMode();
+        return {
+          label: "mode",
+          value: this.effectivePaintModeLabel(),
+          title: "Click to cycle paint mode",
+          onClick: () => this.emitDock("mode-cycle"),
+          modeAccent: mode ? paintModeAccent(mode) : null,
+        };
+      }
+      case "frame": {
+        const t = this.timeline.value;
+        return {
+          label: "frame",
+          value: String(t.currentFrame + 1),
+          title: t.playing ? "Pause" : "Play",
+          onClick: () => this.emitDock("play-toggle"),
+        };
+      }
+      case "zoom":
+        return {
+          label: "zoom",
+          value: `${this.zoomLevel}%`,
+          title: "Fit stage in view",
+          onClick: () => this.emitDock("zoom-reset"),
+        };
+    }
+  }
+
+  private renderFileGroup() {
+    const { canUndo, canRedo } = this.history.value;
+    return html`
+      <div class="dock-group dock-group-file">
+        ${this.renderFilenameChip()}
+        ${this.renderActionChip({
+          icon: phosphorIcon("arrow-counter-clockwise", 16),
+          title: "Undo",
+          disabled: !canUndo,
+          onClick: () => this.emitDock("undo"),
+        })}
+        ${this.renderActionChip({
+          icon: phosphorIcon("arrow-clockwise", 16),
+          title: "Redo",
+          disabled: !canRedo,
+          onClick: () => this.emitDock("redo"),
+        })}
+      </div>
+    `;
+  }
+
+  private renderPanelGroup(panelTriggers: PanelVisibility[]) {
+    if (panelTriggers.length === 0) return nothing;
+
     const currentToolName = getTool(this.tool.value).name;
-    const panelTriggers = this.visiblePanelTriggers();
     const entering = new Set(this.enteringPanelIds);
+    return html`
+      <div class="dock-sep" aria-hidden="true"></div>
+      <div class="dock-group dock-group-panels">
+        ${panelTriggers.map((panel) => {
+          const isTools = panel.id === "tools-panel";
+          const isColor = panel.id === "color-panel";
+          const className = [
+            "dock-btn",
+            isTools ? "dock-btn-flex" : "dock-btn-icon",
+            isColor ? "dock-btn-color" : "",
+            entering.has(panel.id) ? "dock-btn-enter" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const style = isColor ? `background:${this.dockColor.value}` : nothing;
+          return html`
+            <button
+              type="button"
+              data-panel-trigger=${panel.id}
+              class=${className}
+              title=${isTools ? currentToolName : panel.label}
+              data-interactive
+              aria-pressed=${panel.visible ? "true" : "false"}
+              style=${style}
+              @pointerdown=${(e: PointerEvent) =>
+                this.onDockBtnPointerDown(panel.id, e)}
+              @click=${(e: Event) =>
+                this.onDockBtnClick(panel.id, e.currentTarget as HTMLElement, e)}
+            >
+              ${this.renderPanelTriggerContent(panel.id)}
+            </button>
+          `;
+        })}
+      </div>
+      <div class="dock-sep" aria-hidden="true"></div>
+    `;
+  }
+
+  private renderStatusGroup() {
+    return html`
+      <div class="dock-group dock-group-status dock-status">
+        ${TOP_BAR_SHORTCUT_CHIPS.map((kind) =>
+          this.renderDockWidget(this.buildInfoChip(kind)),
+        )}
+      </div>
+    `;
+  }
+
+  render() {
+    const panelTriggers = this.visiblePanelTriggers();
     return html`
       <div class="block">
         <div class="face">
           <div class="bar">
-            ${panelTriggers.map((panel) => {
-              const isTools = panel.id === "tools-panel";
-              const isColor = panel.id === "color-panel";
-              const className = [
-                "dock-btn",
-                isTools ? "dock-btn-flex" : "dock-btn-icon",
-                isColor ? "dock-btn-color" : "",
-                entering.has(panel.id) ? "dock-btn-enter" : "",
-              ]
-                .filter(Boolean)
-                .join(" ");
-              const style = isColor ? `background:${this.dockColor.value}` : nothing;
-              return html`
-                <button
-                  type="button"
-                  data-panel-trigger=${panel.id}
-                  class=${className}
-                  title=${isTools ? currentToolName : panel.label}
-                  data-interactive
-                  aria-pressed=${panel.visible ? "true" : "false"}
-                  style=${style}
-                  @pointerdown=${(e: PointerEvent) =>
-                    this.onDockBtnPointerDown(panel.id, e)}
-                  @click=${(e: Event) =>
-                    this.onDockBtnClick(panel.id, e.currentTarget as HTMLElement, e)}
-                >
-                  ${this.renderPanelTriggerContent(panel.id)}
-                </button>
-              `;
-            })}
+            ${this.renderFileGroup()}
+            ${this.renderPanelGroup(panelTriggers)}
+            ${panelTriggers.length === 0
+              ? html`<div class="dock-sep" aria-hidden="true"></div>`
+              : nothing}
+            ${this.renderStatusGroup()}
           </div>
         </div>
       </div>

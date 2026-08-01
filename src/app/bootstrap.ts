@@ -57,7 +57,7 @@ import type {
   FlipCelKeyboardShortcutsPanel,
   FlipCelStartupPanel,
   FlipCelViewPanel,
-  FlipCelShortcutsPanel,
+  FlipCelTopBarPanel,
   FlipCelLayersPanel,
   FlipCelWheelPanel,
   FlipCelFunctionsPanel,
@@ -142,7 +142,7 @@ class App {
   private keyboardShortcutsPanel: FlipCelKeyboardShortcutsPanel;
   private startupPanel: FlipCelStartupPanel;
   private viewPanel: FlipCelViewPanel;
-  private shortcutsPanel: FlipCelShortcutsPanel;
+  private topBarPanel: FlipCelTopBarPanel;
   private layersPanel: FlipCelLayersPanel;
   private wheelPanel: FlipCelWheelPanel;
   private functionsPanel: FlipCelFunctionsPanel;
@@ -305,7 +305,7 @@ class App {
     ) as FlipCelKeyboardShortcutsPanel;
     this.startupPanel = document.getElementById("startup-panel") as FlipCelStartupPanel;
     this.viewPanel = document.getElementById("view-panel") as FlipCelViewPanel;
-    this.shortcutsPanel = document.getElementById("shortcuts-panel") as FlipCelShortcutsPanel;
+    this.topBarPanel = document.getElementById("top-bar") as FlipCelTopBarPanel;
     this.layersPanel = document.getElementById("layers-panel") as FlipCelLayersPanel;
     this.wheelPanel = document.getElementById("wheel-panel") as FlipCelWheelPanel;
     this.functionsPanel = document.getElementById("functions-panel") as FlipCelFunctionsPanel;
@@ -485,7 +485,7 @@ class App {
       historyPanel: this.historyPanel,
       keyboardShortcutsPanel: this.keyboardShortcutsPanel,
       viewPanel: this.viewPanel,
-      shortcutsPanel: this.shortcutsPanel,
+      topBarPanel: this.topBarPanel,
       layersPanel: this.layersPanel,
       wheelPanel: this.wheelPanel,
       functionsPanel: this.functionsPanel,
@@ -836,7 +836,7 @@ class App {
     const zoom = this.camera.getZoomPercent();
     if (zoom === this.lastDisplayZoom) return;
     this.lastDisplayZoom = zoom;
-    this.shortcutsPanel.zoomLevel = zoom;
+    this.topBarPanel.zoomLevel = zoom;
   }
 
   // ============================================================
@@ -1165,7 +1165,8 @@ class App {
     for (const item of items) {
       this.paperRenderer.setItemFillColor(item, color);
     }
-    if (toolStore.get() === "select") this.selectionController.drawUI();
+    // Keep marquee/EMF selections from reverting on deselect (same as flip/transform).
+    this.selectionController.markSelectionAsModified();
     if (toolStore.get() === "direct-select") this.directSelectController.drawUI();
   }
 
@@ -1181,13 +1182,15 @@ class App {
     for (const item of items) {
       this.paperRenderer.setItemFillColor(item, color);
     }
+    this.selectionController.markSelectionAsModified();
     this.historyManager.snapshot();
   }
 
   /** Live preview: remap a document color across all keyframe artwork. */
   private onDocumentRecolor(from: string, to: string) {
     if (!this.documentManager.recolorDocument(from, to)) return;
-    this.selectionController.clearSelection();
+    // Discard, don't clear — clearSelection would restore the pre-recolor marquee snapshot.
+    this.selectionController.discardSelection();
     this.directSelectController.clearSelection();
   }
 
@@ -1195,7 +1198,7 @@ class App {
   private onDocumentRecolorEnd(from: string, to: string) {
     const changed = this.documentManager.recolorDocument(from, to);
     this.documentManager.endDocumentRecolor();
-    this.selectionController.clearSelection();
+    this.selectionController.discardSelection();
     this.directSelectController.clearSelection();
     if (changed) this.historyManager.snapshot("Recolor");
   }

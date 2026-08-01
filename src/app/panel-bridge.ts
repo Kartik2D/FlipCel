@@ -14,7 +14,7 @@ import type {
   FlipCelHistoryPanel,
   FlipCelKeyboardShortcutsPanel,
   FlipCelViewPanel,
-  FlipCelShortcutsPanel,
+  FlipCelTopBarPanel,
   FlipCelLayersPanel,
   FlipCelWheelPanel,
   FlipCelFunctionsPanel,
@@ -41,7 +41,7 @@ export type PanelBridgeDeps = {
   historyPanel: FlipCelHistoryPanel;
   keyboardShortcutsPanel: FlipCelKeyboardShortcutsPanel;
   viewPanel: FlipCelViewPanel;
-  shortcutsPanel: FlipCelShortcutsPanel;
+  topBarPanel: FlipCelTopBarPanel;
   layersPanel: FlipCelLayersPanel;
   wheelPanel: FlipCelWheelPanel;
   functionsPanel: FlipCelFunctionsPanel;
@@ -161,7 +161,7 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     historyPanel,
     keyboardShortcutsPanel,
     viewPanel,
-    shortcutsPanel,
+    topBarPanel,
     layersPanel,
     wheelPanel,
     functionsPanel,
@@ -235,9 +235,11 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     deps.setBrushSizeIndicatorEnabled((e as CustomEvent<boolean>).detail);
   });
   viewPanel.addEventListener("onion-toggle", () => deps.onOnionToggle());
-  shortcutsPanel.addEventListener("zoom-reset", () => deps.onDockZoomReset());
-  shortcutsPanel.addEventListener("mode-cycle", () => deps.onModeCycle());
-  shortcutsPanel.addEventListener("play-toggle", () => deps.onPlayToggle());
+  topBarPanel.addEventListener("zoom-reset", () => deps.onDockZoomReset());
+  topBarPanel.addEventListener("mode-cycle", () => deps.onModeCycle());
+  topBarPanel.addEventListener("play-toggle", () => deps.onPlayToggle());
+  topBarPanel.addEventListener("undo", () => deps.onUndo());
+  topBarPanel.addEventListener("redo", () => deps.onRedo());
   universalPanel.addEventListener("alias-fix-toggle", (e: Event) => {
     deps.onAliasFixToggle((e as CustomEvent<boolean>).detail);
   });

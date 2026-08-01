@@ -476,8 +476,6 @@ export class FlipCelUniversalPanel extends FloatingPanel {
                 <blocky-button flat accent @click=${() => this.emit("doc-new")}
                   >New File</blocky-button
                 >
-              </div>
-              <div class="row">
                 <blocky-button flat @click=${() => this.emit("doc-open")}
                   >Open</blocky-button
                 >

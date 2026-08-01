@@ -560,10 +560,15 @@ export class FlipCelWheelPanel extends FloatingPanel {
     if (!this.dragging) return;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
     this.flushNotchSteps();
-    if (Math.abs(this.angularVelocity) >= WHEEL_COAST_STOP_VELOCITY) {
-      this.startCoasting(this.angularVelocity);
-    }
+    const throwRelease =
+      Math.abs(this.angularVelocity) >= WHEEL_COAST_STOP_VELOCITY;
+    // Clear drag before settle — settleToChamber no-ops while isBarrelLive().
     this.dragging = false;
+    if (throwRelease) {
+      this.startCoasting(this.angularVelocity);
+    } else {
+      this.settleToChamber();
+    }
     this.updatePlaybackRotation(timelineStore.get());
   };
 

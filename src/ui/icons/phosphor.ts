@@ -65,6 +65,12 @@ export const PHOSPHOR_ICONS: Record<string, string> = {
     '<path d="M40 216L164 92" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><path d="M156 84l16 16" stroke="currentColor" stroke-width="16" stroke-linecap="round" fill="none"/><path d="M188 32v32M172 48h32" stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none"/><path d="M220 108v28M206 122h28" stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none"/><path d="M116 36v28M102 50h28" stroke="currentColor" stroke-width="12" stroke-linecap="round" fill="none"/>',
   "lock-open":
     '<rect x="40" y="88" width="176" height="128" rx="8" opacity="0.2"/><path d="M208,80H96V56a32,32,0,0,1,32-32c15.37,0,29.2,11,32.16,25.51a8,8,0,0,0,15.68-3C171.23,25.39,151.12,8,128,8A48.05,48.05,0,0,0,80,56V80H48A16,16,0,0,0,32,96V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V96A16,16,0,0,0,208,80Zm0,128H48V96H208V208Z"/>',
+  /** Undo — counter-clockwise arrow. */
+  "arrow-counter-clockwise":
+    '<path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/>',
+  /** Redo — clockwise arrow. */
+  "arrow-clockwise":
+    '<path d="M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z"/>',
 };
 
 export const PANEL_ICON_MAP: Record<string, string> = {

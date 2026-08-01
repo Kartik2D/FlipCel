@@ -485,12 +485,13 @@ export class UnifiedInputManager {
   }
 
   private isTypingInInput(e: KeyboardEvent): boolean {
-    const target = e.target as HTMLElement;
-    return (
-      target.tagName === "INPUT" ||
-      target.tagName === "TEXTAREA" ||
-      target.isContentEditable
-    );
+    // Shadow DOM retargets `e.target` to the host — walk the composed path.
+    for (const node of e.composedPath()) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.tagName === "INPUT" || node.tagName === "TEXTAREA") return true;
+      if (node.isContentEditable) return true;
+    }
+    return false;
   }
 
   // ============================================================

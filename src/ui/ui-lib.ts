@@ -15,7 +15,6 @@ export {
   FlipCelToolsPanel,
   FlipCelToolSettingsPanel,
   FlipCelTopBarPanel,
-  FlipCelShortcutsPanel,
   FlipCelViewPanel,
   FlipCelUniversalPanel,
   FlipCelLayersPanel,

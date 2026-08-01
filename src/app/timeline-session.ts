@@ -30,6 +30,9 @@ import {
   generateLayerId,
   DEFAULT_STAGE_WIDTH,
   DEFAULT_STAGE_HEIGHT,
+  documentNameStore,
+  DEFAULT_DOCUMENT_NAME,
+  downloadDocumentName,
 } from "../state/index";
 
 /** Fresh empty document used for New File and app launch. */
@@ -529,15 +532,19 @@ export class TimelineSession {
   onDocSave(): void {
     // Commit any live Paper edits into the document model first.
     this.commitLiveEdits();
-    downloadDocument(this.serializeDocument());
+    downloadDocument(
+      this.serializeDocument(),
+      downloadDocumentName(documentNameStore.get()),
+    );
   }
 
   async onDocOpen(): Promise<boolean> {
     const { historyManager, requestRedraw } = this.deps;
     try {
-      const doc = await pickDocumentFile();
-      if (!doc) return false;
-      this.applyLoadedDocument(doc);
+      const picked = await pickDocumentFile();
+      if (!picked) return false;
+      this.applyLoadedDocument(picked.doc);
+      documentNameStore.set(picked.filename);
       historyManager.clear();
       historyManager.snapshot();
       requestRedraw();
@@ -556,6 +563,7 @@ export class TimelineSession {
     if (!doc) return false;
     try {
       this.applyLoadedDocument(doc);
+      documentNameStore.set("Previous file");
       this.sessionAutosaveCandidate = null;
       historyManager.clear();
       historyManager.snapshot();
@@ -574,6 +582,7 @@ export class TimelineSession {
     const { historyManager, requestRedraw } = this.deps;
     if (!confirm("Start a new document? Unsaved changes will be lost.")) return;
     this.applyLoadedDocument(createBlankSerializedDocument());
+    documentNameStore.set(DEFAULT_DOCUMENT_NAME);
     historyManager.clear();
     historyManager.snapshot();
     requestRedraw();
@@ -583,6 +592,7 @@ export class TimelineSession {
   loadExampleDocument(): void {
     const { historyManager, requestRedraw } = this.deps;
     this.applyLoadedDocument(STARTUP_DOCUMENT);
+    documentNameStore.set("Example");
     historyManager.clear();
     historyManager.snapshot();
     requestRedraw();

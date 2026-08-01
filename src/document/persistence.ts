@@ -73,11 +73,16 @@ export function downloadDocument(doc: SerializedDocument, filename?: string): vo
   URL.revokeObjectURL(url);
 }
 
+export type PickedDocumentFile = {
+  doc: SerializedDocument;
+  filename: string;
+};
+
 /**
- * Open a file picker and resolve with the parsed document, or null when the
- * user cancels.
+ * Open a file picker and resolve with the parsed document + filename, or null
+ * when the user cancels.
  */
-export function pickDocumentFile(): Promise<SerializedDocument | null> {
+export function pickDocumentFile(): Promise<PickedDocumentFile | null> {
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
@@ -96,7 +101,12 @@ export function pickDocumentFile(): Promise<SerializedDocument | null> {
       }
       file
         .text()
-        .then((text) => resolve(parseSerializedDocument(text)))
+        .then((text) =>
+          resolve({
+            doc: parseSerializedDocument(text),
+            filename: file.name || "Untitled.json",
+          }),
+        )
         .catch(reject);
     });
     // Cancel: resolve null when focus returns without a change event.
