@@ -13,6 +13,7 @@ import type {
   FlipCelUniversalPanel,
   FlipCelHistoryPanel,
   FlipCelKeyboardShortcutsPanel,
+  FlipCelTutorialsPanel,
   FlipCelViewPanel,
   FlipCelTopBarPanel,
   FlipCelLayersPanel,
@@ -40,6 +41,7 @@ export type PanelBridgeDeps = {
   universalPanel: FlipCelUniversalPanel;
   historyPanel: FlipCelHistoryPanel;
   keyboardShortcutsPanel: FlipCelKeyboardShortcutsPanel;
+  tutorialsPanel: FlipCelTutorialsPanel;
   viewPanel: FlipCelViewPanel;
   topBarPanel: FlipCelTopBarPanel;
   layersPanel: FlipCelLayersPanel;
@@ -55,13 +57,12 @@ export type PanelBridgeDeps = {
   switchTool: (tool: ToolId) => void;
   onToolSettingsChange: (settings: AllToolSettings) => void;
   onPixelResChange: (scale: number) => void;
-  onFlatten: () => void;
-  onClear: () => void;
   onUndo: () => void;
   onRedo: () => void;
   onHistoryGoTo: (index: number) => void;
   onHistoryWindowToggle: (visible: boolean) => void;
   onKeyboardShortcutsToggle: (visible: boolean) => void;
+  onTutorialsToggle: (visible: boolean) => void;
   setBrushSizeIndicatorEnabled: (enabled: boolean) => void;
   onOnionToggle: () => void;
   onDockZoomReset: () => void;
@@ -145,6 +146,7 @@ export type PanelBridgeDeps = {
   onLayerSoloToggle: (layerId: string) => void;
   onLayerReorder: (order: string[], movedId: string) => void;
   onLayerRename: (id: string, name: string) => void;
+  onLayerMergeDown: (layerId: string) => void;
   onFunctionInvoke: (id: string) => void;
   onFunctionDragStart: (id: string) => void;
   onFunctionDragMove: (id: string, dx: number, dy: number) => void;
@@ -160,6 +162,7 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     universalPanel,
     historyPanel,
     keyboardShortcutsPanel,
+    tutorialsPanel,
     viewPanel,
     topBarPanel,
     layersPanel,
@@ -210,15 +213,14 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
   });
 
   // Universal panel events
-  universalPanel.addEventListener("flatten", () => deps.onFlatten());
-  universalPanel.addEventListener("clear", () => deps.onClear());
-  universalPanel.addEventListener("undo", () => deps.onUndo());
-  universalPanel.addEventListener("redo", () => deps.onRedo());
   universalPanel.addEventListener("history-window-toggle", (e: Event) => {
     deps.onHistoryWindowToggle((e as CustomEvent<boolean>).detail);
   });
   universalPanel.addEventListener("keyboard-shortcuts-toggle", (e: Event) => {
     deps.onKeyboardShortcutsToggle((e as CustomEvent<boolean>).detail);
+  });
+  universalPanel.addEventListener("tutorials-toggle", (e: Event) => {
+    deps.onTutorialsToggle((e as CustomEvent<boolean>).detail);
   });
   historyPanel.addEventListener("history-goto", (e: Event) => {
     deps.onHistoryGoTo((e as CustomEvent<number>).detail);
@@ -230,6 +232,10 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
   keyboardShortcutsPanel.addEventListener("panel-visibility-change", (e: Event) => {
     const { visible } = (e as CustomEvent<{ id: string; visible: boolean }>).detail;
     if (!visible) deps.onKeyboardShortcutsToggle(false);
+  });
+  tutorialsPanel.addEventListener("panel-visibility-change", (e: Event) => {
+    const { visible } = (e as CustomEvent<{ id: string; visible: boolean }>).detail;
+    if (!visible) deps.onTutorialsToggle(false);
   });
   viewPanel.addEventListener("brush-size-toggle", (e: Event) => {
     deps.setBrushSizeIndicatorEnabled((e as CustomEvent<boolean>).detail);
@@ -380,6 +386,10 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
   layersPanel.addEventListener("layer-rename", (e: Event) => {
     const { id, name } = (e as CustomEvent<{ id: string; name: string }>).detail;
     deps.onLayerRename(id, name);
+  });
+  layersPanel.addEventListener("layer-merge-down", (e: Event) => {
+    const layerId = (e as CustomEvent<string>).detail;
+    deps.onLayerMergeDown(layerId);
   });
 
   // Functions panel events

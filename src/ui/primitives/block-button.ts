@@ -24,6 +24,14 @@ export class BlockyButton extends Block {
   @property({ type: Boolean, reflect: true }) disabled = false;
   /** Fill flex row width (e.g. equal-width dock toggles). */
   @property({ type: Boolean, reflect: true }) stretch = false;
+  /** Help catalog id — enables hover / long-press explanation popup. */
+  @property({ reflect: true, attribute: "data-help" }) help = "";
+  /**
+   * When true, long-press is owned by the control (e.g. tool settings).
+   * Help still shows on cursor hover.
+   */
+  @property({ type: Boolean, reflect: true, attribute: "data-owns-long-press" })
+  ownsLongPress = false;
 
   connectedCallback() {
     super.connectedCallback();
@@ -38,6 +46,11 @@ export class BlockyButton extends Block {
 
   private _onTouchEnd = (e: TouchEvent) => {
     e.preventDefault();
+    // Help long-press sets this so the follow-up synthetic click is skipped.
+    if (this.hasAttribute("data-help-suppress-click")) {
+      this.removeAttribute("data-help-suppress-click");
+      return;
+    }
     this.click();
   };
 

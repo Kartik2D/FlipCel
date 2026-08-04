@@ -623,6 +623,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
                   <button
                     type="button"
                     class="hub-play ${t.playing ? "on" : ""}"
+                    aria-label=${t.playing ? "Stop" : "Play"}
                     title=${t.playing ? "Stop" : "Play"}
                     data-interactive
                     @pointerdown=${(e: Event) => e.stopPropagation()}

@@ -3,11 +3,13 @@ import { customElement, state } from "lit/decorators.js";
 import { StoreController } from "../../state";
 import {
   type ChordBinding,
+  type ModActionId,
   type ModifierId,
   type ShortcutActionId,
   chordFromEvent,
   formatBinding,
   formatModifier,
+  getGestureShortcuts,
   getShortcutActions,
   resetAllShortcuts,
   setBinding,
@@ -20,7 +22,7 @@ import { raisePanelZIndex } from "../primitives/panel-anchor";
 const MODIFIER_OPTIONS: readonly ModifierId[] = ["shift", "alt", "ctrl", "meta"];
 
 /**
- * Keyboard Shortcuts window — remappable chords and modifier actions.
+ * Shortcuts window — remappable chords, modifier actions, and fixed touch gestures.
  * Opened from Settings (not the top dock).
  */
 @customElement("flipcel-keyboard-shortcuts-panel")
@@ -34,7 +36,7 @@ export class FlipCelKeyboardShortcutsPanel extends FloatingPanel {
     ${FloatingPanel.styles}
 
     :host {
-      /* Wide masonry default — Tools / Edit / Modifiers sit side by side. */
+      /* Wide masonry default — Tools / Edit / Gestures / Modifiers sit side by side. */
       --panel-width: 600px;
       --panel-min-width: 280px;
     }
@@ -100,6 +102,15 @@ export class FlipCelKeyboardShortcutsPanel extends FloatingPanel {
       background: var(--panel-accent, #4a6fb5);
       color: #ffffff;
       border-color: var(--panel-accent, #4a6fb5);
+    }
+
+    .binding-chip.is-fixed {
+      cursor: default;
+      opacity: 0.92;
+    }
+
+    .binding-chip.is-fixed:hover {
+      filter: none;
     }
 
     .capture-error {
@@ -263,7 +274,7 @@ export class FlipCelKeyboardShortcutsPanel extends FloatingPanel {
     this.captureError = null;
   };
 
-  private setModifierAction(actionId: "mod.paintMode" | "mod.wheelPan", modifier: ModifierId) {
+  private setModifierAction(actionId: ModActionId, modifier: ModifierId) {
     this.stopCapture();
     this.captureError = null;
     setBinding(actionId, { kind: "modifier", modifier });
@@ -296,7 +307,20 @@ export class FlipCelKeyboardShortcutsPanel extends FloatingPanel {
     `;
   }
 
-  private renderModifierRow(id: "mod.paintMode" | "mod.wheelPan", label: string) {
+  private renderGestureRow(label: string, gesture: string) {
+    return html`
+      <div class="binding-row">
+        <span class="binding-label">${label}</span>
+        <span
+          class="binding-chip is-fixed"
+          title="Touch gesture (not remappable)"
+          >${gesture}</span
+        >
+      </div>
+    `;
+  }
+
+  private renderModifierRow(id: ModActionId, label: string) {
     const binding = this.shortcuts.value[id];
     const current = binding?.kind === "modifier" ? binding.modifier : "shift";
     return html`
@@ -322,9 +346,10 @@ export class FlipCelKeyboardShortcutsPanel extends FloatingPanel {
     const actions = getShortcutActions();
     const tools = actions.filter((a) => a.group === "tools");
     const edit = actions.filter((a) => a.group === "edit");
+    const gestures = getGestureShortcuts();
 
     return this.renderFloatingBlock(
-      "Keyboard Shortcuts",
+      "Shortcuts",
       html`
         <flipcel-panel-section title="Tools" data-interactive>
           <div class="binding-list">
@@ -350,9 +375,18 @@ export class FlipCelKeyboardShortcutsPanel extends FloatingPanel {
             : nothing}
         </flipcel-panel-section>
 
+        <flipcel-panel-section title="Gestures" data-interactive>
+          <div class="binding-list">
+            ${gestures.map((g) => this.renderGestureRow(g.label, g.gesture))}
+          </div>
+        </flipcel-panel-section>
+
         <flipcel-panel-section title="Modifiers" data-interactive>
           ${this.renderModifierRow("mod.paintMode", "Paint mode toggle")}
           ${this.renderModifierRow("mod.wheelPan", "Wheel pan")}
+          ${this.renderModifierRow("mod.constrainMove", "Constrain move")}
+          ${this.renderModifierRow("mod.constrainScale", "Constrain scale")}
+          ${this.renderModifierRow("mod.addToSelection", "Add to selection")}
         </flipcel-panel-section>
 
         <flipcel-panel-section data-interactive>

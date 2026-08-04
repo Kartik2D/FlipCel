@@ -23,6 +23,10 @@ import {
   normalizeLayersFrameSelection,
   shiftedFrameRange,
 } from "./timeline/helpers";
+import {
+  eventHasModifier,
+  getModifierBinding,
+} from "../../input/shortcuts";
 
 // ============================================================
 // Layers Panel
@@ -73,14 +77,14 @@ export class FlipCelLayersPanel extends FloatingPanel {
       --layers-row-size: 42px;
       /* Compact chrome: add/delete, keyframe tools, playback buttons. */
       --layers-control-size: 24px;
-      --layers-side-width: 248px;
+      --layers-side-width: 272px;
     }
 
     /* Mini: tighter rows, narrower layer column so frames get more width. */
     :host([mini]) {
       --layers-row-size: 28px;
       --layers-control-size: 22px;
-      --layers-side-width: 148px;
+      --layers-side-width: 168px;
       --frame-cell-w: 16px;
     }
 
@@ -397,13 +401,15 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
     .visibility-btn,
     .lock-btn,
-    .solo-btn {
+    .solo-btn,
+    .merge-down-btn {
       width: 100%;
       height: 100%;
       color: inherit;
     }
 
-    .solo-btn {
+    .solo-btn,
+    .merge-down-btn {
       font-size: 11px;
       font-weight: 800;
       letter-spacing: 0.02em;
@@ -414,6 +420,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
       color: var(--flipcel-accent-contrast, #ffffff);
     }
 
+    .merge-down-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
     .visibility-btn svg,
     .lock-btn svg,
     .layer-action-button svg {
@@ -422,7 +433,8 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
     .layer-item:not(.active) .visibility-btn:hover:not(:disabled),
     .layer-item:not(.active) .lock-btn:hover:not(:disabled),
-    .layer-item:not(.active) .solo-btn:hover:not(:disabled) {
+    .layer-item:not(.active) .solo-btn:hover:not(:disabled),
+    .layer-item:not(.active) .merge-down-btn:hover:not(:disabled) {
       filter: brightness(0.88);
     }
 
@@ -433,7 +445,8 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
     .layer-item.active .visibility-btn:hover:not(:disabled),
     .layer-item.active .lock-btn:hover:not(:disabled),
-    .layer-item.active .solo-btn:hover:not(:disabled) {
+    .layer-item.active .solo-btn:hover:not(:disabled),
+    .layer-item.active .merge-down-btn:hover:not(:disabled) {
       background: color-mix(in srgb, var(--flipcel-accent-contrast, #fff) 32%, transparent);
       filter: none;
     }
@@ -485,7 +498,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
     pointerId?: number;
     /** Locked rows: playhead navigate only — no range select. */
     lockedNav?: boolean;
+    /** Add-to-selection modifier was held at pointer-down. */
+    additive?: boolean;
   } | null = null;
+  /** Prior range kept while additive drag-select expands. */
+  private selectionExpandBase: LayersFrameSelection | null = null;
   private cellLongPressTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly cellLongPressMs = 400;
   private readonly cellTouchPanSlopPx = 8;
@@ -1454,6 +1471,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
       });
     }
     this.frameSelection = null;
+    this.selectionExpandBase = null;
     this.frameActionsOpen = false;
     this.frameActionsAnchor = null;
     this.lastSelectionTapTime = null;
@@ -1461,6 +1479,30 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.duplicatePlacement = null;
     this.movePlacement = null;
     this.moveDelta = 0;
+  }
+
+  private isAddToSelectionEvent(e: PointerEvent): boolean {
+    return eventHasModifier(e, getModifierBinding("mod.addToSelection"));
+  }
+
+  /** Expand an existing range to include a frame + layer (display order preserved). */
+  private expandFrameSelectionTo(
+    base: LayersFrameSelection,
+    frame: number,
+    layerId: string,
+  ): LayersFrameSelection {
+    const displayIds = this.displayLayerIds();
+    const layerIds = displayIds.filter(
+      (id) =>
+        !this.isLayerLocked(id) &&
+        (base.layerIds.includes(id) || id === layerId),
+    );
+    return {
+      start: Math.min(base.start, frame),
+      end: Math.max(base.end, frame),
+      layerIds: layerIds.length > 0 ? layerIds : [layerId],
+      anchorLayerId: base.anchorLayerId,
+    };
   }
 
   private frameCellWidth(): number {
@@ -1564,7 +1606,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
   private beginCellSelectionFromHold(drag: NonNullable<typeof this.cellDrag>) {
     // Long-press armed: start a one-frame selection the user can drag-expand.
-    if (this.timeline.value.editMultipleFrames && this.frameSelection) {
+    if (
+      this.timeline.value.editMultipleFrames &&
+      this.frameSelection &&
+      !drag.additive
+    ) {
       this.emit("frames-edit-multiple", {
         ...layerActionDetail(this.frameSelection),
         enabled: false,
@@ -1573,12 +1619,25 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.frameActionsOpen = false;
     drag.mode = "select";
     this.touchPan = null;
-    this.frameSelection = {
-      start: drag.anchor,
-      end: drag.anchor,
-      layerIds: [drag.layerId],
-      anchorLayerId: drag.layerId,
-    };
+    if (drag.additive && this.frameSelection) {
+      this.selectionExpandBase = {
+        ...this.frameSelection,
+        layerIds: [...this.frameSelection.layerIds],
+      };
+      this.frameSelection = this.expandFrameSelectionTo(
+        this.selectionExpandBase,
+        drag.anchor,
+        drag.layerId,
+      );
+    } else {
+      this.selectionExpandBase = null;
+      this.frameSelection = {
+        start: drag.anchor,
+        end: drag.anchor,
+        layerIds: [drag.layerId],
+        anchorLayerId: drag.layerId,
+      };
+    }
     this.selectionHoldPop = true;
     try {
       navigator.vibrate?.(10);
@@ -1599,6 +1658,8 @@ export class FlipCelLayersPanel extends FloatingPanel {
     const displayIds = this.displayLayerIds();
     const anchorLayerIndex = displayIds.indexOf(layerId);
 
+    const additive = this.isAddToSelectionEvent(e);
+
     if (this.isLayerLocked(layerId)) {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       this.cellDrag = {
@@ -1610,6 +1671,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
         mode: "tap",
         pointerId: e.pointerId,
         lockedNav: true,
+        additive,
       };
       return;
     }
@@ -1629,6 +1691,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
       startY: e.clientY,
       mode: "hold",
       pointerId: e.pointerId,
+      additive,
     };
     this.cellLongPressTimer = setTimeout(() => {
       this.cellLongPressTimer = null;
@@ -1659,7 +1722,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
       if (dx < thresholdX && dy < thresholdY) return;
       this.clearCellLongPress();
       drag.mode = "select";
-      if (this.timeline.value.editMultipleFrames && this.frameSelection) {
+      if (
+        this.timeline.value.editMultipleFrames &&
+        this.frameSelection &&
+        !drag.additive
+      ) {
         this.emit("frames-edit-multiple", {
           ...layerActionDetail(this.frameSelection),
           enabled: false,
@@ -1667,12 +1734,20 @@ export class FlipCelLayersPanel extends FloatingPanel {
       }
       this.frameActionsOpen = false;
       // Seed a one-frame selection so expand has an anchor.
-      this.frameSelection = {
-        start: drag.anchor,
-        end: drag.anchor,
-        layerIds: [drag.layerId],
-        anchorLayerId: drag.layerId,
-      };
+      if (drag.additive && this.frameSelection) {
+        this.selectionExpandBase = {
+          ...this.frameSelection,
+          layerIds: [...this.frameSelection.layerIds],
+        };
+      } else {
+        this.selectionExpandBase = null;
+        this.frameSelection = {
+          start: drag.anchor,
+          end: drag.anchor,
+          layerIds: [drag.layerId],
+          anchorLayerId: drag.layerId,
+        };
+      }
     }
 
     if (drag.mode === "tap") {
@@ -1683,13 +1758,25 @@ export class FlipCelLayersPanel extends FloatingPanel {
       if (dx < thresholdX && dy < thresholdY) return;
       drag.mode = "select";
       // Replacing the range dismisses EMF; a fresh selection gets a new popup.
-      if (this.timeline.value.editMultipleFrames && this.frameSelection) {
+      if (
+        this.timeline.value.editMultipleFrames &&
+        this.frameSelection &&
+        !drag.additive
+      ) {
         this.emit("frames-edit-multiple", {
           ...layerActionDetail(this.frameSelection),
           enabled: false,
         });
       }
       this.frameActionsOpen = false;
+      if (drag.additive && this.frameSelection) {
+        this.selectionExpandBase = {
+          ...this.frameSelection,
+          layerIds: [...this.frameSelection.layerIds],
+        };
+      } else {
+        this.selectionExpandBase = null;
+      }
     }
     e.preventDefault();
 
@@ -1701,16 +1788,29 @@ export class FlipCelLayersPanel extends FloatingPanel {
     const layerIndex = this.layerIndexFromPointer(e);
     const layerStart = Math.min(drag.anchorLayerIndex, layerIndex);
     const layerEnd = Math.max(drag.anchorLayerIndex, layerIndex);
-    const layerIds = displayIds
+    const dragLayerIds = displayIds
       .slice(layerStart, layerEnd + 1)
       .filter((id) => !this.isLayerLocked(id));
-    if (layerIds.length === 0) return;
-    const start = Math.min(drag.anchor, frame);
-    const end = Math.max(drag.anchor, frame);
+    if (dragLayerIds.length === 0) return;
+    const base = this.selectionExpandBase;
+    const layerIds = base
+      ? displayIds.filter(
+          (id) =>
+            !this.isLayerLocked(id) &&
+            (dragLayerIds.includes(id) || base.layerIds.includes(id)),
+        )
+      : dragLayerIds;
+    const start = base
+      ? Math.min(drag.anchor, frame, base.start, base.end)
+      : Math.min(drag.anchor, frame);
+    const end = base
+      ? Math.max(drag.anchor, frame, base.start, base.end)
+      : Math.max(drag.anchor, frame);
     const cur = this.frameSelection;
+    const anchorLayerId = base?.anchorLayerId ?? drag.layerId;
     if (
       !cur ||
-      cur.anchorLayerId !== drag.layerId ||
+      cur.anchorLayerId !== anchorLayerId ||
       cur.start !== start ||
       cur.end !== end ||
       cur.layerIds.length !== layerIds.length ||
@@ -1720,7 +1820,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
         start,
         end,
         layerIds,
-        anchorLayerId: drag.layerId,
+        anchorLayerId,
       };
     }
     // Keep the playhead under the pointer while drag-selecting a range.
@@ -1785,6 +1885,27 @@ export class FlipCelLayersPanel extends FloatingPanel {
             navigateOnly: true,
           });
         }
+      } else if (drag.additive) {
+        // Add-to-selection: extend the range (or start a one-frame selection).
+        const base = this.frameSelection;
+        this.frameSelection = base
+          ? this.expandFrameSelectionTo(base, drag.anchor, drag.layerId)
+          : {
+              start: drag.anchor,
+              end: drag.anchor,
+              layerIds: [drag.layerId],
+              anchorLayerId: drag.layerId,
+            };
+        this.selectionExpandBase = null;
+        this.frameActionsOpen = true;
+        this.lastSelectionTapTime = null;
+        this.lastCellTap = null;
+        this.emit("frame-select", {
+          frame: drag.anchor,
+          layerId: drag.layerId,
+          navigateOnly: true,
+        });
+        this.maybeEnterEmfForSelection();
       } else {
         // Tap outside deselects the range (and leaves EMF if it was on).
         this.clearFrameSelection();
@@ -1808,6 +1929,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
         }
       }
     } else if (drag.mode === "select") {
+      this.selectionExpandBase = null;
       this.frameActionsOpen = this.frameSelection !== null;
       this.lastSelectionTapTime = null;
       // Multi-layer range: activate the layer under the pointer at release
@@ -1890,6 +2012,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
   private toggleSolo(layerId: string, e: Event) {
     e.stopPropagation();
     this.emit("layer-solo-toggle", layerId);
+  }
+
+  private mergeDown(layerId: string, e: Event) {
+    e.stopPropagation();
+    this.emit("layer-merge-down", layerId);
   }
 
   private deleteCurrentLayer() {
@@ -2193,14 +2320,14 @@ export class FlipCelLayersPanel extends FloatingPanel {
       <button
         type="button"
         class="layer-action-button"
-        title="Add layer above selected"
+        data-help="layers.add"
         aria-label="Add layer"
         @click=${() => this.addLayer()}
       >+</button>
       <button
         type="button"
         class="layer-action-button layer-delete-current"
-        title="Delete current layer"
+        data-help="layers.delete"
         aria-label="Delete current layer"
         ?disabled=${activeLayerId === STAGE_LAYER_ID || nonStageCount <= 1}
         @click=${() => this.deleteCurrentLayer()}
@@ -2221,12 +2348,17 @@ export class FlipCelLayersPanel extends FloatingPanel {
     const t = this.timeline.value;
     return html`
       <div class="timeline-keyframe-actions">
-        <button type="button" class="tl-btn" title="Insert keyframe (copies current artwork)"
+        <button type="button" class="tl-btn"
+          data-help="timeline.keyframe"
+          aria-label="Insert keyframe (copies current artwork)"
           @click=${() => this.emit("keyframe-add", { blank: false })}>K</button>
-        <button type="button" class="tl-btn" title="Insert blank keyframe"
+        <button type="button" class="tl-btn"
+          data-help="timeline.blank"
+          aria-label="Insert blank keyframe"
           @click=${() => this.emit("keyframe-add", { blank: true })}>B</button>
         <button type="button" class="tl-btn"
-          title="Delete selected frames (or the frame at the playhead)"
+          data-help="timeline.clear"
+          aria-label="Delete selected frames (or the frame at the playhead)"
           @click=${() => {
             const sel = this.frameSelection;
             this.clearFrameSelection();
@@ -2241,10 +2373,12 @@ export class FlipCelLayersPanel extends FloatingPanel {
             });
           }}>C</button>
         <button type="button" class="tl-btn ${t.autoHold ? "on" : ""}"
-          title="Auto hold: new keyframes extend the previous keyframe's hold"
+          data-help="timeline.auto-hold"
+          aria-label="Auto hold: new keyframes extend the previous keyframe's hold"
           @click=${() => this.emit("auto-hold-toggle")}>AH</button>
         <button type="button" class="tl-btn ${this.emfPreferred ? "on" : ""}"
-          title="Edit Multiple Frames: when on, selecting a frame range edits those frames together on stage"
+          data-help="timeline.emf"
+          aria-label="Edit Multiple Frames: when on, selecting a frame range edits those frames together on stage"
           @click=${() => this.onEmfPreferredToggle()}>EMF</button>
       </div>
     `;
@@ -2269,10 +2403,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
         </span>
         <button
           type="button"
-          class="tl-btn playback-rt ${t.realTimeLock ? "on" : ""}"
-          title="Lock timings to real time: changing fps rescales keyframes so the animation keeps its wall-clock speed (e.g. 30 to 60 fps makes every frame a two-frame hold)"
+          class="tl-btn playback-lt ${t.realTimeLock ? "on" : ""}"
+          data-help="playback.lock-time"
+          aria-label="Lock Time: changing fps rescales keyframes to keep wall-clock length"
           @click=${() => this.emit("real-time-lock-toggle")}
-        >RT</button>
+        >LT</button>
       </span>
       <button
         type="button"
@@ -2398,6 +2533,8 @@ export class FlipCelLayersPanel extends FloatingPanel {
                           soloLayerId,
                         );
                         const soloOn = soloLayerId === layer.id;
+                        // displayLayers is top → bottom; merge needs a neighbor below.
+                        const canMergeDown = i < displayLayers.length - 1;
                         return html`
                         <div
                           class="layer-item ${layer.id === activeLayerId ? "active" : ""} ${!effectivelyVisible ? "hidden" : ""} ${layer.locked ? "locked" : ""}"
@@ -2451,26 +2588,38 @@ export class FlipCelLayersPanel extends FloatingPanel {
                             <button
                               type="button"
                               class="layer-control solo-btn ${soloOn ? "on" : ""}"
+                              data-help="layers.solo"
+                              aria-label=${soloOn ? "Exit solo" : "Solo layer"}
                               @click=${(e: Event) => this.toggleSolo(layer.id, e)}
-                              title="${soloOn ? "Exit solo" : "Solo layer"}"
                               aria-pressed=${soloOn}
                             >S</button>
                             <button
                               type="button"
                               class="layer-control lock-btn ${layer.locked ? "dim" : ""}"
+                              data-help="layers.lock"
+                              aria-label=${layer.locked ? "Unlock layer" : "Lock layer"}
                               @click=${(e: Event) => this.toggleLock(layer.id, e)}
-                              title="${layer.locked ? "Unlock layer" : "Lock layer"}"
                             >
                               ${phosphorIcon(layer.locked ? "lock" : "lock-open", 14)}
                             </button>
                             <button
                               type="button"
                               class="layer-control visibility-btn ${!layer.visible ? "dim" : ""}"
+                              data-help="layers.visibility"
+                              aria-label=${layer.visible ? "Hide layer" : "Show layer"}
                               @click=${(e: Event) => this.toggleVisibility(layer.id, e)}
-                              title="${layer.visible ? "Hide layer" : "Show layer"}"
                             >
                               ${phosphorIcon(layer.visible ? "eye" : "eye-slash", 14)}
                             </button>
+                            <button
+                              type="button"
+                              class="layer-control merge-down-btn"
+                              data-help="layers.merge-down"
+                              title="Merge Down"
+                              aria-label="Merge Down"
+                              ?disabled=${!canMergeDown}
+                              @click=${(e: Event) => this.mergeDown(layer.id, e)}
+                            >M</button>
                           </div>
                         </div>
                       `;

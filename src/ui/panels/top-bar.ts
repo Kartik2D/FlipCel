@@ -752,6 +752,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
   private renderActionChip(opts: {
     icon: TemplateResult;
     title: string;
+    help?: string;
     disabled?: boolean;
     onClick: () => void;
   }) {
@@ -760,8 +761,8 @@ export class FlipCelTopBarPanel extends FloatingPanel {
         <button
           type="button"
           class="dock-chip dock-chip-icon dock-chip-reset"
-          title=${opts.title}
           aria-label=${opts.title}
+          data-help=${opts.help ?? nothing}
           ?disabled=${opts.disabled ?? false}
           data-interactive
           @click=${opts.onClick}
@@ -806,7 +807,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
         <button
           type="button"
           class="dock-chip dock-chip-stacked dock-chip-reset"
-          title="Click to rename"
+          data-help="dock.filename"
           aria-label="Rename file, current name ${filename}"
           data-interactive
           @click=${(e: Event) => this.startRename(e)}
@@ -845,6 +846,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
     label: string;
     value: string;
     title: string;
+    help?: string;
     onClick?: () => void;
     modeAccent?: PaintModeAccent | null;
   }) {
@@ -862,14 +864,16 @@ export class FlipCelTopBarPanel extends FloatingPanel {
               <button
                 type="button"
                 class="dock-chip dock-chip-stacked dock-chip-reset"
-                title=${opts.title}
+                data-help=${opts.help ?? nothing}
                 aria-label=${opts.title}
                 data-interactive
                 @click=${opts.onClick}
               >${inner}</button>
             `
           : html`
-              <span class="dock-chip dock-chip-stacked" title=${opts.title}
+              <span
+                class="dock-chip dock-chip-stacked"
+                data-help=${opts.help ?? nothing}
                 >${inner}</span
               >
             `}
@@ -885,6 +889,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
           label: "mode",
           value: this.effectivePaintModeLabel(),
           title: "Click to cycle paint mode",
+          help: "dock.mode",
           onClick: () => this.emitDock("mode-cycle"),
           modeAccent: mode ? paintModeAccent(mode) : null,
         };
@@ -895,6 +900,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
           label: "frame",
           value: String(t.currentFrame + 1),
           title: t.playing ? "Pause" : "Play",
+          help: "dock.frame",
           onClick: () => this.emitDock("play-toggle"),
         };
       }
@@ -903,6 +909,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
           label: "zoom",
           value: `${this.zoomLevel}%`,
           title: "Fit stage in view",
+          help: "dock.zoom",
           onClick: () => this.emitDock("zoom-reset"),
         };
     }
@@ -916,12 +923,14 @@ export class FlipCelTopBarPanel extends FloatingPanel {
         ${this.renderActionChip({
           icon: phosphorIcon("arrow-counter-clockwise", 16),
           title: "Undo",
+          help: "dock.undo",
           disabled: !canUndo,
           onClick: () => this.emitDock("undo"),
         })}
         ${this.renderActionChip({
           icon: phosphorIcon("arrow-clockwise", 16),
           title: "Redo",
+          help: "dock.redo",
           disabled: !canRedo,
           onClick: () => this.emitDock("redo"),
         })}
@@ -949,13 +958,28 @@ export class FlipCelTopBarPanel extends FloatingPanel {
             .filter(Boolean)
             .join(" ");
           const style = isColor ? `background:${this.dockColor.value}` : nothing;
+          const helpId =
+            panel.id === "universal-panel"
+              ? "dock.settings"
+              : panel.id === "layers-panel"
+                ? "dock.layers"
+                : panel.id === "wheel-panel"
+                  ? "dock.wheel"
+                  : panel.id === "view-panel"
+                    ? "dock.view"
+                    : panel.id === "tools-panel"
+                      ? "dock.tools"
+                      : panel.id === "color-panel"
+                        ? "dock.color"
+                        : nothing;
           return html`
             <button
               type="button"
               data-panel-trigger=${panel.id}
               class=${className}
-              title=${isTools ? currentToolName : panel.label}
+              data-help=${helpId}
               data-interactive
+              aria-label=${isTools ? currentToolName : panel.label}
               aria-pressed=${panel.visible ? "true" : "false"}
               style=${style}
               @pointerdown=${(e: PointerEvent) =>

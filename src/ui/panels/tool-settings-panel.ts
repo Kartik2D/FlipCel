@@ -18,6 +18,7 @@ import {
 } from "../../input/shortcuts";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { raisePanelZIndex } from "../primitives/panel-anchor";
+import { getHelp, helpIdForTool } from "../help/catalog";
 
 // ============================================================
 // Tool Settings Panel — floating panel (opened via tool hold or double-tap)
@@ -41,6 +42,26 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
     :host {
       --panel-width: 280px;
       --panel-min-width: 220px;
+    }
+
+    .tool-info {
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      border-radius: var(--flipcel-content-radius, 6px);
+      background: color-mix(
+        in srgb,
+        var(--panel-accent, #4a6fb5) 16%,
+        transparent
+      );
+      box-sizing: border-box;
+    }
+
+    .tool-info-body {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1.45;
+      color: var(--flipcel-text-secondary, #333);
     }
   `;
 
@@ -221,15 +242,6 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
     }
 
     if (schemaKeys.length === 0) {
-      if (currentToolId === "select") {
-        return html`<p class="hint">Click to select, drag to move.</p>`;
-      }
-      if (currentToolId === "pan") {
-        return html`<p class="hint">Drag to pan, scroll to zoom.</p>`;
-      }
-      if (currentToolId === "direct-select") {
-        return html`<p class="hint">Drag a rectangle or lasso to select vertices on the active layer.</p>`;
-      }
       return showsPixelRes ? html`${this.renderPixelRes()}` : html``;
     }
 
@@ -247,18 +259,13 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
           })()
         : ""}
       ${currentToolId === "eyedropper"
-        ? html`<p class="hint">Click artwork to pick its color. “All” samples unlocked visible layers.</p>`
+        ? html`<p class="hint">“All” samples unlocked visible layers.</p>`
         : ""}
       ${currentToolId === "select"
-        ? html`<p class="hint">Drag a rectangle or freeform lasso to extract a selection. “All” selects across unlocked visible layers.</p>`
+        ? html`<p class="hint">“All” selects across unlocked visible layers.</p>`
         : ""}
       ${currentToolId === "magic-move"
         ? html`
-            <p class="hint">
-              Lasso a selection, then draw a trajectory with crossing timing
-              ticks. When the chart is valid, an Apply popup appears. Esc clears
-              the chart, then the selection.
-            </p>
             <blocky-button
               flat
               accent
@@ -271,10 +278,6 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
         : ""}
       ${currentToolId === "magic-morph"
         ? html`
-            <p class="hint">
-              Playhead on a hold, then draw a trajectory with crossing timing
-              ticks. Apply morphs to the next keyframe using chart ratios.
-            </p>
             <blocky-button
               flat
               accent
@@ -291,9 +294,17 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
 
   render() {
     const title = getTool(this.tool.value).name;
+    const help = getHelp(helpIdForTool(this.tool.value));
     return this.renderFloatingBlock(
       title,
       html`
+        ${help
+          ? html`
+              <div class="tool-info">
+                <p class="tool-info-body">${help.body}</p>
+              </div>
+            `
+          : ""}
         <flipcel-panel-section data-interactive>
           ${this.renderToolSettings()}
         </flipcel-panel-section>

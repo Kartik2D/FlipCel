@@ -73,6 +73,7 @@ export interface TimelineSessionDeps {
   requestRedraw: () => void;
   fitStageInView: (immediate: boolean) => void;
   closeFunctionsPanelHidden: () => void;
+  closeSettingsPanel: () => void;
 }
 
 export class TimelineSession {
@@ -578,14 +579,19 @@ export class TimelineSession {
     }
   }
 
-  onDocNew(): void {
+  /** Start a blank document. Returns false if the user cancels. */
+  onDocNew(): boolean {
     const { historyManager, requestRedraw } = this.deps;
-    if (!confirm("Start a new document? Unsaved changes will be lost.")) return;
+    if (!confirm("Start a new document? Unsaved changes will be lost.")) return false;
+    // Keep the current doc available for startup "Restore previous file".
+    this.commitLiveEdits();
+    this.sessionAutosaveCandidate = this.serializeDocument();
     this.applyLoadedDocument(createBlankSerializedDocument());
     documentNameStore.set(DEFAULT_DOCUMENT_NAME);
     historyManager.clear();
     historyManager.snapshot();
     requestRedraw();
+    return true;
   }
 
   /** Load the bundled demo document (startup example). */
@@ -607,6 +613,7 @@ export class TimelineSession {
       fitStageInView,
       requestRedraw,
       closeFunctionsPanelHidden,
+      closeSettingsPanel,
     } = this.deps;
 
     selectionController.discardSelection();
@@ -614,6 +621,7 @@ export class TimelineSession {
     this.deps.magicMoveController.deactivate();
     this.deps.magicMorphController.deactivate();
     closeFunctionsPanelHidden();
+    closeSettingsPanel();
 
     stageStore.set({ ...doc.stage });
     documentManager.loadSerialized(doc);

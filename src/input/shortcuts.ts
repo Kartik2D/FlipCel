@@ -32,7 +32,12 @@ export type Binding = ChordBinding | ModifierBinding;
 
 export type ToolActionId = `tool.${ToolId}`;
 export type EditActionId = "edit.undo" | "edit.redo" | "edit.playToggle";
-export type ModActionId = "mod.paintMode" | "mod.wheelPan";
+export type ModActionId =
+  | "mod.paintMode"
+  | "mod.wheelPan"
+  | "mod.constrainMove"
+  | "mod.constrainScale"
+  | "mod.addToSelection";
 export type ShortcutActionId = ToolActionId | EditActionId | ModActionId;
 
 export type ShortcutBindings = Record<ShortcutActionId, Binding>;
@@ -76,6 +81,23 @@ export function getShortcutActions(): ShortcutActionMeta[] {
     { id: "edit.playToggle", label: "Play / Pause", group: "edit" },
     { id: "mod.paintMode", label: "Paint mode toggle", group: "modifiers" },
     { id: "mod.wheelPan", label: "Wheel pan", group: "modifiers" },
+    { id: "mod.constrainMove", label: "Constrain move", group: "modifiers" },
+    { id: "mod.constrainScale", label: "Constrain scale", group: "modifiers" },
+    { id: "mod.addToSelection", label: "Add to selection", group: "modifiers" },
+  ];
+}
+
+/** Fixed (non-remappable) touch gestures shown in the Shortcuts panel. */
+export interface GestureShortcutMeta {
+  id: "gesture.undo" | "gesture.redo";
+  label: string;
+  gesture: string;
+}
+
+export function getGestureShortcuts(): GestureShortcutMeta[] {
+  return [
+    { id: "gesture.undo", label: "Undo", gesture: "2-finger tap" },
+    { id: "gesture.redo", label: "Redo", gesture: "3-finger tap" },
   ];
 }
 
@@ -92,6 +114,9 @@ export function getDefaultBindings(): ShortcutBindings {
   bindings["edit.playToggle"] = { kind: "chord", key: "space" };
   bindings["mod.paintMode"] = { kind: "modifier", modifier: "shift" };
   bindings["mod.wheelPan"] = { kind: "modifier", modifier: "shift" };
+  bindings["mod.constrainMove"] = { kind: "modifier", modifier: "shift" };
+  bindings["mod.constrainScale"] = { kind: "modifier", modifier: "shift" };
+  bindings["mod.addToSelection"] = { kind: "modifier", modifier: "shift" };
   return bindings;
 }
 
@@ -220,11 +245,23 @@ export function eventHasModifier(e: { shiftKey: boolean; altKey: boolean; ctrlKe
 export function getModifierBinding(action: ModActionId, bindings = shortcutsStore.get()): ModifierId {
   const b = bindings[action];
   if (b?.kind === "modifier") return b.modifier;
-  return action === "mod.paintMode" || action === "mod.wheelPan" ? "shift" : "shift";
+  return "shift";
 }
 
 export function isPaintModeModifierHeld(modifiers: Modifiers): boolean {
   return isModifierHeld(modifiers, getModifierBinding("mod.paintMode"));
+}
+
+export function isConstrainMoveModifierHeld(modifiers: Modifiers): boolean {
+  return isModifierHeld(modifiers, getModifierBinding("mod.constrainMove"));
+}
+
+export function isConstrainScaleModifierHeld(modifiers: Modifiers): boolean {
+  return isModifierHeld(modifiers, getModifierBinding("mod.constrainScale"));
+}
+
+export function isAddToSelectionModifierHeld(modifiers: Modifiers): boolean {
+  return isModifierHeld(modifiers, getModifierBinding("mod.addToSelection"));
 }
 
 /** Find the first chord action that matches this key event. */

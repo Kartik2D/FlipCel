@@ -29,15 +29,19 @@ export class PopupWindow extends FloatingPanel {
 
     const path = e.composedPath();
     if (path.includes(this)) return;
-
-    const clickedTrigger = path.some(
-      (node) =>
-        node instanceof HTMLElement && node.getAttribute("data-panel-trigger") === this.id,
-    );
-    if (clickedTrigger) return;
+    if (this.isOutsideDismissException(path)) return;
 
     this.hidePanel();
   };
+
+  /** Presses on these targets do not dismiss the popup (default: panel trigger). */
+  protected isOutsideDismissException(path: EventTarget[]): boolean {
+    return path.some(
+      (node) =>
+        node instanceof HTMLElement &&
+        node.getAttribute("data-panel-trigger") === this.id,
+    );
+  }
 
   static styles = css`
     ${FloatingPanel.styles}

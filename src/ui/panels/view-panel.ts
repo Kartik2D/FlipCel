@@ -224,6 +224,7 @@ export class FlipCelViewPanel extends FloatingPanel {
                 <div class="row">
                   <blocky-button
                     flat
+                    .help=${"view.onion-active"}
                     ?active=${onionLayers === "active"}
                     ?disabled=${!onionOn}
                     @click=${() => this.updateViewOverlay({ onionSkinLayers: "active" })}
@@ -231,6 +232,7 @@ export class FlipCelViewPanel extends FloatingPanel {
                   >
                   <blocky-button
                     flat
+                    .help=${"view.onion-all"}
                     ?active=${onionLayers === "all"}
                     ?disabled=${!onionOn}
                     @click=${() => this.updateViewOverlay({ onionSkinLayers: "all" })}

@@ -138,7 +138,7 @@ export const THEMES: Record<ThemeMode, ThemeInfo> = {
       app: "#121212",
       panel: "#383838",
       border: "#8a8a8a",
-      accent: "#7c9eff",
+      accent: "#5a74d8",
     },
   },
   "light-slab": {

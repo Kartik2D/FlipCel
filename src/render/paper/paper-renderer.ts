@@ -1457,16 +1457,72 @@ export class PaperRenderer {
    */
   flatten() {
     const layer = paper.project.activeLayer;
-    const allPaths = this.getAllPaths();
-    if (allPaths.length < 2) {
-      paper.view.update();
-      return;
+    this.flattenLayer(layer);
+    paper.view.update();
+  }
+
+  /**
+   * Merge `aboveJson` down into `belowJson` using the same draw-merge
+   * pipeline as live strokes (same-color unite, other-color cut). Only the
+   * above paths are treated as new additions so they cut/unite into the
+   * layer below — not the other way around. Does not touch `layerMap`.
+   */
+  mergeLayerJsons(belowJson: string, aboveJson: string): string {
+    if (!aboveJson) return belowJson;
+    if (!belowJson) return aboveJson;
+
+    const previousActive = paper.project.activeLayer;
+    const scratch = new paper.Layer();
+    scratch.removeChildren();
+
+    const appendJson = (json: string) => {
+      if (!json) return;
+      const temp = new paper.Layer();
+      temp.importJSON(json);
+      for (const child of [...temp.children]) scratch.addChild(child);
+      temp.remove();
+    };
+
+    appendJson(belowJson);
+    scratch.activate();
+    flattenGroups();
+    const belowPathIds = new Set(
+      this.getPathsOnPaperLayer(scratch).map((p) => p.id),
+    );
+
+    appendJson(aboveJson);
+    flattenGroups();
+    const additions = this.getPathsOnPaperLayer(scratch).filter(
+      (p) => !belowPathIds.has(p.id),
+    );
+
+    if (additions.length > 0) {
+      const merged = this.mergeAddInto(scratch, additions);
+      this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
+      flattenGroups();
     }
 
-    // Replay the current layer through the exact same merge pipeline the
-    // tools use: bottom-to-top additions where later items cut earlier ones
-    // and same-color overlaps union. This keeps flatten behavior aligned with
-    // normal drawing instead of maintaining a separate global boolean path.
+    const out =
+      scratch.children.length === 0
+        ? ""
+        : ((scratch.exportJSON() as string) ?? "");
+    scratch.remove();
+    previousActive?.activate();
+    paper.view.update();
+    return out;
+  }
+
+  /**
+   * Replay a layer through the draw-merge pipeline (bottom → top).
+   */
+  private flattenLayer(layer: paper.Layer): void {
+    layer.activate();
+    flattenGroups();
+    const allPaths = this.getPathsOnPaperLayer(layer);
+    if (allPaths.length < 2) return;
+
+    // Replay through the same merge pipeline the tools use: later items cut
+    // earlier ones and same-color overlaps union.
     const replayItems = allPaths.map((item) => {
       const clone = item.clone({ insert: false }) as paper.PathItem;
       this.copySelectionMarker(item, clone);
@@ -1485,39 +1541,6 @@ export class PaperRenderer {
     const merged = this.mergeAddInto(layer, replayItems);
     this.normalizeAfterLocalEdit([...merged.changedItems, ...merged.survivors]);
     flattenGroups();
-    paper.view.update();
-  }
-
-  /**
-   * Merge every layer into the active layer, then flatten overlaps/colors.
-   * Returns the surviving layer ID, or null if no active layer exists.
-   */
-  flattenAllLayers(): string | null {
-    const targetLayerId = this.activeLayerId;
-    if (!targetLayerId) return null;
-
-    const targetLayer = this.layerMap.get(targetLayerId);
-    if (!targetLayer) return null;
-
-    targetLayer.activate();
-
-    for (const layer of [...paper.project.layers]) {
-      // Onion-skin ghosts are view furniture, not document content.
-      if (this.onionSkin.includes(layer)) continue;
-      for (const child of [...layer.children]) {
-        targetLayer.addChild(child);
-      }
-    }
-
-    for (const [layerId, layer] of [...this.layerMap.entries()]) {
-      if (layerId === targetLayerId) continue;
-      layer.remove();
-      this.layerMap.delete(layerId);
-    }
-
-    targetLayer.visible = true;
-    this.flatten();
-    return targetLayerId;
   }
 
   /**

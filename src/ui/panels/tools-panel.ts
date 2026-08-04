@@ -4,6 +4,7 @@ import { type ToolId, getTool } from "../../tools/registry";
 import { toolStore, StoreController } from "../../state";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { phosphorIcon } from "../icons/phosphor";
+import { helpIdForTool } from "../help/catalog";
 import type { FlipCelToolSettingsPanel } from "./tool-settings-panel";
 
 // ============================================================
@@ -225,10 +226,13 @@ export class FlipCelToolsPanel extends FloatingPanel {
   private renderToolButton(toolId: ToolId): TemplateResult {
     const t = getTool(toolId);
     const icon = t.icon ?? "paint-brush";
+    const helpId = helpIdForTool(toolId) ?? "";
     return html`
       <blocky-button
         flat
-        title=${`${t.name} (hold or double-tap for settings)`}
+        .help=${helpId}
+        .ownsLongPress=${true}
+        data-owns-long-press
         aria-label=${t.name}
         ?active=${this.tool.value === toolId}
         @pointerdown=${(e: PointerEvent) => this.onToolPointerDown(toolId, e)}

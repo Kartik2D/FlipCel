@@ -55,6 +55,7 @@ import type {
   FlipCelUniversalPanel,
   FlipCelHistoryPanel,
   FlipCelKeyboardShortcutsPanel,
+  FlipCelTutorialsPanel,
   FlipCelStartupPanel,
   FlipCelViewPanel,
   FlipCelTopBarPanel,
@@ -140,6 +141,7 @@ class App {
   private universalPanel: FlipCelUniversalPanel;
   private historyPanel: FlipCelHistoryPanel;
   private keyboardShortcutsPanel: FlipCelKeyboardShortcutsPanel;
+  private tutorialsPanel: FlipCelTutorialsPanel;
   private startupPanel: FlipCelStartupPanel;
   private viewPanel: FlipCelViewPanel;
   private topBarPanel: FlipCelTopBarPanel;
@@ -303,6 +305,9 @@ class App {
     this.keyboardShortcutsPanel = document.getElementById(
       "keyboard-shortcuts-panel",
     ) as FlipCelKeyboardShortcutsPanel;
+    this.tutorialsPanel = document.getElementById(
+      "tutorials-panel",
+    ) as FlipCelTutorialsPanel;
     this.startupPanel = document.getElementById("startup-panel") as FlipCelStartupPanel;
     this.viewPanel = document.getElementById("view-panel") as FlipCelViewPanel;
     this.topBarPanel = document.getElementById("top-bar") as FlipCelTopBarPanel;
@@ -328,6 +333,7 @@ class App {
       paperRenderer: this.paperRenderer,
       layersPanel: this.layersPanel,
       closeFunctionsPanelHidden: () => this.functionsPanel.close("hidden"),
+      closeSettingsPanel: () => this.universalPanel.hidePanel(),
       switchTool: (tool) => this.switchTool(tool),
       requestRedraw: () => this.requestRedraw(),
       fitStageInView: (immediate) => this.fitStageInView(immediate),
@@ -484,6 +490,7 @@ class App {
       universalPanel: this.universalPanel,
       historyPanel: this.historyPanel,
       keyboardShortcutsPanel: this.keyboardShortcutsPanel,
+      tutorialsPanel: this.tutorialsPanel,
       viewPanel: this.viewPanel,
       topBarPanel: this.topBarPanel,
       layersPanel: this.layersPanel,
@@ -501,13 +508,12 @@ class App {
       switchTool: (tool) => this.switchTool(tool),
       onToolSettingsChange: (settings) => this.onToolSettingsChange(settings),
       onPixelResChange: (scale) => this.onPixelResChange(scale),
-      onFlatten: () => this.onFlatten(),
-      onClear: () => this.onClear(),
       onUndo: () => this.onUndo(),
       onRedo: () => this.onRedo(),
       onHistoryGoTo: (index) => this.onHistoryGoTo(index),
       onHistoryWindowToggle: (visible) => this.onHistoryWindowToggle(visible),
       onKeyboardShortcutsToggle: (visible) => this.onKeyboardShortcutsToggle(visible),
+      onTutorialsToggle: (visible) => this.onTutorialsToggle(visible),
       setBrushSizeIndicatorEnabled: (enabled) => {
         this.feedbackLayer.setBrushSizeIndicatorEnabled(enabled);
       },
@@ -582,6 +588,7 @@ class App {
       onLayerSoloToggle: (layerId) => this.onLayerSoloToggle(layerId),
       onLayerReorder: (order, movedId) => this.onLayerReorder(order, movedId),
       onLayerRename: (id, name) => this.onLayerRename(id, name),
+      onLayerMergeDown: (layerId) => this.onLayerMergeDown(layerId),
       onFunctionInvoke: (id) => this.onFunctionInvoke(id),
       onFunctionDragStart: (id) => this.onFunctionDragStart(id),
       onFunctionDragMove: (id, dx, dy) => this.onFunctionDragMove(id, dx, dy),
@@ -1242,57 +1249,6 @@ class App {
     this.inputManager.resetInputState();
   }
 
-  private onFlatten() {
-    const flattenedLayerId = this.paperRenderer.flattenAllLayers();
-    if (flattenedLayerId) {
-      const state = layerStore.get();
-      const survivingLayer =
-        state.layers.find((layer) => layer.id === flattenedLayerId) ?? state.layers[0];
-      const stageRow = state.layers.find((l) => l.kind === "stage");
-
-      if (survivingLayer && stageRow) {
-        layerStore.set({
-          layers: [
-            { ...stageRow, visible: true, locked: false },
-            {
-              ...survivingLayer,
-              visible: true,
-              locked: survivingLayer.locked ?? false,
-              kind: survivingLayer.kind ?? "regular",
-            },
-          ],
-          activeLayerId: survivingLayer.id,
-          soloLayerId: null,
-        });
-      } else if (survivingLayer) {
-        layerStore.set({
-          layers: [
-            {
-              ...survivingLayer,
-              visible: true,
-              locked: survivingLayer.locked ?? false,
-              kind: survivingLayer.kind ?? "regular",
-            },
-          ],
-          activeLayerId: survivingLayer.id,
-          soloLayerId: null,
-        });
-      }
-    }
-
-    this.selectionController.clearSelection();
-    this.directSelectController.clearSelection();
-    this.historyManager.snapshot();
-  }
-
-  private onClear() {
-    this.pixelCanvasManager.clear();
-    this.paperRenderer.clearActiveLayer(); // Only clear the active layer
-    this.selectionController.clearSelection();
-    this.directSelectController.clearSelection();
-    this.historyManager.snapshot(); // Record as a history action (not clear history)
-  }
-
   private onAliasFixToggle(enabled: boolean) {
     this.paperRenderer.setAliasFixEnabled(enabled);
   }
@@ -1366,6 +1322,17 @@ class App {
     }
     if (this.keyboardShortcutsPanel.style.display !== "none") {
       this.keyboardShortcutsPanel.hidePanel();
+    }
+  }
+
+  private onTutorialsToggle(visible: boolean) {
+    this.universalPanel.tutorialsVisible = visible;
+    if (visible) {
+      void this.tutorialsPanel.show(this.universalPanel);
+      return;
+    }
+    if (this.tutorialsPanel.style.display !== "none") {
+      this.tutorialsPanel.hidePanel();
     }
   }
 
@@ -1447,6 +1414,35 @@ class App {
     
     // Snapshot for undo/redo
     this.historyManager.snapshot();
+  }
+
+  private onLayerMergeDown(layerId: string) {
+    if (layerId === STAGE_LAYER_ID) return;
+
+    const targetId = this.documentManager.mergeLayerDown(layerId);
+    if (!targetId) return;
+
+    const state = layerStore.get();
+    const remainingLayers = state.layers.filter((l) => l.id !== layerId);
+    const soloLayerId =
+      state.soloLayerId === layerId ? null : state.soloLayerId;
+
+    layerStore.set({
+      layers: remainingLayers,
+      activeLayerId: targetId,
+      soloLayerId,
+    });
+
+    this.paperRenderer.deleteLayer(layerId);
+    this.paperRenderer.setActiveLayer(targetId);
+    this.documentManager.applyEffectiveVisibility(soloLayerId);
+    this.documentManager.invalidateLoadedLayer(targetId);
+    this.documentManager.reloadVisibleFrame();
+
+    this.selectionController.clearSelection();
+    this.directSelectController.clearSelection();
+    this.historyManager.snapshot();
+    this.requestRedraw();
   }
 
   private onLayerSelect(layerId: string) {
@@ -1809,7 +1805,10 @@ class App {
   }
 
   private onDocNew() {
-    this.timelineSession.onDocNew();
+    if (!this.timelineSession.onDocNew()) return;
+    this.startupPanel.canRestoreAutosave =
+      this.timelineSession.hasSessionAutosaveCandidate();
+    void this.startupPanel.show();
   }
 
   private applyLoadedDocument(doc: SerializedDocument) {

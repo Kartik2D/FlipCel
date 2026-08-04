@@ -25,7 +25,6 @@ import {
   WHEEL_DIRECTION_OPTIONS,
   StoreController,
 } from "../../state";
-import { historyStateStore } from "../../document/history";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { renderThemePreview } from "../theme-preview";
 
@@ -34,8 +33,8 @@ export class FlipCelUniversalPanel extends FloatingPanel {
   @property({ type: Boolean }) aliasFixEnabled = false;
   @property({ type: Boolean }) historyWindowVisible = false;
   @property({ type: Boolean }) keyboardShortcutsVisible = false;
+  @property({ type: Boolean }) tutorialsVisible = false;
 
-  private history = new StoreController(this, historyStateStore);
   private themeMode = new StoreController(this, themeModeStore);
   private wheelFriction = new StoreController(this, wheelFrictionStore);
   private wheelDirection = new StoreController(this, wheelDirectionStore);
@@ -419,58 +418,6 @@ export class FlipCelUniversalPanel extends FloatingPanel {
     return this.renderFloatingBlock(
       "Settings",
       html`
-            <flipcel-panel-section data-interactive>
-              <div class="row">
-                <blocky-button
-                  flat
-                  ?disabled=${!this.history.value.canUndo}
-                  @click=${() => this.emit("undo")}
-                  >Undo</blocky-button
-                >
-                <blocky-button
-                  flat
-                  ?disabled=${!this.history.value.canRedo}
-                  @click=${() => this.emit("redo")}
-                  >Redo</blocky-button
-                >
-              </div>
-
-              <div class="row">
-                <blocky-button
-                  flat
-                  ?active=${this.historyWindowVisible}
-                  @click=${() => {
-                    this.historyWindowVisible = !this.historyWindowVisible;
-                    this.emit("history-window-toggle", this.historyWindowVisible);
-                  }}
-                  >History</blocky-button
-                >
-                <blocky-button
-                  flat
-                  ?active=${this.keyboardShortcutsVisible}
-                  @click=${() => {
-                    this.keyboardShortcutsVisible = !this.keyboardShortcutsVisible;
-                    this.emit(
-                      "keyboard-shortcuts-toggle",
-                      this.keyboardShortcutsVisible,
-                    );
-                  }}
-                  >Shortcuts</blocky-button
-                >
-              </div>
-            </flipcel-panel-section>
-
-            <flipcel-panel-section data-interactive>
-              <div class="row">
-                <blocky-button flat @click=${() => this.emit("flatten")}
-                  >Flatten</blocky-button
-                >
-                <blocky-button flat negative @click=${() => this.emit("clear")}
-                  >Clear</blocky-button
-                >
-              </div>
-            </flipcel-panel-section>
-
             <flipcel-panel-section title="File" data-interactive>
               <div class="row">
                 <blocky-button flat accent @click=${() => this.emit("doc-new")}
@@ -489,6 +436,47 @@ export class FlipCelUniversalPanel extends FloatingPanel {
                       new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
                     )}
                   >Export SVG</blocky-button
+                >
+              </div>
+            </flipcel-panel-section>
+
+            <flipcel-panel-section data-interactive>
+              <div class="row">
+                <blocky-button
+                  flat
+                  .help=${"settings.history"}
+                  ?active=${this.historyWindowVisible}
+                  @click=${() => {
+                    this.historyWindowVisible = !this.historyWindowVisible;
+                    this.emit("history-window-toggle", this.historyWindowVisible);
+                  }}
+                  >History</blocky-button
+                >
+                <blocky-button
+                  flat
+                  .help=${"settings.shortcuts"}
+                  ?active=${this.keyboardShortcutsVisible}
+                  @click=${() => {
+                    this.keyboardShortcutsVisible = !this.keyboardShortcutsVisible;
+                    this.emit(
+                      "keyboard-shortcuts-toggle",
+                      this.keyboardShortcutsVisible,
+                    );
+                  }}
+                  >Shortcuts</blocky-button
+                >
+              </div>
+
+              <div class="row">
+                <blocky-button
+                  flat
+                  .help=${"settings.tutorials"}
+                  ?active=${this.tutorialsVisible}
+                  @click=${() => {
+                    this.tutorialsVisible = !this.tutorialsVisible;
+                    this.emit("tutorials-toggle", this.tutorialsVisible);
+                  }}
+                  >Tutorials</blocky-button
                 >
               </div>
             </flipcel-panel-section>

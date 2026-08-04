@@ -1,6 +1,8 @@
 import type { Camera } from "../render/camera";
 import type { SelectionHandleId } from "../render/paper-renderer";
 import type { Point } from "../geometry/types";
+import { modifiersStore } from "../state/index";
+import { isConstrainScaleModifierHeld } from "../input/shortcuts";
 
 interface ScreenBounds {
   x: number;
@@ -14,6 +16,17 @@ export interface TransformGizmoDelegate {
   getRotatePivotWorld(): Point | null;
   applyScale(incSX: number, incSY: number, worldAnchor: Point): void;
   applyRotate(degrees: number, worldPivot: Point): void;
+}
+
+/** When Shift is held, zero the lesser screen-axis so moves lock to H or V. */
+export function constrainAxisScreenDelta(
+  dx: number,
+  dy: number,
+  shift: boolean,
+): Point {
+  if (!shift) return { x: dx, y: dy };
+  if (Math.abs(dx) >= Math.abs(dy)) return { x: dx, y: 0 };
+  return { x: 0, y: dy };
 }
 
 export class TransformGizmoController {
@@ -140,6 +153,20 @@ export class TransformGizmoController {
     }
     if (Math.abs(desiredSY) < minScale) {
       desiredSY = desiredSY < 0 ? -minScale : minScale;
+    }
+
+    if (isConstrainScaleModifierHeld(modifiersStore.get())) {
+      const signX = desiredSX < 0 ? -1 : 1;
+      const signY = desiredSY < 0 ? -1 : 1;
+      if (isEdgeX) {
+        desiredSY = signY * Math.abs(desiredSX);
+      } else if (isEdgeY) {
+        desiredSX = signX * Math.abs(desiredSY);
+      } else {
+        const mag = Math.max(Math.abs(desiredSX), Math.abs(desiredSY));
+        desiredSX = signX * mag;
+        desiredSY = signY * mag;
+      }
     }
 
     const incSX = desiredSX / this.lastTotalScaleX;

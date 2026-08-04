@@ -375,6 +375,128 @@ export class DocumentManager {
   // ------------------------------------------------------------
 
   /**
+   * Merge `sourceLayerId` down into the track beneath it across every frame,
+   * using the draw-merge flatten pipeline. Removes the source track from the
+   * document model. Returns the surviving (below) layer id, or null when the
+   * source is missing / already bottommost.
+   *
+   * Caller is responsible for updating layerStore, deleting the Paper layer,
+   * reloading the playhead, and taking a history snapshot.
+   */
+  mergeLayerDown(sourceLayerId: string): string | null {
+    if (this.playing) this.setPlaying(false);
+
+    if (this.editMultipleFrames) {
+      this.commitEditMultipleFrames();
+      this.clearEditMultipleFramesState();
+    } else {
+      this.commitDirtyLayerContent();
+    }
+
+    const sourceIndex = this.tracks.findIndex((t) => t.id === sourceLayerId);
+    if (sourceIndex <= 0) return null;
+
+    const sourceTrack = this.tracks[sourceIndex];
+    const targetTrack = this.tracks[sourceIndex - 1];
+
+    const mergeCache = new Map<string, string>();
+    const resolveMergedContentId = (srcId: string, tgtId: string): string => {
+      const key = `${srcId}\0${tgtId}`;
+      const cached = mergeCache.get(key);
+      if (cached !== undefined) return cached;
+
+      if (srcId === EMPTY_CONTENT_ID) {
+        mergeCache.set(key, tgtId);
+        return tgtId;
+      }
+
+      if (tgtId === EMPTY_CONTENT_ID) {
+        const json = withLayerName(this.content.get(srcId) ?? "", targetTrack.name);
+        if (!json) {
+          mergeCache.set(key, EMPTY_CONTENT_ID);
+          return EMPTY_CONTENT_ID;
+        }
+        const id = this.newContentId();
+        this.content.set(id, json);
+        mergeCache.set(key, id);
+        return id;
+      }
+
+      const merged = this.renderer.mergeLayerJsons(
+        this.content.get(tgtId) ?? "",
+        this.content.get(srcId) ?? "",
+      );
+      const stamped = merged ? withLayerName(merged, targetTrack.name) : "";
+      if (!stamped) {
+        mergeCache.set(key, EMPTY_CONTENT_ID);
+        return EMPTY_CONTENT_ID;
+      }
+      const id = this.newContentId();
+      this.content.set(id, stamped);
+      mergeCache.set(key, id);
+      return id;
+    };
+
+    const newKeyframes: Keyframe[] = [];
+    let runStart = 0;
+    let runContentId = resolveMergedContentId(
+      this.contentIdAt(sourceTrack, 0),
+      this.contentIdAt(targetTrack, 0),
+    );
+
+    for (let frame = 1; frame < this.duration; frame++) {
+      const contentId = resolveMergedContentId(
+        this.contentIdAt(sourceTrack, frame),
+        this.contentIdAt(targetTrack, frame),
+      );
+      if (contentId === runContentId) continue;
+
+      if (runContentId !== EMPTY_CONTENT_ID) {
+        newKeyframes.push({
+          frameIndex: runStart,
+          contentId: runContentId,
+          holdUntil: frame - 1,
+        });
+      }
+      runStart = frame;
+      runContentId = contentId;
+    }
+
+    if (runContentId !== EMPTY_CONTENT_ID) {
+      newKeyframes.push({
+        frameIndex: runStart,
+        contentId: runContentId,
+        holdUntil: this.duration - 1,
+      });
+    } else if (newKeyframes.length === 0) {
+      newKeyframes.push({
+        frameIndex: 0,
+        contentId: EMPTY_CONTENT_ID,
+        holdUntil: 0,
+      });
+    }
+
+    targetTrack.keyframes = newKeyframes;
+    this.tracks = this.tracks.filter((t) => t.id !== sourceLayerId);
+    this.loadedContent.delete(sourceLayerId);
+    this.loadedContent.delete(targetTrack.id);
+
+    // Drop the source layer from any EMF range still held by the UI.
+    if (this.emfRange) {
+      this.emfRange = {
+        ...this.emfRange,
+        layerIds: this.emfRange.layerIds.filter((id) => id !== sourceLayerId),
+      };
+      if (this.emfRange.layerIds.length === 0) {
+        this.clearEditMultipleFramesState();
+      }
+    }
+
+    this.publish();
+    return targetTrack.id;
+  }
+
+  /**
    * Mirror layerStore's regular layers into tracks: create tracks for new
    * layers (blank at frame 0), drop tracks for deleted layers, sync
    * name/visibility, and match ordering. Called at every history snapshot,

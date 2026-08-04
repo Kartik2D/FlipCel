@@ -11,7 +11,11 @@
  * - idle: No active input
  * - drawing: Single pointer tool action (brush, lasso, select drag)
  * - panning: Camera pan (middle mouse, pan tool, or shift+drag)
- * - pinching: Two-finger multitouch gesture (zoom/pan/rotate)
+ * - pinching: Two+ finger multitouch (zoom/pan/rotate, or tap → undo/redo)
+ *
+ * Multi-finger taps (no movement, short duration):
+ * - 2-finger tap → undo
+ * - 3-finger tap → redo
  *
  * Modifier key integration:
  * - Paint-mode / wheel-pan modifiers: remappable via shortcutsStore
@@ -95,6 +99,18 @@ export class UnifiedInputManager {
   private lastPinchDistance: number | null = null;
   private lastPinchCenter: { x: number; y: number } | null = null;
   private lastPinchAngle: number | null = null;
+  /**
+   * Tracks a multi-finger contact so a still, short touch can become a tap
+   * (undo/redo) instead of a pinch once movement exceeds the slop.
+   */
+  private multiTouchSession: {
+    peakFingers: number;
+    startTimeMs: number;
+    origins: Map<number, { x: number; y: number }>;
+    committed: boolean;
+  } | null = null;
+  private readonly multiFingerTapSlopPx = 14;
+  private readonly multiFingerTapMaxMs = 400;
   // Pan state (for middle-click or pan tool)
   private panStartX = 0;
   private panStartY = 0;
@@ -135,6 +151,7 @@ export class UnifiedInputManager {
     this.activePointers.clear();
     this.pendingTouchDraw = null;
     this.clearPendingSelectHold();
+    this.multiTouchSession = null;
     this.primaryPointerId = null;
     this.lastPressure = null;
     this.lastPinchDistance = null;
@@ -220,6 +237,7 @@ export class UnifiedInputManager {
     if (this.activePointers.size >= 2) {
       this.clearPendingSelectHold();
       this.cancelPendingTouchDraw();
+      this.noteMultiTouchPointer(pointerInfo);
       if (this.gestureState !== "pinching") {
         this.startPinchGesture();
       }
@@ -353,6 +371,7 @@ export class UnifiedInputManager {
       if (this.activePointers.size < 2) {
         this.endPinchGesture();
       }
+      this.maybeCompleteMultiFingerTap();
       return;
     }
 
@@ -364,6 +383,10 @@ export class UnifiedInputManager {
         this.endDrawing();
       }
     }
+
+    // Remaining finger(s) after an uncommitted multi-touch may still be up;
+    // fire the tap only once every pointer has lifted.
+    this.maybeCompleteMultiFingerTap();
   };
 
   private handlePointerCancel = (e: PointerEvent) => {
@@ -385,6 +408,11 @@ export class UnifiedInputManager {
       } else if (this.gestureState === "panning") {
         this.endPanning(e.pointerId);
       }
+    }
+
+    // Cancelled contacts never count as a tap.
+    if (this.activePointers.size === 0) {
+      this.multiTouchSession = null;
     }
   };
 
@@ -646,11 +674,85 @@ export class UnifiedInputManager {
     }
   }
 
+  private noteMultiTouchPointer(pointer: PointerInfo) {
+    if (!this.multiTouchSession) {
+      const origins = new Map<number, { x: number; y: number }>();
+      for (const [id, p] of this.activePointers) {
+        origins.set(id, { x: p.x, y: p.y });
+      }
+      this.multiTouchSession = {
+        peakFingers: this.activePointers.size,
+        startTimeMs: performance.now(),
+        origins,
+        committed: false,
+      };
+      return;
+    }
+
+    this.multiTouchSession.peakFingers = Math.max(
+      this.multiTouchSession.peakFingers,
+      this.activePointers.size,
+    );
+    if (!this.multiTouchSession.origins.has(pointer.id)) {
+      this.multiTouchSession.origins.set(pointer.id, {
+        x: pointer.x,
+        y: pointer.y,
+      });
+    }
+  }
+
+  /** Promote a still multi-touch into a real pinch once any finger moves. */
+  private maybeCommitMultiTouchSession(): boolean {
+    const session = this.multiTouchSession;
+    if (!session || session.committed) return session?.committed === true;
+
+    for (const [id, p] of this.activePointers) {
+      const origin = session.origins.get(id);
+      if (!origin) continue;
+      const dx = p.x - origin.x;
+      const dy = p.y - origin.y;
+      if (Math.sqrt(dx * dx + dy * dy) > this.multiFingerTapSlopPx) {
+        session.committed = true;
+        // Re-baseline pinch from current positions so the first move isn't a jump.
+        const touches = Array.from(this.activePointers.values());
+        if (touches.length >= 2) {
+          this.lastPinchDistance = this.getDistance(touches[0], touches[1]);
+          this.lastPinchCenter = this.getCenter(touches[0], touches[1]);
+          this.lastPinchAngle = this.getAngle(touches[0], touches[1]);
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private maybeCompleteMultiFingerTap() {
+    const session = this.multiTouchSession;
+    if (!session) return;
+    if (this.activePointers.size > 0) return;
+
+    const elapsed = performance.now() - session.startTimeMs;
+    const peak = session.peakFingers;
+    const committed = session.committed;
+    this.multiTouchSession = null;
+
+    if (committed || elapsed > this.multiFingerTapMaxMs) return;
+
+    if (peak === 2) {
+      bus.emit(Events.UNDO, null);
+    } else if (peak === 3) {
+      bus.emit(Events.REDO, null);
+    }
+  }
+
   private updatePinchGesture() {
     if (this.gestureState !== "pinching") return;
 
     const touches = Array.from(this.activePointers.values());
     if (touches.length < 2) return;
+
+    // Hold camera still until movement proves this isn't a multi-finger tap.
+    if (!this.maybeCommitMultiTouchSession()) return;
 
     const currentDistance = this.getDistance(touches[0], touches[1]);
     const currentCenter = this.getCenter(touches[0], touches[1]);

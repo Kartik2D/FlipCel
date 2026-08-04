@@ -57,12 +57,20 @@ import {
   quickShapeEnabledStore,
   quickShapeCurveStyleStore,
   quickShapeHoldMsStore,
+  modifiersStore,
 } from "../../state/index";
 import paper from "paper";
 import { pixelToViewport } from "../../geometry/coords";
 import { LassoQuickShapeSession } from "../../geometry/quick-shape";
 import { MarqueeTracker } from "../marquee";
-import { TransformGizmoController } from "../transform-gizmo";
+import {
+  isAddToSelectionModifierHeld,
+  isConstrainMoveModifierHeld,
+} from "../../input/shortcuts";
+import {
+  TransformGizmoController,
+  constrainAxisScreenDelta,
+} from "../transform-gizmo";
 
 import {
   type AnchorKey,
@@ -153,6 +161,8 @@ export class DirectSelectController {
 
   private isDraggingAnchor = false;
   private dragStartPoint: Point | null = null;
+  /** Screen-space total already applied this anchor-drag gesture (from drag origin). */
+  private lastAppliedScreenTotal: Point = { x: 0, y: 0 };
   private didMoveAnchor = false;
 
   /**
@@ -531,7 +541,11 @@ export class DirectSelectController {
     if (hitIdx !== null) {
       const hit = this.anchorHandles[hitIdx];
       if (!this.pickedAnchors.has(hit.key)) {
-        this.pickedAnchors = new Set([hit.key]);
+        if (isAddToSelectionModifierHeld(modifiersStore.get())) {
+          this.pickedAnchors = new Set([...this.pickedAnchors, hit.key]);
+        } else {
+          this.pickedAnchors = new Set([hit.key]);
+        }
       }
       // Anchor click is "on a shape" — leave peek intact. Only the
       // double-click detectors are invalidated.
@@ -581,10 +595,17 @@ export class DirectSelectController {
         }
       }
 
-      this.pickedAnchors = new Set([
-        anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.startSegmentIndex),
-        anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.endSegmentIndex),
-      ]);
+      {
+        const endpoints: AnchorKey[] = [
+          anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.startSegmentIndex),
+          anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.endSegmentIndex),
+        ];
+        if (isAddToSelectionModifierHeld(modifiersStore.get())) {
+          this.pickedAnchors = new Set([...this.pickedAnchors, ...endpoints]);
+        } else {
+          this.pickedAnchors = new Set(endpoints);
+        }
+      }
       // Edge click is "on a shape" — leave peek intact, but record the
       // edge click so a quick second tap on the same curve can promote
       // into a vertex-insert.
@@ -622,7 +643,10 @@ export class DirectSelectController {
         // it was — the shape is still "on screen" via picks anyway, and
         // keeping the peek means the next tap on this shape's interior
         // doesn't blow it away.
-        this.pickAllAnchorsOfItem(shapeHit);
+        this.pickAllAnchorsOfItem(
+          shapeHit,
+          isAddToSelectionModifierHeld(modifiersStore.get()),
+        );
         this.lastShapeClick = null;
         this.lastEdgeClick = null;
         this.isDraggingAnchor = true;
@@ -642,6 +666,19 @@ export class DirectSelectController {
       // (matching the historical "drag-from-shape" gesture). A pure
       // tap that never crosses the marquee threshold leaves the peek
       // exposure in place — see finalizeMarquee.
+      // Add-to-selection: keep existing picks and union this shape's anchors.
+      if (isAddToSelectionModifierHeld(modifiersStore.get())) {
+        this.pickAllAnchorsOfItem(shapeHit, true);
+        this.exposedItemIds = new Set([...this.exposedItemIds, shapeHit.id]);
+        this.lastShapeClick = { timestampMs: now, point: viewportPoint, itemId: shapeHit.id };
+        this.lastEdgeClick = null;
+        this.marqueeFromShapePeek = true;
+        this.beginMarquee(viewportPoint);
+        this.bringInteractedItemsToFront();
+        this.publishPickedItems();
+        this.drawUI();
+        return;
+      }
       this.pickedAnchors.clear();
       this.exposedItemIds = new Set([shapeHit.id]);
       this.lastShapeClick = { timestampMs: now, point: viewportPoint, itemId: shapeHit.id };
@@ -793,14 +830,29 @@ export class DirectSelectController {
       return;
     }
 
-    const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
-    const worldStart = this.camera.screenToWorld(this.dragStartPoint.x, this.dragStartPoint.y);
-    const dx = worldPoint.x - worldStart.x;
-    const dy = worldPoint.y - worldStart.y;
+    const origin = this.dragPointerOrigin ?? this.dragStartPoint;
+    const total = {
+      x: viewportPoint.x - origin.x,
+      y: viewportPoint.y - origin.y,
+    };
+    const constrained = constrainAxisScreenDelta(
+      total.x,
+      total.y,
+      isConstrainMoveModifierHeld(modifiersStore.get()),
+    );
+    const screenDelta = {
+      x: constrained.x - this.lastAppliedScreenTotal.x,
+      y: constrained.y - this.lastAppliedScreenTotal.y,
+    };
+    const worldDelta = this.camera.screenDeltaToWorld(
+      screenDelta.x,
+      screenDelta.y,
+    );
 
-    if (dx !== 0 || dy !== 0) {
+    if (worldDelta.x !== 0 || worldDelta.y !== 0) {
       this.noteLiveEditStarted("anchor");
-      this.moveSelectedAnchors(dx, dy);
+      this.moveSelectedAnchors(worldDelta.x, worldDelta.y);
+      this.lastAppliedScreenTotal = constrained;
       this.dragStartPoint = viewportPoint;
       this.drawUI();
     }
@@ -960,9 +1012,9 @@ export class DirectSelectController {
     return items;
   }
 
-  /** Replace picks with every anchor on this shape (fill click / interior hit). */
-  private pickAllAnchorsOfItem(item: paper.PathItem): void {
-    const keys = new Set<AnchorKey>();
+  /** Pick every anchor on this shape (fill click / interior hit). */
+  private pickAllAnchorsOfItem(item: paper.PathItem, additive = false): void {
+    const keys = additive ? new Set(this.pickedAnchors) : new Set<AnchorKey>();
     this.forEachSegment(item, (ci, si) => {
       keys.add(anchorKey(item.id, ci, si));
     });
@@ -1176,12 +1228,15 @@ export class DirectSelectController {
   private finalizeMarquee(): void {
     const matched = this.collectMarqueeMatches();
     const matchedKeys = new Set(matched.map((h) => h.key));
+    const add = isAddToSelectionModifierHeld(modifiersStore.get());
 
     if (this.hasActiveMarquee()) {
       // User actually dragged a marquee. Picks update to whatever the
       // marquee covered; peek stays intact (a drag is not "a click
-      // outside the shape").
-      this.pickedAnchors = matchedKeys;
+      // outside the shape"). Add-to-selection unions with prior picks.
+      this.pickedAnchors = add
+        ? new Set([...this.pickedAnchors, ...matchedKeys])
+        : matchedKeys;
       this.lastShapeClick = null;
       this.lastEdgeClick = null;
       this.bringInteractedItemsToFront();
@@ -1190,9 +1245,10 @@ export class DirectSelectController {
       // installed the new exposure + lastShapeClick. Leave them be so
       // the peek persists and the next click can register as a
       // double-click.
-    } else {
+    } else if (!add) {
       // Tap on empty area — the "click outside the shape" gesture.
       // Clears picks, peek, and the double-click memory.
+      // With add-to-selection held, keep the current picks.
       this.pickedAnchors.clear();
       this.exposedItemIds.clear();
       this.lastShapeClick = null;
@@ -1395,6 +1451,7 @@ export class DirectSelectController {
   private resetDragThreshold(): void {
     this.dragPointerOrigin = null;
     this.dragPastThreshold = false;
+    this.lastAppliedScreenTotal = { x: 0, y: 0 };
   }
 
   private pastDragThreshold(viewportPoint: Point): boolean {

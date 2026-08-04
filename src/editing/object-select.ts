@@ -22,11 +22,19 @@ import {
   quickShapeEnabledStore,
   quickShapeCurveStyleStore,
   quickShapeHoldMsStore,
+  modifiersStore,
 } from "../state/index";
 import { pixelToViewport } from "../geometry/coords";
 import { LassoQuickShapeSession } from "../geometry/quick-shape";
 import { MarqueeTracker } from "./marquee";
-import { TransformGizmoController } from "./transform-gizmo";
+import {
+  isAddToSelectionModifierHeld,
+  isConstrainMoveModifierHeld,
+} from "../input/shortcuts";
+import {
+  TransformGizmoController,
+  constrainAxisScreenDelta,
+} from "./transform-gizmo";
 
 export class SelectionController {
   /** Ignore sub-pixel jitter: only count drags after this many viewport px from pointer-down. */
@@ -54,6 +62,8 @@ export class SelectionController {
   private pendingExtractionSnapshot: Map<string, paper.PathItem[]> | null = null;
   private isDragging = false;
   private dragStartPoint: Point | null = null;
+  /** Screen-space total already applied this translate gesture (from drag origin). */
+  private lastAppliedScreenTotal: Point = { x: 0, y: 0 };
   private didMove = false;
   private selectionNeedsPlacement = false;
   private config: CanvasConfig;
@@ -292,13 +302,17 @@ export class SelectionController {
         fromTouchHold || this.isDoubleClickOnShape(viewportPoint, hitItem.id, now);
       if (shouldSelectShape) {
         this.lastShapeClick = null;
-        this.resolvePendingSelectionForNewGesture();
         const selectItem =
           this.paperRenderer.resolveSelectableItem(
             this.paperRenderer.hitTestSelectable(viewportPoint, this.layerScope),
           ) ?? hitItem;
         this.activateLayerForItem(selectItem);
-        this.setSelectedItems([selectItem]);
+        if (isAddToSelectionModifierHeld(modifiersStore.get())) {
+          this.addItemToSelection(selectItem);
+        } else {
+          this.resolvePendingSelectionForNewGesture();
+          this.setSelectedItems([selectItem]);
+        }
         this.isDragging = true;
         this.dragStartPoint = viewportPoint;
         this.beginDragThreshold(viewportPoint);
@@ -372,22 +386,49 @@ export class SelectionController {
         return;
       }
       if (this.hasActiveMarquee()) {
-        // Commit/clear whatever was selected before extracting a new range.
-        this.resolvePendingSelectionForNewGesture();
+        const add = isAddToSelectionModifierHeld(modifiersStore.get());
+        let kept: paper.PathItem[] = [];
+        if (add && this.selectedItems.length > 0) {
+          // Commit prior selection but keep survivors so the new extract unions in.
+          if (this.selectionNeedsPlacement || this.didMove) {
+            kept = this.paperRenderer.placeItemsAsSelection(this.selectedItems);
+            this.pendingExtractionSnapshot = null;
+            this.selectionNeedsPlacement = false;
+            this.didMove = false;
+          } else {
+            kept = this.selectedItems.filter((item) => !!item.parent);
+          }
+          this.selectedItems = [];
+          this.handles = [];
+        } else {
+          // Commit/clear whatever was selected before extracting a new range.
+          this.resolvePendingSelectionForNewGesture();
+        }
         this.pendingExtractionSnapshot =
           this.paperRenderer.captureSelectableLayersSnapshot(this.layerScope);
-        this.selectedItems =
+        const keptIds = new Set(kept.map((item) => item.id));
+        const itemFilter =
+          keptIds.size > 0
+            ? (item: paper.PathItem) => !keptIds.has(item.id)
+            : undefined;
+        const extracted =
           this.selectionShape === "lasso"
             ? this.paperRenderer.extractSelectionFromScreenLasso(
                 lassoPoints,
                 this.layerScope,
+                itemFilter,
               )
             : this.paperRenderer.extractSelectionFromScreenRect(
                 marqueeStartPoint,
                 marqueeCurrentPoint,
                 this.layerScope,
+                itemFilter,
               );
-        this.selectionNeedsPlacement = this.selectedItems.length > 0;
+        const byId = new Map<number, paper.PathItem>();
+        for (const item of kept) byId.set(item.id, item);
+        for (const item of extracted) byId.set(item.id, item);
+        this.selectedItems = [...byId.values()];
+        this.selectionNeedsPlacement = extracted.length > 0;
         if (!this.selectionNeedsPlacement) {
           this.pendingExtractionSnapshot = null;
         } else if (this.layerScope === "all") {
@@ -396,8 +437,18 @@ export class SelectionController {
         selectionStore.set({ items: [...this.selectedItems] });
       } else {
         // Tap outside / on an unselected shape: deselect only.
+        // With add-to-selection held, keep the current selection.
         this.lassoQuickShape.reset();
-        this.clearSelection();
+        this.marquee.reset();
+        this.isDragging = false;
+        this.dragStartPoint = null;
+        this.resetDragThreshold();
+        this.clearTransformState();
+        if (!isAddToSelectionModifierHeld(modifiersStore.get())) {
+          this.clearSelection();
+        } else {
+          this.drawUI();
+        }
         return;
       }
       this.lassoQuickShape.reset();
@@ -483,9 +534,21 @@ export class SelectionController {
   // ============================================================
 
   private handleTranslateMove(viewportPoint: Point): void {
+    const origin = this.dragPointerOrigin ?? this.dragStartPoint;
+    if (!origin) return;
+
+    const total = {
+      x: viewportPoint.x - origin.x,
+      y: viewportPoint.y - origin.y,
+    };
+    const constrained = constrainAxisScreenDelta(
+      total.x,
+      total.y,
+      isConstrainMoveModifierHeld(modifiersStore.get()),
+    );
     const screenDelta = {
-      x: viewportPoint.x - this.dragStartPoint!.x,
-      y: viewportPoint.y - this.dragStartPoint!.y,
+      x: constrained.x - this.lastAppliedScreenTotal.x,
+      y: constrained.y - this.lastAppliedScreenTotal.y,
     };
 
     const worldDelta = this.camera.screenDeltaToWorld(
@@ -497,6 +560,7 @@ export class SelectionController {
       for (const item of this.selectedItems) {
         this.paperRenderer.movePath(item, worldDelta);
       }
+      this.lastAppliedScreenTotal = constrained;
       this.dragStartPoint = viewportPoint;
       this.noteLiveEditStarted();
     }
@@ -526,6 +590,7 @@ export class SelectionController {
   private resetDragThreshold(): void {
     this.dragPointerOrigin = null;
     this.dragPastThreshold = false;
+    this.lastAppliedScreenTotal = { x: 0, y: 0 };
   }
 
   /** Returns true once pointer has moved at least dragMoveThresholdSq from origin. */
@@ -581,6 +646,25 @@ export class SelectionController {
     } else {
       this.placeSelection();
     }
+  }
+
+  /** Union `item` into the current selection, committing any pending extract first. */
+  private addItemToSelection(item: paper.PathItem): void {
+    let kept: paper.PathItem[] = [];
+    if (this.selectedItems.length > 0) {
+      if (this.selectionNeedsPlacement || this.didMove) {
+        kept = this.paperRenderer.placeItemsAsSelection(this.selectedItems);
+        this.pendingExtractionSnapshot = null;
+        this.selectionNeedsPlacement = false;
+        this.didMove = false;
+      } else {
+        kept = this.selectedItems.filter((existing) => !!existing.parent);
+      }
+    }
+    if (!kept.some((existing) => existing.id === item.id)) {
+      kept = [...kept, item];
+    }
+    this.setSelectedItems(kept);
   }
 
   private revertPendingSelection(): void {
