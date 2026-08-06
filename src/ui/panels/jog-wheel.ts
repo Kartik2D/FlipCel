@@ -21,6 +21,8 @@ const WHEEL_CHAMBERS = 12;
 const WHEEL_DEG_PER_FRAME = 360 / WHEEL_CHAMBERS;
 /** Coasting ends below this angular velocity (deg/ms). */
 const WHEEL_COAST_STOP_VELOCITY = 0.02;
+/** Above this |°/ms| (~8 fps), pegs become a rim streak. */
+const WHEEL_STREAK_DEG_PER_MS = (8 * WHEEL_DEG_PER_FRAME) / 1000;
 const WHEEL_RAD2DEG = 180 / Math.PI;
 /** Hub floor (px); avoids blow-up at the exact center. */
 const WHEEL_HUB_MIN_R = 14;
@@ -31,7 +33,8 @@ const WHEEL_LEVER_EXPONENT = 1.25;
 export class FlipCelWheelPanel extends FloatingPanel {
   @property({ type: Boolean, reflect: true }) override masonry = false;
 
-  private timeline = new StoreController(this, timelineStore);
+  /** Timeline mirror — playhead ticks patch the hub; playing toggles Lit. */
+  private timeline = { value: timelineStore.get() };
   private wheelFriction = new StoreController(this, wheelFrictionStore);
   private wheelDirection = new StoreController(this, wheelDirectionStore);
   /** Cumulative barrel rotation in degrees; grows clockwise without bound. */
@@ -58,6 +61,10 @@ export class FlipCelWheelPanel extends FloatingPanel {
   private lastCoastTs = 0;
   private angularVelocity = 0;
   private lastMoveTs = 0;
+  /** Cached scrub-ring radius for the active drag (avoids layout each move). */
+  private dragRimR = 106;
+  /** Pegs → rim streak while spinning fast (playback / hard coast). */
+  private streak = false;
   /**
    * True while our own frame-step event is being dispatched. The store
    * update it causes re-enters syncRotationToFrame synchronously; without
@@ -222,6 +229,30 @@ export class FlipCelWheelPanel extends FloatingPanel {
       border-radius: 50%;
       background: var(--block-depth-color, var(--flipcel-panel-depth));
       pointer-events: none;
+      transition: opacity 120ms linear;
+    }
+
+    /* Fast spin: solid rim band matching peg outer/inner radii. */
+    .barrel::after {
+      content: "";
+      position: absolute;
+      inset: var(--chamber-outer-inset);
+      border-radius: 50%;
+      border: var(--chamber-size) solid
+        var(--block-depth-color, var(--flipcel-panel-depth));
+      box-sizing: border-box;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 120ms linear;
+    }
+
+    .wheel.streak .chamber {
+      opacity: 0;
+    }
+
+    /* Pegs only cover ~half the rim — blended spin reads lighter. */
+    .wheel.streak .barrel::after {
+      opacity: 0.55;
     }
 
     /* Solid accent hub pill: the play button sits centered on the wheel's
@@ -299,13 +330,24 @@ export class FlipCelWheelPanel extends FloatingPanel {
     this.blockWidth = null;
     this.blockHeight = null;
     this.syncWheelFrictionMotion();
-    const frame = timelineStore.get().currentFrame;
+    this.timeline.value = timelineStore.get();
+    const frame = this.timeline.value.currentFrame;
     this.lastFrame = frame;
     this.lastNotch = frame;
     this.rotationDeg = this.lastNotch * WHEEL_DEG_PER_FRAME;
     this.unsubscribeTimeline = timelineStore.subscribe((t) => {
+      const prev = this.timeline.value;
+      this.timeline.value = t;
       this.syncRotationToFrame(t.currentFrame, t.duration);
       this.updatePlaybackRotation(t);
+      // Play/stop needs Lit; playhead-only only updates the hub number.
+      if (prev.playing !== t.playing) {
+        this.requestUpdate();
+        return;
+      }
+      if (prev.currentFrame !== t.currentFrame) {
+        this.syncHubFrame(t.currentFrame);
+      }
     });
   }
 
@@ -323,6 +365,18 @@ export class FlipCelWheelPanel extends FloatingPanel {
     this.rotationDeg = deg;
     const barrel = this.renderRoot.querySelector<HTMLElement>(".barrel");
     if (barrel) barrel.style.transform = `rotate(${deg}deg)`;
+  }
+
+  /** Hub frame badge — patched without rebuilding chamber DOM. */
+  private syncHubFrame(frame: number) {
+    const el = this.renderRoot.querySelector(".hub-frame");
+    if (el) el.textContent = String(frame + 1);
+  }
+
+  private syncStreak(on: boolean) {
+    if (this.streak === on) return;
+    this.streak = on;
+    this.renderRoot.querySelector(".wheel")?.classList.toggle("streak", on);
   }
 
   private isBarrelLive(): boolean {
@@ -429,6 +483,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
       cancelAnimationFrame(this.playbackRaf);
       this.playbackRaf = null;
     }
+    this.syncStreak(false);
     if (wasPlaying && !this.isBarrelLive()) {
       this.settleToChamber();
     }
@@ -456,8 +511,10 @@ export class FlipCelWheelPanel extends FloatingPanel {
     this.setBarrelRotationLive(this.rotationDeg + this.angularVelocity * dt);
     this.emitNotchSteps();
     this.angularVelocity *= Math.exp(-dt / wheelFrictionTauMs(this.wheelFriction.value));
+    this.syncStreak(Math.abs(this.angularVelocity) > WHEEL_STREAK_DEG_PER_MS);
     if (Math.abs(this.angularVelocity) < WHEEL_COAST_STOP_VELOCITY) {
       this.stopCoasting();
+      this.syncStreak(false);
       this.settleToChamber();
       return;
     }
@@ -478,6 +535,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
       wheelDirectionSign(this.wheelDirection.value);
     this.setBarrelRotationLive(this.rotationDeg + degPerMs * dt);
     this.lastNotch = Math.round(this.rotationDeg / WHEEL_DEG_PER_FRAME);
+    this.syncStreak(Math.abs(degPerMs) > WHEEL_STREAK_DEG_PER_MS);
     this.playbackRaf = requestAnimationFrame(this.playbackTick);
   };
 
@@ -525,6 +583,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
     this.stopPlaybackRotation();
     this.stopCoasting();
     this.cancelNotchStepSchedule();
+    this.dragRimR = this.wheelRimRadius();
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     } catch {
@@ -545,7 +604,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
     this.lastClientY = e.clientY;
 
     const { px, py } = this.wheelOffset(e);
-    const scrubDeg = this.wheelScrubDeg(px - dx, py - dy, dx, dy, this.wheelRimRadius());
+    const scrubDeg = this.wheelScrubDeg(px - dx, py - dy, dx, dy, this.dragRimR);
     this.setBarrelRotationLive(this.rotationDeg + scrubDeg);
 
     const dt = e.timeStamp - this.lastMoveTs;
@@ -553,6 +612,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
       this.angularVelocity = this.angularVelocity * 0.5 + (scrubDeg / dt) * 0.5;
     }
     this.lastMoveTs = e.timeStamp;
+    this.syncStreak(Math.abs(this.angularVelocity) > WHEEL_STREAK_DEG_PER_MS);
     this.scheduleNotchSteps();
   };
 
@@ -567,6 +627,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
     if (throwRelease) {
       this.startCoasting(this.angularVelocity);
     } else {
+      this.syncStreak(false);
       this.settleToChamber();
     }
     this.updatePlaybackRotation(timelineStore.get());
@@ -583,7 +644,7 @@ export class FlipCelWheelPanel extends FloatingPanel {
               <div
                 class="wheel ${this.dragging ? "dragging" : ""} ${this.isBarrelLive()
                   ? "live"
-                  : ""}"
+                  : ""} ${this.streak ? "streak" : ""}"
               >
                 <div class="barrel" style="transform: rotate(${this.rotationDeg}deg)">
                   ${chambers.map(

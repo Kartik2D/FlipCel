@@ -273,7 +273,8 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     const delta = (e as CustomEvent<number>).detail;
     const t = timelineStore.get();
     const next = (((t.currentFrame + delta) % t.duration) + t.duration) % t.duration;
-    deps.onTimelineFrameSelect(next);
+    // Same as layers scrub — don't clear/commit selection on every notch.
+    deps.onTimelineFrameSelect(next, undefined, { navigateOnly: true });
   });
   wheelPanel.addEventListener("play-toggle", () => deps.onPlayToggle());
   layersPanel.addEventListener("keyframe-add", (e: Event) => {
