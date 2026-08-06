@@ -2,6 +2,8 @@
  * Shared help copy for button popups and the Tutorials panel.
  */
 
+import { formatBinding, shortcutsStore, type ToolActionId } from "../../input/shortcuts";
+
 export type HelpSection =
   | "Tools"
   | "Dock"
@@ -306,7 +308,16 @@ export const HELP_CATALOG: Record<HelpId, HelpEntry> = {
 
 export function getHelp(id: string | null | undefined): HelpEntry | undefined {
   if (!id) return undefined;
-  return HELP_CATALOG[id as HelpId];
+  const entry = HELP_CATALOG[id as HelpId];
+  if (!entry) return undefined;
+  // Tools: title includes the current chord, e.g. "Brush (B)".
+  if (entry.section === "Tools") {
+    const binding = shortcutsStore.get()[id as ToolActionId];
+    if (binding) {
+      return { ...entry, title: `${entry.title} (${formatBinding(binding)})` };
+    }
+  }
+  return entry;
 }
 
 export function isHelpId(id: string): id is HelpId {
