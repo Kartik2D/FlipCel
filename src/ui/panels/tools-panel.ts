@@ -21,7 +21,7 @@ export class FlipCelToolsPanel extends FloatingPanel {
 
   private tool = new StoreController(this, toolStore);
 
-  /** Last tool icon tap, for touch double-tap → open settings. */
+  /** Last tool icon tap, for double-tap → open settings (also: re-click selected). */
   private lastTap: { toolId: ToolId; time: number } | null = null;
 
   /** Press-and-hold on a tool icon → open settings. */
@@ -205,6 +205,7 @@ export class FlipCelToolsPanel extends FloatingPanel {
       return;
     }
 
+    const alreadySelected = this.tool.value === toolId;
     const now = performance.now();
     const prev = this.lastTap;
     const isDouble =
@@ -213,6 +214,16 @@ export class FlipCelToolsPanel extends FloatingPanel {
       now - prev.time <= DOUBLE_TAP_MS;
 
     this.setTool(toolId);
+
+    if (alreadySelected) {
+      this.lastTap = null;
+      const panel = document.getElementById(
+        "tool-settings-panel",
+      ) as FlipCelToolSettingsPanel | null;
+      if (panel && panel.style.display !== "none") panel.hidePanel();
+      else this.openToolSettings();
+      return;
+    }
 
     if (isDouble) {
       this.lastTap = null;

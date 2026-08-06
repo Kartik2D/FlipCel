@@ -158,6 +158,14 @@ export function adjustQuickShape(
   };
 }
 
+/** Pivot for post-snap adjust: shape center when closed, stroke start when open. */
+export function quickShapeAdjustPivot(
+  result: QuickShapeResult,
+  strokeStart: Point,
+): Point {
+  return result.closed ? { ...result.center } : { ...strokeStart };
+}
+
 export function resampleWithPressure(
   original: Point[],
   path: Point[],
@@ -983,16 +991,14 @@ export class LassoQuickShapeSession {
         curveStyle: this.curveStyle,
       });
       if (!recognized) return;
-      const pivot =
+      const strokeStart =
         withTip.length > 0
-          ? { ...withTip[0] }
-          : this.startPoint
-            ? { ...this.startPoint }
-            : { ...hold };
+          ? withTip[0]
+          : this.startPoint ?? hold;
       this.snapped = {
         base: recognized,
         result: recognized,
-        pivot,
+        pivot: quickShapeAdjustPivot(recognized, strokeStart),
         adjustOrigin: { ...hold },
       };
       this.onSnapped?.(recognized.path);

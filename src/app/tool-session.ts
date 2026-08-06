@@ -20,6 +20,7 @@ import type { ToolId } from "../tools/registry";
 import { pixelToViewport } from "../geometry/coords";
 import {
   adjustQuickShape,
+  quickShapeAdjustPivot,
   recognizeQuickShape,
   resampleWithPressure,
   QUICK_SHAPE_SLOP_PX,
@@ -190,7 +191,7 @@ export class ToolSession {
       originalPoints,
       base: recognized,
       result: recognized,
-      pivot: { ...originalPoints[0] },
+      pivot: quickShapeAdjustPivot(recognized, originalPoints[0]),
       adjustOrigin: { ...holdPoint },
     };
     this.applyPixelQuickShapePreview();

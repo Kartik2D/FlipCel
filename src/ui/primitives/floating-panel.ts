@@ -549,7 +549,6 @@ export class FloatingPanel extends Block {
       gap: 12px;
       margin: 0;
       min-height: 28px;
-      overflow: hidden;
     }
 
     .toggle span {
@@ -567,7 +566,8 @@ export class FloatingPanel extends Block {
       margin: 0;
       flex: 0 0 auto;
       box-sizing: border-box;
-      overflow: hidden;
+      /* Don't clip: WebKit often drops input::after thumbs when overflow is hidden. */
+      overflow: visible;
       border-radius: 999px;
       border: 1.5px solid var(--flipcel-toggle-border, #999999);
       background: var(--flipcel-toggle-track, #d4d4d4);
@@ -577,6 +577,7 @@ export class FloatingPanel extends Block {
 
     .toggle input[type="checkbox"]::after {
       content: "";
+      display: block;
       position: absolute;
       top: 50%;
       left: 2px;
@@ -587,6 +588,7 @@ export class FloatingPanel extends Block {
       box-shadow: var(--flipcel-shadow-soft, 0 2px 4px rgba(0, 0, 0, 0.12));
       transform: translateY(-50%);
       transition: transform 120ms ease, background-color 120ms ease;
+      pointer-events: none;
     }
 
     .toggle input[type="checkbox"]:checked {

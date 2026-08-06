@@ -293,13 +293,13 @@ export const HELP_CATALOG: Record<HelpId, HelpEntry> = {
   "view.onion-active": {
     id: "view.onion-active",
     title: "Onion: Active",
-    body: "Onion skin shows neighboring frames on the active layer only.",
+    body: "Onion skin shows Nearest Frame on the active layer only.",
     section: "View",
   },
   "view.onion-all": {
     id: "view.onion-all",
     title: "Onion: All",
-    body: "Onion skin shows neighboring frames across all layers.",
+    body: "Onion skin shows Nearest Frame across all layers.",
     section: "View",
   },
 };

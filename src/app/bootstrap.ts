@@ -388,9 +388,10 @@ class App {
       this.redrawActiveSelectionUI();
     });
 
+    // Symmetry guides live on #ui-canvas only (same as grid) — do not
+    // request a full Paper redraw or the view-panel toggle feels laggy on iPad.
     symmetryStore.subscribeImmediate((prefs) => {
       this.feedbackLayer.setSymmetryPrefs(prefs);
-      this.requestRedraw();
     });
 
     timelineStore.subscribeImmediate((timeline) => {
