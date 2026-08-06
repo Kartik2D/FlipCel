@@ -154,6 +154,12 @@ export class TimelineSession {
       this.commitLiveEdits();
     }
 
+    const hasPendingSelection =
+      selectionController.hasSelection() ||
+      directSelectController.hasSelection() ||
+      magicMoveController.hasSelection() ||
+      magicMorphController.hasTransientUI();
+
     if (layerId) {
       if (layerId === STAGE_LAYER_ID) return;
 
@@ -165,10 +171,7 @@ export class TimelineSession {
         !navigateOnly &&
         isAlreadyActive &&
         isSameFrame &&
-        (selectionController.hasSelection() ||
-          directSelectController.hasSelection() ||
-          magicMoveController.hasSelection() ||
-          magicMorphController.hasTransientUI())
+        hasPendingSelection
       ) {
         selectionController.confirmAndClearSelection();
         directSelectController.confirmAndClearSelection();
@@ -179,14 +182,17 @@ export class TimelineSession {
       }
     }
 
-    // Always confirm pending transforms and clear outlines — including
-    // navigateOnly scrub/ruler paths (navigateOnly only skips re-select-all).
-    selectionController.confirmAndClearSelection();
-    directSelectController.confirmAndClearSelection();
-    magicMoveController.deactivate();
-    magicMorphController.deactivate();
-    closeFunctionsPanelHidden();
-    this.commitLiveEdits();
+    // Scrub/jog (navigateOnly): only confirm/clear when something is pending.
+    // Re-doing this every tick made playhead scrub feel heavy on long timelines.
+    // Full frame-cell clicks still always confirm + commit.
+    if (!navigateOnly || hasPendingSelection) {
+      selectionController.confirmAndClearSelection();
+      directSelectController.confirmAndClearSelection();
+      magicMoveController.deactivate();
+      magicMorphController.deactivate();
+      closeFunctionsPanelHidden();
+      this.commitLiveEdits();
+    }
 
     if (layerId && layerId !== layerStore.get().activeLayerId) {
       if (paperRenderer.setActiveLayer(layerId)) {

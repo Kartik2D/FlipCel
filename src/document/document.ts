@@ -1706,7 +1706,9 @@ export class DocumentManager {
   gotoFrame(frame: number): void {
     this.currentFrame = this.clampFrame(frame);
     this.reloadCurrentFrame();
-    this.publish();
+    // Playhead-only: keep canvas + onion + timeline UI in sync without a
+    // full document color rescan or tracks clone (scrub/playback hot path).
+    this.publishPlayhead();
   }
 
   /** Drop the loaded-content cache for a layer so the next reload reimports. */
@@ -2042,12 +2044,9 @@ export class DocumentManager {
     documentColorsStore.set(collectDocumentColors(this.tracks, this.content));
   }
 
-  private publish(): void {
-    // Every document mutation funnels through here, so the ghosts always
-    // track the latest content, visibility, playhead, and playback state.
-    this.updateOnionSkin();
-    this.refreshDocumentColors();
-    timelineStore.set({
+  /** Snapshot tracks/flags into the store (content may have changed). */
+  private timelineSnapshot(): TimelineState {
+    return {
       tracks: this.tracks.map((t) => ({
         id: t.id,
         name: t.name,
@@ -2070,6 +2069,27 @@ export class DocumentManager {
       emfRange: this.emfRange
         ? { ...this.emfRange, layerIds: [...this.emfRange.layerIds] }
         : null,
+    };
+  }
+
+  /**
+   * Playhead moved (scrub / playback): refresh onion + currentFrame only.
+   * Reuses the previous tracks reference so UI can skip grid rebuilds.
+   */
+  private publishPlayhead(): void {
+    this.updateOnionSkin();
+    const prev = timelineStore.get();
+    timelineStore.set({
+      ...prev,
+      currentFrame: this.currentFrame,
     });
+  }
+
+  private publish(): void {
+    // Every document mutation funnels through here, so the ghosts always
+    // track the latest content, visibility, playhead, and playback state.
+    this.updateOnionSkin();
+    this.refreshDocumentColors();
+    timelineStore.set(this.timelineSnapshot());
   }
 }

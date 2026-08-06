@@ -8,7 +8,7 @@ import {
   StoreController,
   isLayerEffectivelyVisible,
 } from "../../state";
-import { timelineStore } from "../../document/document";
+import { timelineStore, type TimelineState } from "../../document/document";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { phosphorIcon } from "../icons/phosphor";
 import { timelinePanelStyles } from "./timeline/styles";
@@ -28,6 +28,25 @@ import {
   getModifierBinding,
 } from "../../input/shortcuts";
 
+/** True when only the playhead moved (tracks/flags reused by publishPlayhead). */
+function isPlayheadOnlyTimelineChange(
+  prev: TimelineState,
+  next: TimelineState,
+): boolean {
+  return (
+    prev.tracks === next.tracks &&
+    prev.duration === next.duration &&
+    prev.frameRate === next.frameRate &&
+    prev.playing === next.playing &&
+    prev.onionSkin === next.onionSkin &&
+    prev.autoHold === next.autoHold &&
+    prev.realTimeLock === next.realTimeLock &&
+    prev.editMultipleFrames === next.editMultipleFrames &&
+    prev.emfRange === next.emfRange &&
+    prev.currentFrame !== next.currentFrame
+  );
+}
+
 // ============================================================
 // Layers Panel
 // ============================================================
@@ -37,7 +56,9 @@ export class FlipCelLayersPanel extends FloatingPanel {
   @property({ type: Boolean, reflect: true }) override masonry = false;
 
   private layers = new StoreController(this, layerStore);
-  private timeline = new StoreController(this, timelineStore);
+  /** Mirrored timeline state; playhead-only ticks update the DOM imperatively. */
+  private timeline = { value: timelineStore.get() };
+  private timelineUnsub: (() => void) | null = null;
   @state() private editingLayerId: string | null = null;
   @state() private editingName = "";
   /**
@@ -1423,6 +1444,69 @@ export class FlipCelLayersPanel extends FloatingPanel {
     }
   };
 
+  /** Whether a ruler cell shows its frame number without being current. */
+  private rulerShowsNumber(frame: number): boolean {
+    return frame === 0 || (frame + 1) % 5 === 0;
+  }
+
+  /**
+   * Playhead-only store ticks: patch DOM instead of rebuilding O(L×D) cells.
+   * Canvas / wheel still update via gotoFrame + timelineStore.
+   */
+  private syncPlayheadDom(prevFrame: number, frame: number, duration: number) {
+    const root = this.renderRoot;
+
+    if (prevFrame !== frame && prevFrame >= 0) {
+      for (const cell of root.querySelectorAll(
+        `.frame-cells .frame-cell:nth-child(${prevFrame + 1})`,
+      )) {
+        cell.classList.remove("current");
+      }
+      const prevRuler = root.querySelector<HTMLElement>(
+        `.strip-ruler-content .ruler-cell:nth-child(${prevFrame + 1})`,
+      );
+      if (prevRuler) {
+        prevRuler.classList.remove("current");
+        if (!this.rulerShowsNumber(prevFrame)) prevRuler.textContent = "";
+      }
+      const prevMark = root.querySelector<HTMLElement>(
+        `.mini-scrubber-mark[data-frame="${prevFrame + 1}"]`,
+      );
+      prevMark?.classList.remove("current");
+    }
+
+    for (const cell of root.querySelectorAll(
+      `.frame-cells .frame-cell:nth-child(${frame + 1})`,
+    )) {
+      cell.classList.add("current");
+    }
+    const ruler = root.querySelector<HTMLElement>(
+      `.strip-ruler-content .ruler-cell:nth-child(${frame + 1})`,
+    );
+    if (ruler) {
+      ruler.classList.add("current");
+      ruler.textContent = String(frame + 1);
+    }
+    const mark = root.querySelector<HTMLElement>(
+      `.mini-scrubber-mark[data-frame="${frame + 1}"]`,
+    );
+    mark?.classList.add("current");
+
+    const playhead = root.querySelector<HTMLElement>(".playhead");
+    playhead?.style.setProperty("--f", String(frame));
+
+    const counter = root.querySelector(".frame-counter-current");
+    if (counter) counter.textContent = String(frame + 1);
+
+    const mini = root.querySelector<HTMLElement>(".mini-scrubber");
+    if (mini) {
+      const t = duration <= 1 ? 0.5 : frame / (duration - 1);
+      mini.style.setProperty("--mini-scrub-t", String(t));
+    }
+
+    this.syncTimelineStrip();
+  }
+
   private onFramesViewportScroll = () => {
     this.syncTimelineStrip();
     // Scroll dismisses the actions popup but keeps the range highlight.
@@ -2040,9 +2124,26 @@ export class FlipCelLayersPanel extends FloatingPanel {
     window.addEventListener("pointercancel", this.globalFrameDuplicateDragEndHandler);
     window.addEventListener("blur", this.globalFrameDuplicateDragEndHandler);
     window.addEventListener("pointerdown", this.onFrameActionsOutsidePointerDown, true);
+    this.timelineUnsub?.();
+    this.timeline.value = timelineStore.get();
+    this.timelineUnsub = timelineStore.subscribe((t) => {
+      const prev = this.timeline.value;
+      this.timeline.value = t;
+      if (isPlayheadOnlyTimelineChange(prev, t)) {
+        this.syncPlayheadDom(prev.currentFrame, t.currentFrame, t.duration);
+        if (t.currentFrame !== this.lastSeenFrame) {
+          this.lastSeenFrame = t.currentFrame;
+          if (!this.scrubbing) this.ensureFrameVisible(t.currentFrame);
+        }
+        return;
+      }
+      this.requestUpdate();
+    });
   }
 
   disconnectedCallback() {
+    this.timelineUnsub?.();
+    this.timelineUnsub = null;
     this.clearCellLongPress();
     this.unbindLayersTouchListeners();
     window.removeEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
@@ -2416,7 +2517,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
         @click=${() => this.emit("play-toggle")}
       >${t.playing ? html`&#9632;` : html`&#9654;`}</button>
       <span class="frame-counter playback-frames">
-        ${t.currentFrame + 1}/<input
+        <span class="frame-counter-current">${t.currentFrame + 1}</span>/<input
           class="duration-input"
           type="number"
           min="1"
@@ -2500,7 +2601,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
                                     navigateOnly: true,
                                   })}
                               >
-                                ${f === 0 || (f + 1) % 5 === 0 || f === t.currentFrame
+                                ${this.rulerShowsNumber(f) || f === t.currentFrame
                                   ? f + 1
                                   : ""}
                               </div>
@@ -2686,6 +2787,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
                               class="mini-scrubber-mark ${n === t.currentFrame + 1
                                 ? "current"
                                 : ""}"
+                              data-frame=${n}
                               style="left:calc(5px + ${tMark} * (100% - 10px))"
                               >${n}</span
                             >
