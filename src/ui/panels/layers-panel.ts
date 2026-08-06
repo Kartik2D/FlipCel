@@ -1,6 +1,7 @@
 import { html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { repeat } from "lit/directives/repeat.js";
+import { guard } from "lit/directives/guard.js";
 import {
   layerStore,
   generateLayerId,
@@ -8,7 +9,7 @@ import {
   StoreController,
   isLayerEffectivelyVisible,
 } from "../../state";
-import { timelineStore, type TimelineState } from "../../document/document";
+import { timelineStore } from "../../document/document";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { phosphorIcon } from "../icons/phosphor";
 import { timelinePanelStyles } from "./timeline/styles";
@@ -28,25 +29,6 @@ import {
   getModifierBinding,
 } from "../../input/shortcuts";
 
-/** True when only the playhead moved (tracks/flags reused by publishPlayhead). */
-function isPlayheadOnlyTimelineChange(
-  prev: TimelineState,
-  next: TimelineState,
-): boolean {
-  return (
-    prev.tracks === next.tracks &&
-    prev.duration === next.duration &&
-    prev.frameRate === next.frameRate &&
-    prev.playing === next.playing &&
-    prev.onionSkin === next.onionSkin &&
-    prev.autoHold === next.autoHold &&
-    prev.realTimeLock === next.realTimeLock &&
-    prev.editMultipleFrames === next.editMultipleFrames &&
-    prev.emfRange === next.emfRange &&
-    prev.currentFrame !== next.currentFrame
-  );
-}
-
 // ============================================================
 // Layers Panel
 // ============================================================
@@ -56,9 +38,9 @@ export class FlipCelLayersPanel extends FloatingPanel {
   @property({ type: Boolean, reflect: true }) override masonry = false;
 
   private layers = new StoreController(this, layerStore);
-  /** Mirrored timeline state; playhead-only ticks update the DOM imperatively. */
-  private timeline = { value: timelineStore.get() };
-  private timelineUnsub: (() => void) | null = null;
+  private timeline = new StoreController(this, timelineStore);
+  /** Last frame whose ruler / mini-scrubber chrome was patched outside guards. */
+  private chromePlayheadFrame = -1;
   @state() private editingLayerId: string | null = null;
   @state() private editingName = "";
   /**
@@ -1215,6 +1197,9 @@ export class FlipCelLayersPanel extends FloatingPanel {
       if (!this.scrubbing) this.ensureFrameVisible(frame);
     }
 
+    // Ruler / mini-scrubber marks are duration-guarded; patch playhead chrome.
+    this.syncPlayheadChrome(this.chromePlayheadFrame, frame);
+
     // Duration and frame changes move the strip's ruler/flag; scrolling is
     // handled by the viewport's @scroll listener.
     this.syncTimelineStrip();
@@ -1426,9 +1411,8 @@ export class FlipCelLayersPanel extends FloatingPanel {
   /**
    * Keeps the fixed timeline strip mirroring the frames viewport: the
    * ruler numbers are translated by the scroll offset and the playhead
-   * flag is placed over the current frame (it slides out of the strip
-   * when the frame is scrolled out of view — intended). Imperative so
-   * horizontal scrolling never forces a Lit re-render.
+   * flag is placed over the current frame. Imperative so horizontal
+   * scrolling never forces a Lit re-render.
    */
   private syncTimelineStrip = () => {
     const vp = this.framesViewportEl();
@@ -1450,18 +1434,14 @@ export class FlipCelLayersPanel extends FloatingPanel {
   }
 
   /**
-   * Playhead-only store ticks: patch DOM instead of rebuilding O(L×D) cells.
-   * Canvas / wheel still update via gotoFrame + timelineStore.
+   * Ruler + mini-scrubber marks are duration-guarded; playhead chrome is
+   * patched here so scrub/playback doesn't rebuild those lists.
    */
-  private syncPlayheadDom(prevFrame: number, frame: number, duration: number) {
+  private syncPlayheadChrome(prevFrame: number, frame: number) {
     const root = this.renderRoot;
+    const duration = this.timeline.value.duration;
 
     if (prevFrame !== frame && prevFrame >= 0) {
-      for (const cell of root.querySelectorAll(
-        `.frame-cells .frame-cell:nth-child(${prevFrame + 1})`,
-      )) {
-        cell.classList.remove("current");
-      }
       const prevRuler = root.querySelector<HTMLElement>(
         `.strip-ruler-content .ruler-cell:nth-child(${prevFrame + 1})`,
       );
@@ -1469,17 +1449,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
         prevRuler.classList.remove("current");
         if (!this.rulerShowsNumber(prevFrame)) prevRuler.textContent = "";
       }
-      const prevMark = root.querySelector<HTMLElement>(
-        `.mini-scrubber-mark[data-frame="${prevFrame + 1}"]`,
-      );
-      prevMark?.classList.remove("current");
+      root
+        .querySelector(`.mini-scrubber-mark[data-frame="${prevFrame + 1}"]`)
+        ?.classList.remove("current");
     }
 
-    for (const cell of root.querySelectorAll(
-      `.frame-cells .frame-cell:nth-child(${frame + 1})`,
-    )) {
-      cell.classList.add("current");
-    }
     const ruler = root.querySelector<HTMLElement>(
       `.strip-ruler-content .ruler-cell:nth-child(${frame + 1})`,
     );
@@ -1487,24 +1461,19 @@ export class FlipCelLayersPanel extends FloatingPanel {
       ruler.classList.add("current");
       ruler.textContent = String(frame + 1);
     }
-    const mark = root.querySelector<HTMLElement>(
-      `.mini-scrubber-mark[data-frame="${frame + 1}"]`,
-    );
-    mark?.classList.add("current");
-
-    const playhead = root.querySelector<HTMLElement>(".playhead");
-    playhead?.style.setProperty("--f", String(frame));
-
-    const counter = root.querySelector(".frame-counter-current");
-    if (counter) counter.textContent = String(frame + 1);
+    root
+      .querySelector(`.mini-scrubber-mark[data-frame="${frame + 1}"]`)
+      ?.classList.add("current");
 
     const mini = root.querySelector<HTMLElement>(".mini-scrubber");
     if (mini) {
-      const t = duration <= 1 ? 0.5 : frame / (duration - 1);
-      mini.style.setProperty("--mini-scrub-t", String(t));
+      mini.style.setProperty(
+        "--mini-scrub-t",
+        String(duration <= 1 ? 0.5 : frame / (duration - 1)),
+      );
     }
 
-    this.syncTimelineStrip();
+    this.chromePlayheadFrame = frame;
   }
 
   private onFramesViewportScroll = () => {
@@ -2124,26 +2093,9 @@ export class FlipCelLayersPanel extends FloatingPanel {
     window.addEventListener("pointercancel", this.globalFrameDuplicateDragEndHandler);
     window.addEventListener("blur", this.globalFrameDuplicateDragEndHandler);
     window.addEventListener("pointerdown", this.onFrameActionsOutsidePointerDown, true);
-    this.timelineUnsub?.();
-    this.timeline.value = timelineStore.get();
-    this.timelineUnsub = timelineStore.subscribe((t) => {
-      const prev = this.timeline.value;
-      this.timeline.value = t;
-      if (isPlayheadOnlyTimelineChange(prev, t)) {
-        this.syncPlayheadDom(prev.currentFrame, t.currentFrame, t.duration);
-        if (t.currentFrame !== this.lastSeenFrame) {
-          this.lastSeenFrame = t.currentFrame;
-          if (!this.scrubbing) this.ensureFrameVisible(t.currentFrame);
-        }
-        return;
-      }
-      this.requestUpdate();
-    });
   }
 
   disconnectedCallback() {
-    this.timelineUnsub?.();
-    this.timelineUnsub = null;
     this.clearCellLongPress();
     this.unbindLayersTouchListeners();
     window.removeEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
@@ -2277,7 +2229,6 @@ export class FlipCelLayersPanel extends FloatingPanel {
     layerId: string,
     keyframes: Array<{ frame: number; blank: boolean; holdUntil: number }>,
     duration: number,
-    currentFrame: number,
   ) {
     const sel = this.frameSelection;
     const selected =
@@ -2287,7 +2238,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
     const cells = Array.from({ length: duration }, (_, f) => html`
       <button
         type="button"
-        class="frame-cell ${f === currentFrame ? "current" : ""} ${
+        class="frame-cell ${
           selected && f >= selected.start && f <= selected.end ? "in-selection" : ""
         }"
         title=${`Frame ${f + 1}`}
@@ -2590,22 +2541,22 @@ export class FlipCelLayersPanel extends FloatingPanel {
                         @pointercancel=${this.onScrubUp}
                       >
                         <div class="strip-ruler-content">
-                          ${frames.map(
-                            (f) => html`
-                              <div
-                                class="ruler-cell ${f === t.currentFrame ? "current" : ""}"
-                                title=${`Go to frame ${f + 1}`}
-                                @click=${() =>
-                                  this.emit("frame-select", {
-                                    frame: f,
-                                    navigateOnly: true,
-                                  })}
-                              >
-                                ${this.rulerShowsNumber(f) || f === t.currentFrame
-                                  ? f + 1
-                                  : ""}
-                              </div>
-                            `,
+                          ${guard([t.duration], () =>
+                            frames.map(
+                              (f) => html`
+                                <div
+                                  class="ruler-cell"
+                                  title=${`Go to frame ${f + 1}`}
+                                  @click=${() =>
+                                    this.emit("frame-select", {
+                                      frame: f,
+                                      navigateOnly: true,
+                                    })}
+                                >
+                                  ${this.rulerShowsNumber(f) ? f + 1 : ""}
+                                </div>
+                              `,
+                            ),
                           )}
                         </div>
                       </div>
@@ -2729,27 +2680,47 @@ export class FlipCelLayersPanel extends FloatingPanel {
                   </div>
                 </div>
                 <div class="frames-viewport" @scroll=${this.onFramesViewportScroll}>
-                  <div class="frames-content">
-                    <div class="strip-list">
-                      ${repeat(
-                        displayLayers,
-                        (layer) => layer.id,
-                        (layer) => html`
-                          <div
-                            class="strip-row ${layer.id === activeLayerId ? "active" : ""} ${!isLayerEffectivelyVisible(layer, soloLayerId) ? "hidden" : ""} ${layer.locked ? "locked" : ""}"
-                            data-layer-id=${layer.id}
-                          >
-                            ${this.renderFrameStrip(
-                              layer.id,
-                              keyframesByTrack.get(layer.id) ?? [],
-                              t.duration,
-                              t.currentFrame,
-                            )}
-                          </div>
-                        `
-                      )}
-                    </div>
-                    <div class="playhead" style="--f: ${t.currentFrame}"></div>
+                  <div
+                    class="frames-content"
+                    style="--playhead-f: ${t.currentFrame}"
+                  >
+                    ${guard(
+                      [
+                        t.tracks,
+                        t.duration,
+                        t.editMultipleFrames,
+                        this.frameSelection,
+                        this.moveDelta,
+                        this.reverseAnimation,
+                        this.duplicatePlacement,
+                        this.movePlacement,
+                        this.selectionHoldPop,
+                        activeLayerId,
+                        soloLayerId,
+                        layers,
+                      ],
+                      () => html`
+                        <div class="strip-list">
+                          ${repeat(
+                            displayLayers,
+                            (layer) => layer.id,
+                            (layer) => html`
+                              <div
+                                class="strip-row ${layer.id === activeLayerId ? "active" : ""} ${!isLayerEffectivelyVisible(layer, soloLayerId) ? "hidden" : ""} ${layer.locked ? "locked" : ""}"
+                                data-layer-id=${layer.id}
+                              >
+                                ${this.renderFrameStrip(
+                                  layer.id,
+                                  keyframesByTrack.get(layer.id) ?? [],
+                                  t.duration,
+                                )}
+                              </div>
+                            `,
+                          )}
+                        </div>
+                      `,
+                    )}
+                    <div class="playhead"></div>
                   </div>
                 </div>
               </div>
@@ -2767,6 +2738,12 @@ export class FlipCelLayersPanel extends FloatingPanel {
                     <div class="mini-layer-actions">
                       ${this.renderLayerActionButtons(activeLayerId, nonStageCount)}
                     </div>
+                    <button
+                      type="button"
+                      class="tl-btn playback-play ${t.playing ? "on" : ""}"
+                      title=${t.playing ? "Stop" : "Play"}
+                      @click=${() => this.emit("play-toggle")}
+                    >${t.playing ? html`&#9632;` : html`&#9654;`}</button>
                     <div
                       class="mini-scrubber"
                       title="Scrub playhead"
@@ -2779,20 +2756,20 @@ export class FlipCelLayersPanel extends FloatingPanel {
                       @pointercancel=${this.onMiniScrubUp}
                     >
                       <div class="mini-scrubber-marks" aria-hidden="true">
-                        ${this.miniScrubberMarks(t.duration).map((n) => {
-                          const tMark =
-                            t.duration <= 1 ? 0.5 : (n - 1) / (t.duration - 1);
-                          return html`
-                            <span
-                              class="mini-scrubber-mark ${n === t.currentFrame + 1
-                                ? "current"
-                                : ""}"
-                              data-frame=${n}
-                              style="left:calc(5px + ${tMark} * (100% - 10px))"
-                              >${n}</span
-                            >
-                          `;
-                        })}
+                        ${guard([t.duration], () =>
+                          this.miniScrubberMarks(t.duration).map((n) => {
+                            const tMark =
+                              t.duration <= 1 ? 0.5 : (n - 1) / (t.duration - 1);
+                            return html`
+                              <span
+                                class="mini-scrubber-mark"
+                                data-frame=${n}
+                                style="left:calc(5px + ${tMark} * (100% - 10px))"
+                                >${n}</span
+                              >
+                            `;
+                          }),
+                        )}
                       </div>
                       <div class="mini-scrubber-thumb"></div>
                     </div>

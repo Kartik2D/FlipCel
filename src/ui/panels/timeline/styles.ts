@@ -191,11 +191,13 @@ export const timelinePanelStyles = css`
     display: none;
   }
 
-  /* Positioning context for the playhead so it scrolls with the frames. */
+  /* Positioning context for the playhead so it scrolls with the frames.
+     --playhead-f is updated imperatively on scrub/playback (no Lit rebuild). */
   .frames-content {
     position: relative;
     width: max-content;
     min-width: 100%;
+    --playhead-f: 0;
   }
 
   .strip-list {
@@ -260,33 +262,11 @@ export const timelinePanelStyles = css`
     cursor: grab;
   }
 
-  /* Aseprite-style cross shading: playhead column and selected-layer row
-     each lift toward panel surface (value contrast), with a blended fill at
-     their intersection plus the playhead ring. */
-  .frame-cell.current {
-    background: var(
-      --flipcel-timeline-playhead-bg,
-      color-mix(in srgb, var(--flipcel-playhead, #f2c14e) 18%, var(--flipcel-panel-surface))
-    );
-  }
-
   .strip-row.active .frame-cell {
     background: var(
       --flipcel-timeline-active-row-bg,
       color-mix(in srgb, var(--flipcel-accent, #4a6fb5) 22%, var(--flipcel-panel-surface))
     );
-  }
-
-  .strip-row.active .frame-cell.current {
-    background: var(
-      --flipcel-timeline-active-playhead-bg,
-      color-mix(
-        in srgb,
-        var(--flipcel-timeline-active-row-bg, var(--flipcel-accent)) 52%,
-        var(--flipcel-timeline-playhead-bg, var(--flipcel-playhead, #f2c14e))
-      )
-    );
-    box-shadow: inset 0 0 0 2px var(--flipcel-playhead, #f2c14e);
   }
 
   .frame-cell:hover {
@@ -564,14 +544,13 @@ export const timelinePanelStyles = css`
     opacity: 0.6;
   }
 
-  /* ---- Playhead: vertical line over the current frame (scrolls with the
-     frames; its grab flag lives in the fixed timeline strip above) ---- */
+  /* ---- Playhead: vertical line over the current frame ---- */
 
   .playhead {
     position: absolute;
     top: 0;
     bottom: 0;
-    left: calc((var(--f) + 0.5) * var(--frame-cell-w, 15px));
+    left: calc((var(--playhead-f, 0) + 0.5) * var(--frame-cell-w, 15px));
     width: 0;
     z-index: 2;
     pointer-events: none;
@@ -591,10 +570,8 @@ export const timelinePanelStyles = css`
 
   /* ---- Timeline strip: scrollbar + frame numbers + playhead flag ----
      One fixed strip above the scroll area, aligned with the frames
-     column. Three stacked layers: the horizontal scrollbar as the
-     background, the frame-number ruler above it (scroll-synced with the
-     frames viewport), and the playhead flag on top. The scrollbar thumb
-     is raised between the ruler and the flag so it stays grabbable. */
+     column. Scrollbar track underneath; frame-number ruler above it
+     (scroll-synced with the frames viewport); playhead flag on top. */
   /* Row holding the add/delete layer buttons (in the name-column slot)
      and the timeline strip next to them, over the frames column. */
   .timeline-row {
@@ -618,8 +595,7 @@ export const timelinePanelStyles = css`
     max-width: calc(var(--timeline-frames, 1) * var(--frame-cell-w, 15px));
     overflow: visible;
     /* Clip left/right so a scrolled-away playhead can't paint over the
-       layer buttons, but expand top/bottom so the flag can overhang the
-       scrollbar track. (overflow-x/y alone can't do this mix.) */
+       layer buttons, but expand top/bottom so the flag can overhang. */
     clip-path: inset(-3px 0);
     border-radius: 6px;
   }
@@ -676,9 +652,7 @@ export const timelinePanelStyles = css`
     font-weight: 700;
   }
 
-  /* Playhead flag: taller/wider than the scrollbar track. Vertical
-     overhang is allowed by the strip's clip-path; horizontal overflow
-     is clipped so the flag disappears when its frame scrolls away. */
+  /* Playhead flag: taller/wider than the scrollbar track. */
   .strip-playhead {
     position: absolute;
     top: -3px;
@@ -693,7 +667,6 @@ export const timelinePanelStyles = css`
     touch-action: none;
   }
 
-  /* Widen the touch/click target beyond the visible flag. */
   .strip-playhead::after {
     content: "";
     position: absolute;
