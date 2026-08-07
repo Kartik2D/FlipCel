@@ -50,6 +50,10 @@ export class FlipCelToolsPanel extends FloatingPanel {
     this.resizable = false;
   }
 
+  protected override usesFaceScrollbar(): boolean {
+    return false;
+  }
+
   /** Use the compact tools header instead of the standard titled bar. */
   protected override showsDragHandlePill(): boolean {
     return false;
@@ -111,9 +115,19 @@ export class FlipCelToolsPanel extends FloatingPanel {
     .tools-rail .grid {
       display: grid;
       grid-template-columns: 1fr;
-      gap: 6px;
+      gap: var(--flipcel-space-1, 4px);
       width: 100%;
       min-width: 0;
+    }
+
+    .tools-rail blocky-button {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1;
+      box-sizing: border-box;
+      /* Equal inset so the face reads square (default button padding is wider). */
+      --flipcel-flat-button-padding: 6px;
+      --block-face-padding: 6px;
     }
 
     .tools-rail .tool-icon {
@@ -254,7 +268,7 @@ export class FlipCelToolsPanel extends FloatingPanel {
     `;
   }
 
-  /** Narrow-rail shell: custom top drag bar + tool icons + footer. */
+  /** Narrow-rail shell: custom top drag bar + square tool icons. */
   private renderToolsBlock(content: TemplateResult) {
     return html`
       <div class="block">
@@ -270,7 +284,6 @@ export class FlipCelToolsPanel extends FloatingPanel {
             <div class="panel-form">${content}</div>
           </div>
         </div>
-        ${this.renderPanelFooter()}
       </div>
     `;
   }

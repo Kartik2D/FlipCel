@@ -31,18 +31,20 @@ export class FlipCelHelpPopup extends PopupWindow {
     }
 
     .help-title {
-      margin: 0 0 6px;
-      font-size: 13px;
-      font-weight: 700;
-      line-height: 1.25;
+      margin: 0 0 var(--flipcel-space-1, 4px);
+      font-size: var(--flipcel-title-size, 13px);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: var(--flipcel-line-height, 1.25);
       color: var(--flipcel-accent-contrast, #ffffff);
     }
 
     .help-body {
       margin: 0;
-      font-size: 12px;
+      font-size: var(--flipcel-block-font-size, 11px);
       font-weight: 500;
-      line-height: 1.4;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
+      line-height: 1.35;
       color: color-mix(
         in srgb,
         var(--flipcel-accent-contrast, #ffffff) 88%,

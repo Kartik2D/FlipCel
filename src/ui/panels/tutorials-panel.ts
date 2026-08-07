@@ -47,7 +47,7 @@ export class FlipCelTutorialsPanel extends FloatingPanel {
       gap: 3px;
       width: 100%;
       margin: 0;
-      padding: 9px 10px;
+      padding: var(--flipcel-space-2, 8px);
       border: none;
       border-radius: var(--flipcel-content-radius, 6px);
       background: transparent;
@@ -75,14 +75,16 @@ export class FlipCelTutorialsPanel extends FloatingPanel {
     }
 
     .article-link-title {
-      font-weight: 700;
+      font-weight: 600;
+      letter-spacing: -0.015em;
       line-height: 1.3;
     }
 
     .article-link-summary {
-      font-size: 12px;
+      font-size: var(--flipcel-block-font-size, 11px);
       font-weight: 500;
-      line-height: 1.4;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
+      line-height: 1.35;
       color: var(--flipcel-text-secondary, #333);
     }
 
@@ -94,15 +96,15 @@ export class FlipCelTutorialsPanel extends FloatingPanel {
       flex: 0 0 auto;
       margin: 0;
       padding: 0 6px;
-      min-width: var(--panel-header-control-size, 26px);
-      height: var(--panel-header-control-size, 26px);
+      min-width: var(--panel-header-control-size, 24px);
+      height: var(--panel-header-control-size, 24px);
       border: none;
       border-radius: var(--flipcel-content-radius, 6px);
       background: transparent;
       color: var(--flipcel-text-primary, #1a1a1a);
       font: inherit;
-      font-size: 14px;
-      font-weight: 700;
+      font-size: 13px;
+      font-weight: 500;
       line-height: 1;
       cursor: pointer;
       box-sizing: border-box;
@@ -138,10 +140,11 @@ export class FlipCelTutorialsPanel extends FloatingPanel {
     }
 
     .article-section {
-      margin: 0 0 10px;
-      font-size: 12px;
+      margin: 0 0 var(--flipcel-space-2, 8px);
+      font-size: var(--flipcel-block-font-size, 11px);
       font-weight: 500;
-      line-height: 1.5;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
+      line-height: 1.4;
       color: var(--flipcel-text-secondary, #333);
     }
 
@@ -151,9 +154,9 @@ export class FlipCelTutorialsPanel extends FloatingPanel {
 
     .steps-title {
       margin: 0 0 4px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.04em;
+      font-size: var(--flipcel-block-font-size, 11px);
+      font-weight: 500;
+      letter-spacing: 0.02em;
       text-transform: uppercase;
       color: var(--flipcel-text-muted, #666);
     }

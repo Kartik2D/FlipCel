@@ -157,7 +157,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
       flex-direction: row;
       flex-wrap: nowrap;
       align-items: stretch;
-      gap: 10px;
+      gap: var(--flipcel-space-2, 8px);
       height: var(--flipcel-dock-row-h);
       min-height: var(--flipcel-dock-row-h);
       max-height: var(--flipcel-dock-row-h);
@@ -251,8 +251,9 @@ export class FlipCelTopBarPanel extends FloatingPanel {
       box-sizing: content-box;
       font: inherit;
       font-size: inherit;
-      font-weight: 600;
+      font-weight: 500;
       font-variant-numeric: tabular-nums;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
       line-height: 1.15;
       color: var(--flipcel-text-primary, #222);
       background: transparent;
@@ -279,9 +280,9 @@ export class FlipCelTopBarPanel extends FloatingPanel {
       background: var(--flipcel-panel-depth, #070707);
       color: var(--flipcel-panel-border, #8a8a8a);
       font: inherit;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.01em;
+      font-size: var(--flipcel-block-font-size, 11px);
+      font-weight: 500;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
       cursor: grab;
       -webkit-tap-highlight-color: transparent;
       touch-action: none;

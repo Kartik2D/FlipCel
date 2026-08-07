@@ -77,7 +77,8 @@ export const dockChipStyles = css`
     align-items: center;
     justify-content: center;
     gap: 3px;
-    font-weight: 600;
+    font-weight: 500;
+    letter-spacing: var(--flipcel-letter-spacing, -0.011em);
     font-variant-numeric: tabular-nums;
     color: var(--flipcel-text-primary, #222);
     white-space: nowrap;

@@ -59,9 +59,9 @@ export class BlockyButton extends Block {
 
     :host {
       /* Don't inherit panel face padding / shell radius — buttons have their own. */
-      --block-face-padding: var(--flipcel-flat-button-padding, 6px 5px);
+      --block-face-padding: var(--flipcel-flat-button-padding, 5px 8px);
       --block-radius: var(--flipcel-content-radius);
-      --block-font-weight: 600;
+      --block-font-weight: 500;
       --block-face-bg: var(--block-depth-color, #bcbcbc);
       --block-font-color: var(--block-border, #555555);
       color: var(--block-font-color);

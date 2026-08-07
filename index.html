@@ -23,7 +23,7 @@
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
-            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+            href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&display=swap"
             rel="stylesheet"
         />
         <script>
@@ -67,22 +67,29 @@
         </script>
         <style>
             :root {
-                --flipcel-font: "Inter", system-ui, sans-serif;
+                --flipcel-font: "Inter", system-ui, -apple-system, sans-serif;
                 /* Flat chrome — no 3D lip / drawn borders. */
                 --flipcel-block-border-width: 0px;
                 /* App-wide chrome — edit these two: */
-                --flipcel-block-face-padding: 10px;
-                --flipcel-radius: 3px;
+                --flipcel-block-face-padding: 8px;
+                --flipcel-radius: 4px;
                 /* Shell can go tight; content keeps a softer floor. */
-                --flipcel-content-radius: max(8px, var(--flipcel-radius));
+                --flipcel-content-radius: max(6px, var(--flipcel-radius));
                 --flipcel-block-radius: calc(
                     var(--flipcel-radius) + var(--flipcel-block-face-padding)
                 );
-                --flipcel-flat-button-padding: 6px 5px;
-                --flipcel-flat-button-large-padding: 14px 16px;
-                --flipcel-block-font-size: 12px;
-                --flipcel-block-resize-hit: 22px;
-                --flipcel-scrollbar-size: 8px;
+                --flipcel-flat-button-padding: 5px 8px;
+                --flipcel-flat-button-large-padding: 11px 14px;
+                --flipcel-flat-button-large-font-size: 13px;
+                --flipcel-block-font-size: 11px;
+                --flipcel-title-size: 13px;
+                --flipcel-line-height: 1.25;
+                --flipcel-letter-spacing: -0.011em;
+                --flipcel-space-1: 4px;
+                --flipcel-space-2: 8px;
+                --flipcel-space-3: 12px;
+                --flipcel-block-resize-hit: 20px;
+                --flipcel-scrollbar-size: 6px;
             }
 
             /* Slab (default): dark flat chrome. */
@@ -578,6 +585,14 @@
                 -webkit-user-select: none;
                 user-select: none;
                 font-family: var(--flipcel-font);
+                font-size: var(--flipcel-block-font-size);
+                font-weight: 500;
+                font-optical-sizing: auto;
+                font-feature-settings: "cv11", "ss01", "liga";
+                letter-spacing: var(--flipcel-letter-spacing);
+                line-height: var(--flipcel-line-height);
+                -webkit-font-smoothing: antialiased;
+                -moz-osx-font-smoothing: grayscale;
                 color: var(--flipcel-text-primary);
                 transition: background-color 180ms ease, color 180ms ease;
             }

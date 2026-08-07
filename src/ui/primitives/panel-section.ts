@@ -28,7 +28,7 @@ export class FlipCelPanelSection extends LitElement {
           var(--block-face-bg, var(--flipcel-panel-surface, #ffffff))
         )
       );
-      padding: 10px;
+      padding: var(--flipcel-space-2, 8px);
       color: var(--flipcel-text-secondary, #333333);
     }
 
@@ -40,9 +40,11 @@ export class FlipCelPanelSection extends LitElement {
     }
 
     .section-title {
-      margin: 0 0 10px;
+      margin: 0 0 var(--flipcel-space-2, 8px);
       font: inherit;
-      font-weight: 600;
+      font-size: var(--flipcel-block-font-size, 11px);
+      font-weight: 500;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
       color: var(--flipcel-text-primary, #1a1a1a);
     }
 
@@ -53,7 +55,7 @@ export class FlipCelPanelSection extends LitElement {
     .section-body {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: var(--flipcel-space-2, 8px);
       min-width: 0;
     }
 

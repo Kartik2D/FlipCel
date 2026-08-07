@@ -45,13 +45,13 @@ export class FlipCelStartupPanel extends FloatingPanel {
     }
 
     .startup-welcome {
-      margin: 0 0 14px;
-      padding: 0 4px;
+      margin: 0 0 var(--flipcel-space-3, 12px);
+      padding: 0 var(--flipcel-space-1, 4px);
       text-align: center;
-      font-size: 22px;
-      font-weight: 700;
+      font-size: 20px;
+      font-weight: 600;
       line-height: 1.2;
-      letter-spacing: -0.02em;
+      letter-spacing: -0.025em;
       color: var(--flipcel-text-primary, #1a1a1a);
     }
 
@@ -84,7 +84,8 @@ export class FlipCelStartupPanel extends FloatingPanel {
     .startup-theme-chip-label {
       font-size: 10px;
       line-height: 1.1;
-      font-weight: 600;
+      font-weight: 500;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
       text-align: center;
       max-width: 100%;
       overflow: hidden;

@@ -64,7 +64,7 @@ export class Block extends LitElement {
       --block-resize-hit: var(--flipcel-block-resize-hit, 22px);
       --scrollbar-size: var(--flipcel-scrollbar-size, 8px);
       /* Track + inset so scrollbars sit in reserved padding, not over content. */
-      --scrollbar-gutter: calc(var(--scrollbar-size) + 8px);
+      --scrollbar-gutter: calc(var(--scrollbar-size) + var(--flipcel-space-2, 8px));
 
       display: block;
       box-sizing: border-box;
@@ -72,7 +72,12 @@ export class Block extends LitElement {
       font-family: var(--block-font);
       font-size: var(--block-font-size);
       font-weight: var(--block-font-weight);
-      line-height: 1.35;
+      font-optical-sizing: auto;
+      font-feature-settings: "cv11", "ss01", "liga";
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
+      line-height: var(--flipcel-line-height, 1.25);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
       color: var(--block-font-color);
     }
 

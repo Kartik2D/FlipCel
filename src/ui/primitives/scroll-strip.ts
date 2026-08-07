@@ -94,8 +94,10 @@ export class FlipCelScrollStrip extends LitElement {
       margin: 0;
       min-width: 0;
       font: inherit;
-      font-weight: 600;
-      line-height: 1.2;
+      font-size: var(--flipcel-block-font-size, 11px);
+      font-weight: 500;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
+      line-height: var(--flipcel-line-height, 1.25);
       color: var(--flipcel-text-primary, #1a1a1a);
       overflow: hidden;
       text-overflow: ellipsis;

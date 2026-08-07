@@ -313,10 +313,16 @@ export class FlipCelWheelPanel extends FloatingPanel {
       color: var(--flipcel-accent-contrast, #ffffff);
       display: grid;
       place-items: center;
-      font-size: 14px;
-      font-weight: 700;
+      font-family: var(--flipcel-font, inherit);
+      font-size: var(--flipcel-title-size, 13px);
+      font-weight: 600;
+      font-optical-sizing: auto;
+      font-feature-settings: "cv11", "ss01", "liga", "tnum";
       font-variant-numeric: tabular-nums;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
       line-height: 1;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
       user-select: none;
       -webkit-user-select: none;
     }

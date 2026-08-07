@@ -189,7 +189,7 @@ export class FloatingPanel extends Block {
     .panel-form {
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: var(--flipcel-space-2, 8px);
       width: 100%;
       min-width: 0;
     }
@@ -198,7 +198,7 @@ export class FloatingPanel extends Block {
     :host([masonry]) .panel-form {
       display: block;
       columns: var(--panel-masonry-column-width, 200px);
-      column-gap: 12px;
+      column-gap: var(--flipcel-space-2, 8px);
     }
 
     :host([masonry]) .panel-form > * {
@@ -208,7 +208,7 @@ export class FloatingPanel extends Block {
       display: inline-block;
       width: 100%;
       max-width: 100%;
-      margin: 0 0 12px;
+      margin: 0 0 var(--flipcel-space-2, 8px);
       vertical-align: top;
       box-sizing: border-box;
     }
@@ -220,7 +220,7 @@ export class FloatingPanel extends Block {
     .panel-form section {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: var(--flipcel-space-2, 8px);
       margin: 0;
     }
 
@@ -233,7 +233,7 @@ export class FloatingPanel extends Block {
     }
 
     section {
-      margin-bottom: 12px;
+      margin-bottom: var(--flipcel-space-2, 8px);
     }
     section:last-child {
       margin-bottom: 0;
@@ -242,7 +242,9 @@ export class FloatingPanel extends Block {
     h3 {
       margin: 0;
       font: inherit;
-      font-weight: 600;
+      font-size: var(--flipcel-block-font-size, 11px);
+      font-weight: 500;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
       color: var(--flipcel-text-primary, #1a1a1a);
     }
 
@@ -254,9 +256,10 @@ export class FloatingPanel extends Block {
       min-width: 0;
       min-height: 1.25em;
       font: inherit;
-      font-size: 16px;
+      font-size: var(--flipcel-title-size, 13px);
       font-weight: 600;
-      line-height: 1.25;
+      letter-spacing: -0.02em;
+      line-height: var(--flipcel-line-height, 1.25);
     }
 
     .panel-title span {
@@ -270,8 +273,8 @@ export class FloatingPanel extends Block {
     /* Title bar row: title (left), drag pill (center), close (right).
        Sized from the close control, not the title — untitled panels match. */
     .panel-header {
-      --panel-header-control-size: 26px;
-      --panel-header-control-gap: 6px;
+      --panel-header-control-size: 24px;
+      --panel-header-control-gap: var(--flipcel-space-1, 4px);
       position: relative;
       z-index: 20;
       display: grid;
@@ -280,16 +283,16 @@ export class FloatingPanel extends Block {
           1fr
         );
       align-items: center;
-      column-gap: 8px;
+      column-gap: var(--flipcel-space-2, 8px);
       width: 100%;
       min-width: 0;
       flex-shrink: 0;
       box-sizing: border-box;
       margin: 0;
       min-height: calc(
-        var(--panel-header-control-size) + (2 * var(--flipcel-block-face-padding, 12px))
+        var(--panel-header-control-size) + (2 * var(--flipcel-block-face-padding, 8px))
       );
-      padding: var(--flipcel-block-face-padding, 12px);
+      padding: var(--flipcel-block-face-padding, 8px);
       background: var(--block-face-bg);
       border-radius: calc(var(--block-radius) - var(--block-border-width, 2px))
         calc(var(--block-radius) - var(--block-border-width, 2px)) 0 0;
@@ -438,13 +441,16 @@ export class FloatingPanel extends Block {
     .panel-form label {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: var(--flipcel-space-1, 4px);
       margin: 0;
       min-width: 0;
     }
 
     .panel-form label > span:first-child {
       color: var(--flipcel-text-secondary, #333333);
+      font-size: var(--flipcel-block-font-size, 11px);
+      font-weight: 500;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
     }
 
     /* Native selects: match flat panel buttons (depth grey, no shadow) */
@@ -453,7 +459,7 @@ export class FloatingPanel extends Block {
       min-width: 0;
       box-sizing: border-box;
       font: inherit;
-      padding: 6px 1.75rem 6px 10px;
+      padding: 5px 1.75rem 5px 8px;
       margin: 0;
       border: none;
       border-radius: var(--flipcel-content-radius);
@@ -546,9 +552,9 @@ export class FloatingPanel extends Block {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 12px;
+      gap: var(--flipcel-space-2, 8px);
       margin: 0;
-      min-height: 28px;
+      min-height: 24px;
     }
 
     .toggle span {

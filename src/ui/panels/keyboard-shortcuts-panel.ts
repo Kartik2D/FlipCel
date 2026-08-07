@@ -79,9 +79,9 @@ export class FlipCelKeyboardShortcutsPanel extends FloatingPanel {
       background: var(--flipcel-panel-inset-bg, #2a2a2a);
       color: var(--flipcel-text-primary, #f0f0f0);
       font: inherit;
-      font-weight: 600;
+      font-weight: 500;
       font-variant-numeric: tabular-nums;
-      letter-spacing: 0.02em;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
       cursor: pointer;
       box-sizing: border-box;
     }
