@@ -1,7 +1,8 @@
-import { html, css, type TemplateResult } from "lit";
+import { html, css, svg, nothing, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { type ToolId, type SettingsSchema, type SettingDef, getTool } from "../../tools/registry";
 import { paintModeAccent } from "../../tools/paint-mode";
+import { isBrushTip, type BrushTip } from "../../tools/brush";
 import {
   toolStore,
   modifiersStore,
@@ -62,6 +63,96 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
       font-weight: 500;
       line-height: 1.45;
       color: var(--flipcel-text-secondary, #333);
+    }
+
+    .setting-select {
+      position: relative;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .setting-select > summary {
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      box-sizing: border-box;
+      margin: 0;
+      padding: 5px 8px;
+      border: none;
+      border-radius: var(--flipcel-content-radius);
+      background: var(--block-depth-color, #bcbcbc);
+      color: var(--block-border, #555555);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 500;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
+      user-select: none;
+    }
+
+    .setting-select > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .setting-select > summary:hover {
+      filter: brightness(0.97);
+    }
+
+    .setting-select-menu {
+      position: absolute;
+      z-index: 40;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 4px;
+      border-radius: var(--flipcel-content-radius);
+      background: var(--block-face-bg, var(--flipcel-panel-surface, #383838));
+      box-shadow: var(--flipcel-shadow-soft, 0 8px 20px rgba(0, 0, 0, 0.35));
+      box-sizing: border-box;
+    }
+
+    .setting-select-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      margin: 0;
+      padding: 5px 8px;
+      border: none;
+      border-radius: var(--flipcel-content-radius);
+      background: transparent;
+      color: var(--flipcel-text-primary, #f0f0f0);
+      font: inherit;
+      font-weight: 500;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
+      text-align: left;
+      cursor: pointer;
+      box-sizing: border-box;
+    }
+
+    .setting-select-option:hover,
+    .setting-select-option[aria-selected="true"] {
+      background: var(--block-depth-color, #bcbcbc);
+      color: var(--block-border, #555555);
+    }
+
+    .tip-preview {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      display: grid;
+      place-items: center;
+      color: currentColor;
+    }
+
+    .tip-preview svg {
+      display: block;
+      width: 16px;
+      height: 16px;
     }
   `;
 
@@ -154,11 +245,13 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
           <span>${label} ${hint}</span>
           <div class="row">
             ${def.options.map((opt) => {
-              const modeAccent = key === "mode" ? paintModeAccent(opt) : null;
+              const selected = currentValue === opt;
+              const modeAccent =
+                key === "mode" && selected ? paintModeAccent(opt) : null;
               return html`
                 <blocky-button
                   flat
-                  ?active=${currentValue === opt}
+                  ?active=${selected}
                   ?positive=${modeAccent === "positive"}
                   ?negative=${modeAccent === "negative"}
                   ?neutral=${modeAccent === "neutral"}
@@ -168,6 +261,57 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
               `;
             })}
           </div>
+        </label>
+      `;
+    }
+
+    if (def.type === "select") {
+      const selected = String(currentValue ?? def.default);
+      const showTipPreview = key === "tip";
+      return html`
+        <label>
+          <span>${label}</span>
+          <details
+            class="setting-select"
+            @toggle=${(e: Event) => {
+              const el = e.currentTarget as HTMLDetailsElement;
+              if (!el.open) return;
+              // One open select at a time inside this panel.
+              this.renderRoot
+                .querySelectorAll<HTMLDetailsElement>("details.setting-select")
+                .forEach((other) => {
+                  if (other !== el) other.open = false;
+                });
+            }}
+          >
+            <summary>
+              ${showTipPreview ? this.renderTipPreview(selected) : nothing}
+              <span>${this.formatLabel(selected)}</span>
+            </summary>
+            <div class="setting-select-menu" role="listbox">
+              ${def.options.map((opt) => {
+                const isSelected = selected === opt;
+                return html`
+                  <button
+                    type="button"
+                    class="setting-select-option"
+                    role="option"
+                    aria-selected=${isSelected ? "true" : "false"}
+                    @click=${(e: Event) => {
+                      this.updateSetting(toolId, key, opt);
+                      const details = (e.currentTarget as HTMLElement).closest(
+                        "details",
+                      ) as HTMLDetailsElement | null;
+                      if (details) details.open = false;
+                    }}
+                  >
+                    ${showTipPreview ? this.renderTipPreview(opt) : nothing}
+                    <span>${this.formatLabel(opt)}</span>
+                  </button>
+                `;
+              })}
+            </div>
+          </details>
         </label>
       `;
     }
@@ -219,6 +363,26 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
       .replace(/([A-Z])/g, " $1")
       .replace(/^./, (str) => str.toUpperCase())
       .trim();
+  }
+
+  private renderTipPreview(value: string): TemplateResult | typeof nothing {
+    if (!isBrushTip(value)) return nothing;
+    return html`<span class="tip-preview" aria-hidden="true"
+      >${this.tipPreviewSvg(value)}</span
+    >`;
+  }
+
+  private tipPreviewSvg(tip: BrushTip): TemplateResult {
+    switch (tip) {
+      case "square":
+        return svg`<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>`;
+      case "ellipse":
+        return svg`<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><ellipse cx="8" cy="8" rx="6.5" ry="3.6"/></svg>`;
+      case "diag":
+        return svg`<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1.5" y="7" width="13" height="2" rx="1" transform="rotate(-45 8 8)"/></svg>`;
+      default:
+        return svg`<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/></svg>`;
+    }
   }
 
   private renderToolSettings(): TemplateResult {

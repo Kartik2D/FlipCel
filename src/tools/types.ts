@@ -12,6 +12,14 @@ export interface ToggleSetting {
   label?: string;
 }
 
+export interface SelectSetting {
+  type: "select";
+  /** At least two options (e.g. circle / square) */
+  options: readonly string[];
+  default: string;
+  label?: string;
+}
+
 export interface RangeSetting {
   type: "range";
   min: number;
@@ -29,12 +37,15 @@ export interface ColorSetting {
   label?: string;
 }
 
-export type SettingDef = ToggleSetting | RangeSetting | ColorSetting;
+export type SettingDef = ToggleSetting | SelectSetting | RangeSetting | ColorSetting;
 
 export type SettingsSchema = Record<string, SettingDef>;
 
 export type InferSettings<T extends SettingsSchema> = {
-  [K in keyof T]: T[K] extends { type: "toggle"; options: readonly (infer O)[] }
+  [K in keyof T]: T[K] extends {
+    type: "toggle" | "select";
+    options: readonly (infer O)[];
+  }
     ? O
     : T[K]["default"];
 };

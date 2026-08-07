@@ -770,11 +770,21 @@ class App {
       this.paperRenderer.updateConfig(config);
     });
 
-    // Tool settings store - update UI overlay with brush max size
+    // Tool settings store - update UI overlay with brush tip + magnet size
     toolSettingsStore.subscribe((settings) => {
-      const brushSettings = settings.brush as { sizeMax?: number };
+      const brushSettings = settings.brush as {
+        sizeMax?: number;
+        tip?: "circle" | "square" | "ellipse" | "diag";
+        angle?: number;
+      };
       if (brushSettings.sizeMax !== undefined) {
         this.feedbackLayer.setMaxBrushSize(brushSettings.sizeMax);
+      }
+      if (brushSettings.tip) {
+        this.feedbackLayer.setBrushTip(brushSettings.tip);
+      }
+      if (typeof brushSettings.angle === "number") {
+        this.feedbackLayer.setBrushTipAngle(brushSettings.angle);
       }
       const magnetSettings = settings.magnet as { size?: number } | undefined;
       if (magnetSettings && typeof magnetSettings.size === "number") {
@@ -1024,10 +1034,19 @@ class App {
   }
 
   private onToolSettingsChange(settings: AllToolSettings) {
-    // Update UI overlay with brush max size if available
-    const brushSettings = settings.brush as { sizeMax?: number };
+    const brushSettings = settings.brush as {
+      sizeMax?: number;
+      tip?: "circle" | "square" | "ellipse" | "diag";
+      angle?: number;
+    };
     if (brushSettings.sizeMax !== undefined) {
       this.feedbackLayer.setMaxBrushSize(brushSettings.sizeMax);
+    }
+    if (brushSettings.tip) {
+      this.feedbackLayer.setBrushTip(brushSettings.tip);
+    }
+    if (typeof brushSettings.angle === "number") {
+      this.feedbackLayer.setBrushTipAngle(brushSettings.angle);
     }
     const magnetSettings = settings.magnet as { size?: number } | undefined;
     if (magnetSettings && typeof magnetSettings.size === "number") {

@@ -214,6 +214,8 @@ export class ToolSession {
       const brushSettings = settings.brush as {
         sizeMin: number;
         sizeMax: number;
+        tip?: "circle" | "square" | "ellipse" | "diag";
+        angle?: number;
       };
       const stamped = resampleWithPressure(
         state.originalPoints,
@@ -225,6 +227,8 @@ export class ToolSession {
         stamped,
         brushSettings.sizeMin,
         brushSettings.sizeMax,
+        brushSettings.tip ?? "circle",
+        brushSettings.angle ?? 0,
       );
     } else {
       const lassoSettings = settings.lasso as { preview: "fill" | "stroke" };

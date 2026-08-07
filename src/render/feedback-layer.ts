@@ -12,6 +12,7 @@ import type { Point, CanvasConfig } from "../geometry/types";
 import type { Camera } from "./camera";
 import type { SymmetrySettings, ViewOverlaySettings } from "../state/index";
 import type { ToolId } from "../tools/registry";
+import type { BrushTip } from "../tools/brush";
 
 export class FeedbackLayer {
   private ctx: CanvasRenderingContext2D;
@@ -30,6 +31,8 @@ export class FeedbackLayer {
   private isDrawing = false;
   private isMobile = false;
   private maxBrushSize = 4; // Default max brush size in pixel canvas units
+  private brushTip: BrushTip = "circle";
+  private brushTipAngle = 0;
   private magnetSize = 120; // Magnet brush diameter in viewport/screen pixels
 
   constructor(
@@ -77,6 +80,16 @@ export class FeedbackLayer {
 
   setMaxBrushSize(size: number) {
     this.maxBrushSize = size;
+    this.draw();
+  }
+
+  setBrushTip(tip: BrushTip) {
+    this.brushTip = tip;
+    this.draw();
+  }
+
+  setBrushTipAngle(angleDeg: number) {
+    this.brushTipAngle = angleDeg;
     this.draw();
   }
 
@@ -288,6 +301,53 @@ export class FeedbackLayer {
     ctx.fill();
   }
 
+  /** Dual-tone outline matching the active brush tip + angle. */
+  private strokeBrushTipOutline(
+    x: number,
+    y: number,
+    radius: number,
+    tip: BrushTip,
+    angleDeg: number,
+  ) {
+    const size = radius * 2;
+    // Match stampBrushTip: diag is inherently 45°.
+    const effectiveDeg = tip === "diag" ? angleDeg - 45 : angleDeg;
+    const rad = (effectiveDeg * Math.PI) / 180;
+    const scale = this.config.viewportWidth / this.config.pixelWidth;
+    const diagHalf = Math.max(1, scale); // 2px tip → screen space
+
+    const path = () => {
+      this.ctx.beginPath();
+      this.ctx.save();
+      this.ctx.translate(x, y);
+      if (rad !== 0) this.ctx.rotate(rad);
+      switch (tip) {
+        case "square":
+          this.ctx.rect(-radius, -radius, size, size);
+          break;
+        case "ellipse":
+          this.ctx.ellipse(0, 0, radius, radius * 0.55, 0, 0, Math.PI * 2);
+          break;
+        case "diag":
+          this.ctx.rect(-radius, -diagHalf, size, diagHalf * 2);
+          break;
+        default:
+          this.ctx.arc(0, 0, radius, 0, Math.PI * 2);
+          break;
+      }
+      this.ctx.restore();
+    };
+
+    this.ctx.strokeStyle = "rgba(255, 255, 255, 1)";
+    this.ctx.lineWidth = 2.5;
+    path();
+    this.ctx.stroke();
+    this.ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+    this.ctx.lineWidth = 1.25;
+    path();
+    this.ctx.stroke();
+  }
+
   private draw() {
     // Clear overlay
     this.ctx.clearRect(
@@ -300,7 +360,7 @@ export class FeedbackLayer {
     this.drawGrid();
     this.drawSymmetryGuide();
 
-    // Brush size ring (brush tool only; crosshair is the CSS cursor)
+    // Brush tip outline (brush tool only; crosshair is the CSS cursor)
     if (this.currentCursor && this.shouldShowBrushSizeRing()) {
       const viewportX =
         (this.currentCursor.x / this.config.pixelWidth) *
@@ -311,17 +371,13 @@ export class FeedbackLayer {
 
       const scale = this.config.viewportWidth / this.config.pixelWidth;
       const cursorRadius = (this.maxBrushSize / 2 - 0.5) * scale;
-
-      this.ctx.strokeStyle = "rgba(255, 255, 255, 1)";
-      this.ctx.lineWidth = 2.5;
-      this.ctx.beginPath();
-      this.ctx.arc(viewportX, viewportY, cursorRadius, 0, Math.PI * 2);
-      this.ctx.stroke();
-      this.ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
-      this.ctx.lineWidth = 1.25;
-      this.ctx.beginPath();
-      this.ctx.arc(viewportX, viewportY, cursorRadius, 0, Math.PI * 2);
-      this.ctx.stroke();
+      this.strokeBrushTipOutline(
+        viewportX,
+        viewportY,
+        cursorRadius,
+        this.brushTip,
+        this.brushTipAngle,
+      );
     }
 
     // Magnet brush ring (falloff radius in viewport pixels)
