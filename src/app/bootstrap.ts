@@ -559,6 +559,11 @@ class App {
       onEditMultipleFramesToggle: (enabled, layerIds, layerId, start, end) =>
         this.onEditMultipleFramesToggle(enabled, layerIds, layerId, start, end),
       onKeyframeHoldToggle: (layerId, frame) => this.onKeyframeHoldToggle(layerId, frame),
+      onTagAdd: (start, end) => this.timelineSession.onTagAdd(start, end),
+      onTagRename: (id, name) => this.timelineSession.onTagRename(id, name),
+      onTagRemove: (id) => this.timelineSession.onTagRemove(id),
+      onTagResize: (id, start, end) =>
+        this.timelineSession.onTagResize(id, start, end),
       onAutoHoldToggle: () => {
         this.documentManager.setAutoHold(!this.documentManager.isAutoHoldEnabled());
       },

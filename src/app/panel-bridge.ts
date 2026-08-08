@@ -134,6 +134,10 @@ export type PanelBridgeDeps = {
     end: number,
   ) => void;
   onKeyframeHoldToggle: (layerId: string, frame: number) => void;
+  onTagAdd: (start: number, end: number) => void;
+  onTagRename: (id: string, name: string) => void;
+  onTagRemove: (id: string) => void;
+  onTagResize: (id: string, start: number, end: number) => void;
   onAutoHoldToggle: () => void;
   onRealTimeLockToggle: () => void;
   onDurationSet: (frames: number) => void;
@@ -338,6 +342,24 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
   layersPanel.addEventListener("keyframe-hold-toggle", (e: Event) => {
     const { frame, layerId } = (e as CustomEvent<{ frame: number; layerId: string }>).detail;
     deps.onKeyframeHoldToggle(layerId, frame);
+  });
+  layersPanel.addEventListener("tag-add", (e: Event) => {
+    const { start, end } = (e as CustomEvent<{ start: number; end: number }>).detail;
+    deps.onTagAdd(start, end);
+  });
+  layersPanel.addEventListener("tag-rename", (e: Event) => {
+    const { id, name } = (e as CustomEvent<{ id: string; name: string }>).detail;
+    deps.onTagRename(id, name);
+  });
+  layersPanel.addEventListener("tag-remove", (e: Event) => {
+    const { id } = (e as CustomEvent<{ id: string }>).detail;
+    deps.onTagRemove(id);
+  });
+  layersPanel.addEventListener("tag-resize", (e: Event) => {
+    const { id, start, end } = (
+      e as CustomEvent<{ id: string; start: number; end: number }>
+    ).detail;
+    deps.onTagResize(id, start, end);
   });
   layersPanel.addEventListener("auto-hold-toggle", () => {
     deps.onAutoHoldToggle();

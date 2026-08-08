@@ -182,7 +182,7 @@ export const timelinePanelStyles = css`
     overflow-x: auto;
     overflow-y: hidden;
     overscroll-behavior: none;
-    /* Native scrollbar is replaced by the custom .frames-scrollbar below. */
+    /* Native scrollbar is replaced by .frames-scrollbar in the panel footer. */
     scrollbar-width: none;
     -ms-overflow-style: none;
   }
@@ -568,10 +568,10 @@ export const timelinePanelStyles = css`
     opacity: 0.85;
   }
 
-  /* ---- Timeline strip: scrollbar + frame numbers + playhead flag ----
-     One fixed strip above the scroll area, aligned with the frames
-     column. Scrollbar track underneath; frame-number ruler above it
-     (scroll-synced with the frames viewport); playhead flag on top. */
+  /* ---- Timeline strip: frame numbers + tags + playhead flag ----
+     Fixed strip above the frames column. Horizontal scrollbar lives in
+     the panel footer (see layers-panel footer styles). Tags share the
+     same dark scrubber bed as the frame numbers. */
   /* Row holding the add/delete layer buttons (in the name-column slot)
      and the timeline strip next to them, over the frames column. */
   .timeline-row {
@@ -588,7 +588,7 @@ export const timelinePanelStyles = css`
 
   .timeline-strip {
     position: relative;
-    height: 20px;
+    height: 22px;
     flex: 1 1 auto;
     min-width: 0;
     /* Never wider than the frames themselves (duration set inline). */
@@ -598,22 +598,129 @@ export const timelinePanelStyles = css`
        layer buttons, but expand top/bottom so the flag can overhang. */
     clip-path: inset(-3px 0);
     border-radius: 6px;
+    /* Dark track behind frame numbers / tags / scrubber. */
+    background: var(--block-depth-color, var(--flipcel-panel-depth));
+    touch-action: none;
+    cursor: pointer;
   }
 
-  .timeline-strip .frames-scrollbar {
+  /* Tags paint above frame numbers (same strip; z-order, not a second row). */
+  .timeline-tags-layer {
     position: absolute;
     inset: 0;
-    width: auto;
-    height: auto;
-  }
-
-  .timeline-strip .frames-scrollbar::part(track),
-  .timeline-strip .frames-scrollbar::part(thumb) {
+    z-index: 3;
+    overflow: hidden;
     border-radius: 6px;
+    pointer-events: none;
   }
 
-  .timeline-strip .frames-scrollbar::part(thumb) {
+  .timeline-tags-content {
+    position: relative;
+    height: 100%;
+    width: max-content;
+    min-width: 100%;
+    will-change: transform;
+  }
+
+  .frame-tag {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    z-index: 1;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: color-mix(
+      in srgb,
+      var(--flipcel-accent, #5a74d8) 55%,
+      var(--block-face-bg, #383838)
+    );
+    color: var(--flipcel-accent-contrast, #ffffff);
+    cursor: pointer;
+    overflow: visible;
+    user-select: none;
+    pointer-events: auto;
+  }
+
+  .frame-tag:hover {
+    filter: brightness(1.06);
+  }
+
+  .frame-tag.selected {
+    outline: 1px solid color-mix(in srgb, #fff 55%, transparent);
+    outline-offset: 0;
+  }
+
+  .frame-tag.resizing {
+    z-index: 5;
+    filter: brightness(1.1);
+  }
+
+  .frame-tag-edge {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 6px;
     z-index: 2;
+    cursor: ew-resize;
+    touch-action: none;
+  }
+
+  .frame-tag-edge.start {
+    left: -2px;
+  }
+
+  .frame-tag-edge.end {
+    right: -2px;
+  }
+
+  .frame-tag-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: var(--flipcel-letter-spacing, -0.011em);
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tag-actions-fixed {
+    position: fixed;
+    z-index: 2100;
+    transform: translate(-50%, -100%);
+    pointer-events: auto;
+    font-family: var(--flipcel-font, system-ui, sans-serif);
+    animation: frame-actions-pop-in 180ms cubic-bezier(0.34, 1.25, 0.64, 1) both;
+  }
+
+  .tag-action-name {
+    flex: 1 1 auto;
+    min-width: 72px;
+    max-width: 140px;
+    height: 28px;
+    margin: 0;
+    padding: 0 8px;
+    border: none;
+    border-radius: 6px;
+    box-sizing: border-box;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--flipcel-text-primary, #1a1a1a);
+    background: color-mix(in srgb, var(--flipcel-text-primary, #1a1a1a) 8%, transparent);
+    outline: none;
+  }
+
+  .tag-action-name:focus {
+    background: color-mix(in srgb, var(--flipcel-accent, #4a6fb5) 16%, transparent);
   }
 
   .strip-ruler {
@@ -621,8 +728,7 @@ export const timelinePanelStyles = css`
     inset: 0;
     z-index: 1;
     overflow: hidden;
-    touch-action: none;
-    cursor: pointer;
+    pointer-events: none;
   }
 
   .strip-ruler-content {
@@ -644,7 +750,6 @@ export const timelinePanelStyles = css`
     white-space: nowrap;
     overflow: visible;
     user-select: none;
-    cursor: pointer;
   }
 
   .ruler-cell.current {
@@ -652,7 +757,7 @@ export const timelinePanelStyles = css`
     font-weight: 700;
   }
 
-  /* Playhead flag: taller/wider than the scrollbar track. */
+  /* Playhead flag on the ruler strip. */
   .strip-playhead {
     position: absolute;
     top: -3px;
@@ -662,7 +767,7 @@ export const timelinePanelStyles = css`
     width: 20px;
     border-radius: 6px;
     background: var(--flipcel-playhead, #f2c14e);
-    z-index: 3;
+    z-index: 6;
     cursor: grab;
     touch-action: none;
   }

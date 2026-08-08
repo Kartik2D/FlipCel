@@ -252,6 +252,34 @@ export class TimelineSession {
     }
   }
 
+  onTagAdd(start: number, end: number): void {
+    const { documentManager, historyManager } = this.deps;
+    if (documentManager.addFrameTag(start, end)) {
+      historyManager.snapshot("Tag frames");
+    }
+  }
+
+  onTagRename(id: string, name: string): void {
+    const { documentManager, historyManager } = this.deps;
+    if (documentManager.renameFrameTag(id, name)) {
+      historyManager.snapshot("Rename tag");
+    }
+  }
+
+  onTagRemove(id: string): void {
+    const { documentManager, historyManager } = this.deps;
+    if (documentManager.removeFrameTag(id)) {
+      historyManager.snapshot("Delete tag");
+    }
+  }
+
+  onTagResize(id: string, start: number, end: number): void {
+    const { documentManager, historyManager } = this.deps;
+    if (documentManager.resizeFrameTag(id, start, end)) {
+      historyManager.snapshot("Resize tag");
+    }
+  }
+
   /** Delete a frame range; without one, the playhead frame on the active layer. */
   onKeyframeRemove(range?: FrameRangeDetail): void {
     const {

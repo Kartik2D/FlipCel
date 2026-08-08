@@ -9,7 +9,11 @@ import {
   StoreController,
   isLayerEffectivelyVisible,
 } from "../../state";
-import { timelineStore } from "../../document/document";
+import {
+  applyFrameTagResize,
+  timelineStore,
+  type FrameTag,
+} from "../../document/document";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { phosphorIcon } from "../icons/phosphor";
 import { timelinePanelStyles } from "./timeline/styles";
@@ -43,6 +47,20 @@ export class FlipCelLayersPanel extends FloatingPanel {
   private chromePlayheadFrame = -1;
   @state() private editingLayerId: string | null = null;
   @state() private editingName = "";
+  /** Selected tag id for the tag quick-actions popover. */
+  @state() private tagActionsId: string | null = null;
+  @state() private tagActionsName = "";
+  @state() private tagActionsAnchor: { x: number; y: number } | null = null;
+  /** Live edge-drag resize for a frame tag (preview until pointerup). */
+  @state() private tagResize: {
+    id: string;
+    edge: "start" | "end";
+    start: number;
+    end: number;
+    pointerId: number;
+  } | null = null;
+  /** Swallows the tag click that fires right after a completed resize. */
+  private suppressTagClick = false;
   /**
    * Custom pointer-drag reorder for layer rows. The preview is pure CSS
    * transforms — the DOM is never reordered mid-drag, so Lit's keyed repeat
@@ -70,6 +88,23 @@ export class FlipCelLayersPanel extends FloatingPanel {
     return true;
   }
 
+  /** Frames h-scrollbar lives in the panel footer (aligned with the frames column). */
+  protected override renderPanelFooterContent() {
+    if (this.mini) return nothing;
+    const duration = this.timeline.value.duration;
+    return html`
+      <div class="timeline-scroll-gutter" aria-hidden="true"></div>
+      <flipcel-scrollbar
+        class="frames-scrollbar"
+        orientation="horizontal"
+        for=".frames-viewport"
+        persistent
+        .gutter=${false}
+        style="--timeline-frames: ${duration}"
+      ></flipcel-scrollbar>
+    `;
+  }
+
   static styles = css`
     ${FloatingPanel.styles}
     ${timelinePanelStyles}
@@ -81,6 +116,44 @@ export class FlipCelLayersPanel extends FloatingPanel {
       /* Compact chrome: add/delete, keyframe tools, playback buttons. */
       --layers-control-size: 24px;
       --layers-side-width: 272px;
+    }
+
+    /* Footer hosts the frames scrollbar — stretch full width, match face inset.
+       Extra bottom padding so the track isn't cramped against the panel edge. */
+    .panel-footer {
+      height: auto;
+      min-height: calc(var(--scrollbar-size, 8px) + 14px);
+      max-height: none;
+      padding-top: 2px;
+      padding-bottom: 10px;
+      padding-left: var(--flipcel-block-face-padding, 8px);
+      padding-right: var(--flipcel-block-face-padding, 8px);
+      align-items: flex-start;
+    }
+
+    .panel-footer-content {
+      flex: 1 1 auto;
+      max-width: none;
+      justify-content: flex-start;
+      gap: 8px;
+      width: 100%;
+    }
+
+    .panel-footer .timeline-scroll-gutter {
+      flex: 0 0 auto;
+      width: var(--layers-side-width, 272px);
+    }
+
+    .panel-footer .frames-scrollbar {
+      flex: 1 1 auto;
+      min-width: 0;
+      max-width: calc(var(--timeline-frames, 1) * var(--frame-cell-w, 20px));
+      height: var(--scrollbar-size, 8px);
+    }
+
+    .panel-footer .frames-scrollbar::part(track),
+    .panel-footer .frames-scrollbar::part(thumb) {
+      border-radius: 6px;
     }
 
     /* Mini: tighter rows, narrower layer column so frames get more width. */
@@ -560,6 +633,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.movePlacement = null;
     this.moveDelta = 0;
     this.frameActionsOpen = this.frameSelection !== null;
+    if (this.frameActionsOpen) this.dismissTagActions();
   }
 
   private displayLayerIds(): string[] {
@@ -1210,14 +1284,35 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
     void this.updateComplete.then(() => this.syncFrameActionsAnchor());
 
-    if (!changedProperties.has("editingLayerId") || !this.editingLayerId) return;
-    void this.updateComplete.then(() => {
-      const input = this.renderRoot.querySelector<HTMLInputElement>(
-        `[data-layer-edit="${this.editingLayerId}"]`,
-      );
-      input?.focus();
-      input?.select();
-    });
+    if (changedProperties.has("editingLayerId") && this.editingLayerId) {
+      void this.updateComplete.then(() => {
+        const input = this.renderRoot.querySelector<HTMLInputElement>(
+          `[data-layer-edit="${this.editingLayerId}"]`,
+        );
+        input?.focus();
+        input?.select();
+      });
+    }
+
+    void this.updateComplete.then(() => this.syncTagActionsAnchor());
+
+    if (changedProperties.has("tagActionsId") && this.tagActionsId) {
+      void this.updateComplete.then(() => {
+        const input = this.renderRoot.querySelector<HTMLInputElement>(
+          `[data-tag-edit="${this.tagActionsId}"]`,
+        );
+        input?.focus();
+        input?.select();
+      });
+    }
+
+    // Drop the menu if the tag was deleted / carved away.
+    if (
+      this.tagActionsId &&
+      !this.timeline.value.tags.some((t) => t.id === this.tagActionsId)
+    ) {
+      this.dismissTagActions();
+    }
   }
 
   // ---- Playhead scrubbing --------------------------------------------
@@ -1421,6 +1516,8 @@ export class FlipCelLayersPanel extends FloatingPanel {
     const scrollLeft = vp.scrollLeft;
     const ruler = this.renderRoot.querySelector<HTMLElement>(".strip-ruler-content");
     if (ruler) ruler.style.transform = `translateX(${-scrollLeft}px)`;
+    const tags = this.renderRoot.querySelector<HTMLElement>(".timeline-tags-content");
+    if (tags) tags.style.transform = `translateX(${-scrollLeft}px)`;
     const flag = this.renderRoot.querySelector<HTMLElement>(".strip-playhead");
     if (flag) {
       const x =
@@ -1485,6 +1582,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
     } else {
       this.syncFrameActionsAnchor();
     }
+    if (this.tagActionsId) this.dismissTagActions();
   };
 
   private onLayerScroll = () => {
@@ -1493,6 +1591,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
     } else {
       this.syncFrameActionsAnchor();
     }
+    if (this.tagActionsId) this.dismissTagActions();
   };
 
   private dismissFrameActionsPopup() {
@@ -1501,10 +1600,25 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.frameActionsAnchor = null;
   }
 
-  /** Dismiss the range popup when pointerdown lands outside it (selection stays). */
+  /** Dismiss the range / tag popup when pointerdown lands outside it. */
   private onFrameActionsOutsidePointerDown = (e: PointerEvent) => {
+    const path = e.composedPath();
+    if (this.tagActionsId && !this.tagResize) {
+      let inTagUi = false;
+      for (const node of path) {
+        if (!(node instanceof HTMLElement)) continue;
+        if (
+          node.classList.contains("tag-actions-fixed") ||
+          node.classList.contains("frame-tag")
+        ) {
+          inTagUi = true;
+          break;
+        }
+      }
+      if (!inTagUi) this.dismissTagActions();
+    }
     if (!this.frameActionsOpen || this.cellDrag || this.frameActionDrag) return;
-    for (const node of e.composedPath()) {
+    for (const node of path) {
       if (
         node instanceof HTMLElement &&
         node.classList.contains("frame-actions-fixed")
@@ -2025,6 +2139,265 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.editingName = currentName;
   }
 
+  private onCreateTagClick() {
+    const sel = this.frameSelection;
+    if (sel) {
+      this.emit("tag-add", { start: sel.start, end: sel.end });
+      return;
+    }
+    // No selection: prefer 3 frames from the playhead, stopping short of
+    // any existing tag (or the end of the timeline).
+    const range = this.defaultTagRangeFromPlayhead();
+    if (!range) return;
+    this.emit("tag-add", range);
+  }
+
+  /**
+   * Default untagged span starting at the playhead: up to 3 frames, or
+   * fewer if another tag / the duration cuts it short. Null if the
+   * playhead frame is already tagged.
+   */
+  private defaultTagRangeFromPlayhead(): { start: number; end: number } | null {
+    const start = this.timeline.value.currentFrame;
+    const last = this.timeline.value.duration - 1;
+    const tags = this.timeline.value.tags;
+    if (tags.some((t) => t.start <= start && start <= t.end)) return null;
+    let end = Math.min(start + 2, last);
+    for (const t of tags) {
+      if (t.start > start && t.start <= end) {
+        end = t.start - 1;
+      }
+    }
+    if (end < start) return null;
+    return { start, end };
+  }
+
+  /** Tags for render, with live carve preview while resizing. */
+  private displayTags(): FrameTag[] {
+    const tags = this.timeline.value.tags;
+    const drag = this.tagResize;
+    if (!drag) return tags;
+    let n = 0;
+    return (
+      applyFrameTagResize(
+        tags,
+        drag.id,
+        drag.start,
+        drag.end,
+        () => `tag-preview-${drag.id}-${n++}`,
+      ) ?? tags
+    );
+  }
+
+  private frameFromStripPointer(e: PointerEvent): number {
+    const strip = this.renderRoot.querySelector<HTMLElement>(".timeline-strip");
+    if (!strip) return 0;
+    const vp = this.framesViewportEl();
+    const scrollLeft = vp?.scrollLeft ?? 0;
+    const rect = strip.getBoundingClientRect();
+    const frame = Math.floor(
+      (e.clientX - rect.left + scrollLeft) / this.frameCellWidth(),
+    );
+    return clampFrameToDuration(frame, this.timeline.value.duration);
+  }
+
+  private onTagClick(tag: FrameTag) {
+    if (this.suppressTagClick || this.tagResize) return;
+    this.dismissFrameActionsPopup();
+    this.tagActionsId = tag.id;
+    this.tagActionsName = tag.name;
+    this.syncTagActionsAnchor();
+    this.emit("frame-select", { frame: tag.start, navigateOnly: true });
+  }
+
+  private dismissTagActions() {
+    if (this.tagActionsId === null && this.tagActionsAnchor === null) return;
+    this.tagActionsId = null;
+    this.tagActionsName = "";
+    this.tagActionsAnchor = null;
+  }
+
+  private showTagActions(): boolean {
+    return (
+      this.tagActionsId !== null &&
+      this.tagResize === null &&
+      this.tagActionsAnchor !== null
+    );
+  }
+
+  private syncTagActionsAnchor() {
+    if (!this.tagActionsId || this.tagResize) {
+      if (this.tagActionsAnchor !== null) this.tagActionsAnchor = null;
+      return;
+    }
+    const el = this.renderRoot.querySelector<HTMLElement>(
+      `.frame-tag[data-tag-id="${this.tagActionsId}"]`,
+    );
+    if (!el) {
+      if (this.tagActionsAnchor !== null) this.tagActionsAnchor = null;
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    const popW = 220;
+    const popH = 44;
+    let x = rect.left + rect.width / 2;
+    let y = rect.top - 4;
+    x = Math.max(margin + popW / 2, Math.min(window.innerWidth - margin - popW / 2, x));
+    y = Math.max(margin + popH, Math.min(window.innerHeight - margin, y));
+    const next = { x, y };
+    if (
+      this.tagActionsAnchor?.x === next.x &&
+      this.tagActionsAnchor?.y === next.y
+    ) {
+      return;
+    }
+    this.tagActionsAnchor = next;
+  }
+
+  private renderTagActionsPopover() {
+    if (!this.showTagActions() || !this.tagActionsId) return nothing;
+    const { x, y } = this.tagActionsAnchor!;
+    const tagId = this.tagActionsId;
+    return html`
+      <div
+        class="tag-actions-fixed"
+        style="left: ${x}px; top: ${y}px"
+        data-interactive
+        @pointerdown=${(e: Event) => e.stopPropagation()}
+      >
+        <div class="frame-actions-shell">
+          <div class="frame-actions-face">
+            <input
+              type="text"
+              class="tag-action-name"
+              data-tag-edit=${tagId}
+              .value=${this.tagActionsName}
+              aria-label="Tag name"
+              @input=${(e: Event) => {
+                this.tagActionsName = (e.target as HTMLInputElement).value;
+              }}
+              @keydown=${(e: KeyboardEvent) => this.onTagActionsNameKeydown(tagId, e)}
+              @blur=${() => this.commitTagActionsRename(tagId)}
+            />
+            <button
+              type="button"
+              class="frame-action-btn negative"
+              title="Delete tag"
+              aria-label="Delete tag"
+              @click=${() => this.onTagActionsDeleteClick(tagId)}
+            >Delete</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private onTagEdgeDown(
+    tag: FrameTag,
+    edge: "start" | "end",
+    e: PointerEvent,
+  ) {
+    if (e.button !== 0 && e.pointerType === "mouse") return;
+    if (this.tagResize) return;
+    // Only resize real document tags (not live-preview split fragments).
+    if (!this.timeline.value.tags.some((t) => t.id === tag.id)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.dismissTagActions();
+    const source = this.timeline.value.tags.find((t) => t.id === tag.id)!;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    this.tagResize = {
+      id: source.id,
+      edge,
+      start: source.start,
+      end: source.end,
+      pointerId: e.pointerId,
+    };
+    window.addEventListener("pointermove", this.onTagResizeMove);
+    window.addEventListener("pointerup", this.onTagResizeUp);
+    window.addEventListener("pointercancel", this.onTagResizeUp);
+  }
+
+  private onTagResizeMove = (e: PointerEvent) => {
+    const drag = this.tagResize;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    e.preventDefault();
+    const frame = this.frameFromStripPointer(e);
+    if (drag.edge === "start") {
+      const start = Math.min(frame, drag.end);
+      if (start === drag.start) return;
+      this.tagResize = { ...drag, start };
+    } else {
+      const end = Math.max(frame, drag.start);
+      if (end === drag.end) return;
+      this.tagResize = { ...drag, end };
+    }
+    this.ensureFrameVisible(frame);
+  };
+
+  private onTagResizeUp = (e: PointerEvent) => {
+    const drag = this.tagResize;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    window.removeEventListener("pointermove", this.onTagResizeMove);
+    window.removeEventListener("pointerup", this.onTagResizeUp);
+    window.removeEventListener("pointercancel", this.onTagResizeUp);
+    this.suppressTagClick = true;
+    queueMicrotask(() => {
+      this.suppressTagClick = false;
+    });
+    const original = this.timeline.value.tags.find((t) => t.id === drag.id);
+    if (
+      original &&
+      (original.start !== drag.start || original.end !== drag.end)
+    ) {
+      this.emit("tag-resize", {
+        id: drag.id,
+        start: drag.start,
+        end: drag.end,
+      });
+    }
+    this.tagResize = null;
+  };
+
+  private clearTagResizeListeners() {
+    window.removeEventListener("pointermove", this.onTagResizeMove);
+    window.removeEventListener("pointerup", this.onTagResizeUp);
+    window.removeEventListener("pointercancel", this.onTagResizeUp);
+    this.tagResize = null;
+  }
+
+  private commitTagActionsRename(tagId: string) {
+    if (this.tagActionsId !== tagId) return;
+    const tag = this.timeline.value.tags.find((t) => t.id === tagId);
+    const next = this.tagActionsName.trim();
+    if (!next) {
+      this.tagActionsName = tag?.name ?? "";
+      return;
+    }
+    if (tag && next === tag.name) return;
+    this.emit("tag-rename", { id: tagId, name: next });
+  }
+
+  private onTagActionsNameKeydown(tagId: string, e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      (e.currentTarget as HTMLInputElement).blur();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      const tag = this.timeline.value.tags.find((t) => t.id === tagId);
+      this.tagActionsName = tag?.name ?? "";
+      this.dismissTagActions();
+    }
+  }
+
+  private onTagActionsDeleteClick(tagId: string) {
+    this.emit("tag-remove", { id: tagId });
+    this.dismissTagActions();
+  }
+
   private commitLayerRename(layerId: string) {
     if (this.editingLayerId !== layerId) return;
     const prev =
@@ -2097,6 +2470,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
   }
 
   disconnectedCallback() {
+    this.clearTagResizeListeners();
     this.clearCellLongPress();
     this.unbindLayersTouchListeners();
     window.removeEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
@@ -2425,6 +2799,10 @@ export class FlipCelLayersPanel extends FloatingPanel {
               end: sel.end,
             });
           }}>C</button>
+        <button type="button" class="tl-btn"
+          data-help="timeline.tag"
+          aria-label="Create a tag from the selected frames"
+          @click=${() => this.onCreateTagClick()}>T</button>
         <button type="button" class="tl-btn ${t.autoHold ? "on" : ""}"
           data-help="timeline.auto-hold"
           aria-label="Auto hold: new keyframes extend the previous keyframe's hold"
@@ -2526,34 +2904,51 @@ export class FlipCelLayersPanel extends FloatingPanel {
                       class="timeline-strip"
                       data-interactive
                       style="--timeline-frames: ${t.duration}"
+                      @pointerdown=${this.onScrubDown}
+                      @pointermove=${this.onScrubMove}
+                      @pointerup=${this.onScrubUp}
+                      @pointercancel=${this.onScrubUp}
                     >
-                      <flipcel-scrollbar
-                        class="frames-scrollbar"
-                        orientation="horizontal"
-                        for=".frames-viewport"
-                        persistent
-                        .gutter=${false}
-                      ></flipcel-scrollbar>
-                      <div
-                        class="strip-ruler"
-                        @pointerdown=${this.onScrubDown}
-                        @pointermove=${this.onScrubMove}
-                        @pointerup=${this.onScrubUp}
-                        @pointercancel=${this.onScrubUp}
-                      >
+                      <div class="timeline-tags-layer" aria-label="Frame tags">
+                        <div class="timeline-tags-content">
+                          ${this.displayTags().map(
+                            (tag) => html`
+                              <div
+                                class="frame-tag ${this.tagActionsId === tag.id
+                                  ? "selected"
+                                  : ""} ${this.tagResize?.id === tag.id
+                                  ? "resizing"
+                                  : ""}"
+                                data-tag-id=${tag.id}
+                                style="left:calc(${tag.start} * var(--frame-cell-w));width:calc(${tag.end - tag.start + 1} * var(--frame-cell-w))"
+                                title=${`${tag.name} (frames ${tag.start + 1}–${tag.end + 1})`}
+                                @click=${() => this.onTagClick(tag)}
+                                @pointerdown=${(e: Event) => e.stopPropagation()}
+                              >
+                                <div
+                                  class="frame-tag-edge start"
+                                  title="Drag to resize"
+                                  @pointerdown=${(e: PointerEvent) =>
+                                    this.onTagEdgeDown(tag, "start", e)}
+                                ></div>
+                                <span class="frame-tag-name">${tag.name}</span>
+                                <div
+                                  class="frame-tag-edge end"
+                                  title="Drag to resize"
+                                  @pointerdown=${(e: PointerEvent) =>
+                                    this.onTagEdgeDown(tag, "end", e)}
+                                ></div>
+                              </div>
+                            `,
+                          )}
+                        </div>
+                      </div>
+                      <div class="strip-ruler">
                         <div class="strip-ruler-content">
                           ${guard([t.duration], () =>
                             frames.map(
                               (f) => html`
-                                <div
-                                  class="ruler-cell"
-                                  title=${`Go to frame ${f + 1}`}
-                                  @click=${() =>
-                                    this.emit("frame-select", {
-                                      frame: f,
-                                      navigateOnly: true,
-                                    })}
-                                >
+                                <div class="ruler-cell">
                                   ${this.rulerShowsNumber(f) ? f + 1 : ""}
                                 </div>
                               `,
@@ -2784,6 +3179,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
         ${this.frameSelection && this.showFrameActionsForSelection()
           ? this.renderFrameActionsPopover(this.frameSelection)
           : nothing}
+        ${this.renderTagActionsPopover()}
       </div>
     `;
   }

@@ -39,6 +39,7 @@ export type HelpId =
   | "timeline.keyframe"
   | "timeline.blank"
   | "timeline.clear"
+  | "timeline.tag"
   | "timeline.auto-hold"
   | "timeline.emf"
   | "layers.add"
@@ -224,6 +225,12 @@ export const HELP_CATALOG: Record<HelpId, HelpEntry> = {
     id: "timeline.clear",
     title: "Clear frames",
     body: "Delete selected frames, or the frame at the playhead if nothing is selected.",
+    section: "Timeline",
+  },
+  "timeline.tag": {
+    id: "timeline.tag",
+    title: "Tag frames",
+    body: "Create a named tag over the selected frames, or 3 frames from the playhead when nothing is selected (shorter if another tag is in the way). Tags overlay the scrubber; click for rename/delete, drag edges to resize.",
     section: "Timeline",
   },
   "timeline.auto-hold": {

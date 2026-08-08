@@ -64,6 +64,53 @@ export interface LayerTrack {
   keyframes: Keyframe[];
 }
 
+/** Named frame range (Aseprite-style tag), document-level. */
+export type FrameTag = {
+  id: string;
+  name: string;
+  start: number; // inclusive
+  end: number; // inclusive
+};
+
+/**
+ * Resize one tag and carve that range out of every other tag (trim, split,
+ * or drop). Returns a new array, or null if `id` is missing.
+ */
+export function applyFrameTagResize(
+  tags: FrameTag[],
+  id: string,
+  start: number,
+  end: number,
+  newId: () => string,
+): FrameTag[] | null {
+  const target = tags.find((t) => t.id === id);
+  if (!target) return null;
+  const a = Math.min(start, end);
+  const b = Math.max(start, end);
+  const out: FrameTag[] = [];
+  for (const t of tags) {
+    if (t.id === id) continue;
+    if (t.end < a || t.start > b) {
+      out.push({ ...t });
+      continue;
+    }
+    if (t.start < a) {
+      out.push({ ...t, end: a - 1 });
+    }
+    if (t.end > b) {
+      const keptLeft = t.start < a;
+      out.push({
+        ...t,
+        id: keptLeft ? newId() : t.id,
+        start: b + 1,
+      });
+    }
+  }
+  // Resized tag last so it paints above siblings in the strip.
+  out.push({ ...target, start: a, end: b });
+  return out;
+}
+
 /** Shared id for "empty layer" content, so blank layers/keyframes dedupe. */
 export const EMPTY_CONTENT_ID = "empty";
 
@@ -98,6 +145,8 @@ export interface TimelineState {
   /** Flash-style Edit Multiple Frames: range contents editable on stage. */
   editMultipleFrames: boolean;
   emfRange: { layerIds: string[]; start: number; end: number } | null;
+  /** Named frame ranges (Aseprite-style tags). */
+  tags: FrameTag[];
 }
 
 export const timelineStore = new Store<TimelineState>({
@@ -111,6 +160,7 @@ export const timelineStore = new Store<TimelineState>({
   realTimeLock: false,
   editMultipleFrames: false,
   emfRange: null,
+  tags: [],
 });
 
 /** Sentinel in loadedContent while an EMF composite overlay is on a layer. */
@@ -132,6 +182,8 @@ export interface SerializedDocument {
   tracks: LayerTrack[];
   /** contentId → paper.js layer JSON ("" = empty layer). */
   content: Record<string, string>;
+  /** Optional for older saves. */
+  tags?: FrameTag[];
 }
 
 /** Snapshot of the document's mutable state, used by doc-level history. */
@@ -140,6 +192,7 @@ export interface DocumentState {
   currentFrame: number;
   duration: number;
   frameRate: number;
+  tags: FrameTag[];
 }
 
 export function cloneTracks(tracks: LayerTrack[]): LayerTrack[] {
@@ -147,6 +200,10 @@ export function cloneTracks(tracks: LayerTrack[]): LayerTrack[] {
     ...t,
     keyframes: t.keyframes.map((k) => ({ ...k })),
   }));
+}
+
+export function cloneTags(tags: FrameTag[]): FrameTag[] {
+  return tags.map((t) => ({ ...t }));
 }
 
 /** Parse a Paper layer JSON payload into `[tag, props, ...]`, or null. */
@@ -219,6 +276,8 @@ export class DocumentManager {
   private duration = DEFAULT_DURATION;
   private frameRate = DEFAULT_FRAME_RATE;
   private playing = false;
+  private tags: FrameTag[] = [];
+  private tagIdCounter = 1;
   /** View preference: show dimmed neighbor frames. Not persisted, not in history. */
   private onionSkinEnabled = true;
   /**
@@ -1365,9 +1424,104 @@ export class DocumentManager {
       }
     }
     this.duration = next;
+    this.clampTagsToDuration();
     if (this.currentFrame >= next) this.gotoFrame(next - 1);
     this.publish();
     return true;
+  }
+
+  // ------------------------------------------------------------
+  // Frame tags
+  // ------------------------------------------------------------
+
+  getFrameTags(): FrameTag[] {
+    return cloneTags(this.tags);
+  }
+
+  /** Create a tag over [start, end]. Returns the new tag, or null if invalid. */
+  addFrameTag(start: number, end: number, name?: string): FrameTag | null {
+    const [a, b] = this.normalizeRange(start, end);
+    const tag: FrameTag = {
+      id: this.newTagId(),
+      name: (name?.trim() || this.nextDefaultTagName()).slice(0, 64),
+      start: a,
+      end: b,
+    };
+    this.tags = [...this.tags, tag];
+    this.publish();
+    return tag;
+  }
+
+  renameFrameTag(id: string, name: string): boolean {
+    const tag = this.tags.find((t) => t.id === id);
+    if (!tag) return false;
+    const next = name.trim().slice(0, 64);
+    if (!next || next === tag.name) return false;
+    tag.name = next;
+    this.tags = cloneTags(this.tags);
+    this.publish();
+    return true;
+  }
+
+  removeFrameTag(id: string): boolean {
+    const next = this.tags.filter((t) => t.id !== id);
+    if (next.length === this.tags.length) return false;
+    this.tags = next;
+    this.publish();
+    return true;
+  }
+
+  /**
+   * Resize a tag to [start, end] and carve overlapping frames out of other
+   * tags (trim / split / delete).
+   */
+  resizeFrameTag(id: string, start: number, end: number): boolean {
+    const tag = this.tags.find((t) => t.id === id);
+    if (!tag) return false;
+    const [a, b] = this.normalizeRange(start, end);
+    if (tag.start === a && tag.end === b) return false;
+    const next = applyFrameTagResize(this.tags, id, a, b, () => this.newTagId());
+    if (!next) return false;
+    this.tags = next;
+    this.publish();
+    return true;
+  }
+
+  private newTagId(): string {
+    return `tag${Date.now().toString(36)}-${this.tagIdCounter++}`;
+  }
+
+  private nextDefaultTagName(): string {
+    let n = 1;
+    const used = new Set(this.tags.map((t) => t.name));
+    while (used.has(`Tag ${n}`)) n++;
+    return `Tag ${n}`;
+  }
+
+  /** Drop or clamp tags that fall outside the current duration. */
+  private clampTagsToDuration(): void {
+    const last = this.duration - 1;
+    this.tags = this.tags
+      .map((t) => {
+        const start = Math.max(0, Math.min(last, Math.min(t.start, t.end)));
+        const end = Math.max(0, Math.min(last, Math.max(t.start, t.end)));
+        return { ...t, start, end };
+      })
+      .filter((t) => t.start <= t.end);
+  }
+
+  private retimeTags(ratio: number, newDuration: number): void {
+    const last = newDuration - 1;
+    this.tags = this.tags
+      .map((t) => {
+        const start = Math.max(0, Math.min(last, Math.round(t.start * ratio)));
+        const end = Math.max(
+          start,
+          Math.min(last, Math.round((t.end + 1) * ratio) - 1),
+        );
+        return { ...t, start, end };
+      })
+      .filter((t) => t.start <= t.end);
   }
 
   /**
@@ -1392,6 +1546,7 @@ export class DocumentManager {
         Math.min(9999, Math.round(this.duration * ratio)),
       );
       this.retimeTracks(ratio, newDuration);
+      this.retimeTags(ratio, newDuration);
       this.duration = newDuration;
       this.currentFrame = Math.max(
         0,
@@ -1807,6 +1962,7 @@ export class DocumentManager {
       currentFrame: this.currentFrame,
       duration: this.duration,
       frameRate: this.frameRate,
+      tags: cloneTags(this.tags),
     };
   }
 
@@ -1825,6 +1981,8 @@ export class DocumentManager {
     for (const track of this.tracks) track.locked = !!track.locked;
     this.duration = state.duration;
     this.frameRate = state.frameRate;
+    this.tags = cloneTags(state.tags ?? []);
+    this.clampTagsToDuration();
     this.currentFrame = Math.max(
       0,
       Math.min(state.duration - 1, state.currentFrame),
@@ -1927,6 +2085,7 @@ export class DocumentManager {
       duration: this.duration,
       tracks: cloneTracks(this.tracks),
       content,
+      tags: cloneTags(this.tags),
     };
   }
 
@@ -1939,6 +2098,7 @@ export class DocumentManager {
     this.content.set(EMPTY_CONTENT_ID, "");
     this.tracks = cloneTracks(doc.tracks);
     this.duration = Math.max(1, Math.round(doc.duration));
+    this.tags = this.normalizeLoadedTags(doc.tags);
     // Guarantee model invariants on untrusted input.
     for (const track of this.tracks) {
       track.locked = !!track.locked;
@@ -2045,6 +2205,29 @@ export class DocumentManager {
   }
 
   /** Snapshot tracks/flags into the store (content may have changed). */
+  private normalizeLoadedTags(raw: FrameTag[] | undefined): FrameTag[] {
+    if (!Array.isArray(raw)) return [];
+    const out: FrameTag[] = [];
+    const last = this.duration - 1;
+    for (const item of raw) {
+      if (!item || typeof item !== "object") continue;
+      const id = typeof item.id === "string" && item.id ? item.id : this.newTagId();
+      const name =
+        typeof item.name === "string" && item.name.trim()
+          ? item.name.trim().slice(0, 64)
+          : this.nextDefaultTagName();
+      let start = Math.round(Number(item.start));
+      let end = Math.round(Number(item.end));
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      if (start > end) [start, end] = [end, start];
+      start = Math.max(0, Math.min(last, start));
+      end = Math.max(0, Math.min(last, end));
+      if (start > end) continue;
+      out.push({ id, name, start, end });
+    }
+    return out;
+  }
+
   private timelineSnapshot(): TimelineState {
     return {
       tracks: this.tracks.map((t) => ({
@@ -2069,6 +2252,7 @@ export class DocumentManager {
       emfRange: this.emfRange
         ? { ...this.emfRange, layerIds: [...this.emfRange.layerIds] }
         : null,
+      tags: cloneTags(this.tags),
     };
   }
 
