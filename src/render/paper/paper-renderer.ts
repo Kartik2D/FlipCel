@@ -494,6 +494,74 @@ export class PaperRenderer {
     );
   }
 
+  /**
+   * Export document artwork as SVG in project/stage space (camera-independent).
+   * `bounds: "content"` = auto-crop; otherwise pass a stage rectangle.
+   * Optional `onlyLayerId` hides other document layers for the duration.
+   * Optional `stageFill` draws a background rect behind the art.
+   */
+  exportDocumentSvgString(opts: {
+    bounds: "content" | { x: number; y: number; width: number; height: number };
+    onlyLayerId?: string | null;
+    stageFill?: string | null;
+  }): string {
+    return this.onionSkin.withHidden(() => {
+      const visibility = new Map<string, boolean>();
+      if (opts.onlyLayerId) {
+        for (const [id, layer] of this.layerMap) {
+          visibility.set(id, layer.visible);
+          layer.visible = id === opts.onlyLayerId;
+        }
+      }
+
+      let bg: paper.Path | null = null;
+      try {
+        const bounds =
+          opts.bounds === "content"
+            ? "content"
+            : new paper.Rectangle(
+                opts.bounds.x,
+                opts.bounds.y,
+                opts.bounds.width,
+                opts.bounds.height,
+              );
+
+        if (opts.stageFill) {
+          let box: paper.Rectangle | null =
+            bounds === "content" ? null : bounds;
+          if (bounds === "content") {
+            for (const layer of paper.project.layers) {
+              if (!layer.visible) continue;
+              const b = layer.bounds;
+              if (!b || (b.width <= 0 && b.height <= 0)) continue;
+              box = box ? box.unite(b) : b.clone();
+            }
+          }
+          if (box && box.width > 0 && box.height > 0) {
+            bg = new paper.Path.Rectangle(box);
+            bg.fillColor = new paper.Color(opts.stageFill);
+            bg.strokeColor = null;
+            bg.sendToBack();
+          }
+        }
+
+        return paper.project.exportSVG({
+          bounds,
+          asString: true,
+          precision: 4,
+        }) as string;
+      } finally {
+        bg?.remove();
+        if (opts.onlyLayerId) {
+          for (const [id, layer] of this.layerMap) {
+            const prev = visibility.get(id);
+            if (prev !== undefined) layer.visible = prev;
+          }
+        }
+      }
+    });
+  }
+
   // ============================================================
   // Layer Management
   // ============================================================

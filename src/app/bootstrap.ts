@@ -65,6 +65,8 @@ import type {
   FlipCelMagicMovePopup,
   FlipCelMagicMorphPopup,
   FlipCelAutoMorphPopup,
+  FlipCelGodotExportPopup,
+  FlipCelSvgExportPopup,
 } from "../ui/register";
 import "../ui/register"; // Register Lit components
 import {
@@ -91,6 +93,15 @@ import { getStageFitViewportInsets } from "../render/stage-fit-insets";
 import { bindPanelEvents } from "./panel-bridge";
 import { ToolSession } from "./tool-session";
 import { TimelineSession, createBlankSerializedDocument } from "./timeline-session";
+import {
+  exportGodotSpriteZip,
+  type GodotExportOptions,
+} from "../export/godot-sprite-export";
+import {
+  exportDocumentSvg,
+  type SvgExportOptions,
+} from "../export/svg-export";
+import { documentNameStore } from "../state/document-ui";
 
 /**
  * Snap to 0° when |view rotation| is strictly inside this bound (degrees), i.e. |θ| < 15°.
@@ -151,6 +162,8 @@ class App {
   private magicMovePopup: FlipCelMagicMovePopup;
   private magicMorphPopup: FlipCelMagicMorphPopup;
   private autoMorphPopup: FlipCelAutoMorphPopup;
+  private godotExportPopup: FlipCelGodotExportPopup;
+  private svgExportPopup: FlipCelSvgExportPopup;
   private camera: Camera;
   private isInitialized = false;
   private pixelResScale = 2;
@@ -323,6 +336,18 @@ class App {
     this.autoMorphPopup = document.getElementById(
       "auto-morph-popup",
     ) as FlipCelAutoMorphPopup;
+    this.godotExportPopup = document.getElementById(
+      "godot-export-popup",
+    ) as FlipCelGodotExportPopup;
+    this.godotExportPopup.addEventListener("godot-export", (e: Event) => {
+      void this.onExportGodot((e as CustomEvent<GodotExportOptions>).detail);
+    });
+    this.svgExportPopup = document.getElementById(
+      "svg-export-popup",
+    ) as FlipCelSvgExportPopup;
+    this.svgExportPopup.addEventListener("svg-export", (e: Event) => {
+      this.onExportSvg((e as CustomEvent<SvgExportOptions>).detail);
+    });
     this.timelineSession = new TimelineSession({
       documentManager: this.documentManager,
       historyManager: this.historyManager,
@@ -533,7 +558,12 @@ class App {
       onStageSizeChange: () => {
         this.historyManager.snapshot();
       },
-      onExportViewSvg: () => this.onExportViewSvg(),
+      onExportSvgOpen: (anchor) => {
+        void this.svgExportPopup.showNearAnchor(anchor);
+      },
+      onExportGodotOpen: (anchor) => {
+        void this.godotExportPopup.showNearAnchor(anchor);
+      },
       onDocSave: () => this.onDocSave(),
       onDocOpen: () => this.onDocOpen(),
       onDocNew: () => this.onDocNew(),
@@ -1690,17 +1720,58 @@ class App {
     this.selectionController.setSelectedItems(items, { didMove: true });
   }
 
-  private onExportViewSvg() {
-    const svg = this.paperRenderer.exportViewAsSvgString();
-    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `flipcel-view-${Date.now()}.svg`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+  private onExportSvg(options: SvgExportOptions) {
+    this.timelineSession.commitLiveEdits();
+    try {
+      const { bytes, filename, mime } = exportDocumentSvg({
+        paperRenderer: this.paperRenderer,
+        stage: stageStore.get(),
+        documentName: documentNameStore.get(),
+        options,
+      });
+      const copy = new Uint8Array(bytes.byteLength);
+      copy.set(bytes);
+      const blob = new Blob([copy], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("SVG export failed", err);
+    } finally {
+      this.svgExportPopup.exportFinished();
+    }
+  }
+
+  private async onExportGodot(options: GodotExportOptions) {
+    this.timelineSession.commitLiveEdits();
+    try {
+      const { zipBytes, zipFilename } = await exportGodotSpriteZip({
+        documentManager: this.documentManager,
+        stage: stageStore.get(),
+        documentName: documentNameStore.get(),
+        options,
+      });
+      const copy = new Uint8Array(zipBytes.byteLength);
+      copy.set(zipBytes);
+      const blob = new Blob([copy], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = zipFilename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Godot export failed", err);
+    } finally {
+      this.godotExportPopup.exportFinished();
+    }
   }
 
   // ============================================================

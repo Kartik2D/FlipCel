@@ -22,6 +22,8 @@ import "./panels/contextual-actions-panel";
 import "./panels/magic-move-popup";
 import "./panels/magic-morph-popup";
 import "./panels/auto-morph-popup";
+import "./panels/godot-export-popup";
+import "./panels/svg-export-popup";
 import "./panels/help-popup";
 
 export { Block } from "./primitives/block";
@@ -49,6 +51,8 @@ export { FlipCelFunctionsPanel } from "./panels/contextual-actions-panel";
 export { FlipCelMagicMovePopup } from "./panels/magic-move-popup";
 export { FlipCelMagicMorphPopup } from "./panels/magic-morph-popup";
 export { FlipCelAutoMorphPopup } from "./panels/auto-morph-popup";
+export { FlipCelGodotExportPopup } from "./panels/godot-export-popup";
+export { FlipCelSvgExportPopup } from "./panels/svg-export-popup";
 
 declare global {
   interface HTMLElementTagNameMap {
@@ -74,5 +78,7 @@ declare global {
     "flipcel-magic-move-popup": import("./panels/magic-move-popup").FlipCelMagicMovePopup;
     "flipcel-magic-morph-popup": import("./panels/magic-morph-popup").FlipCelMagicMorphPopup;
     "flipcel-auto-morph-popup": import("./panels/auto-morph-popup").FlipCelAutoMorphPopup;
+    "flipcel-godot-export-popup": import("./panels/godot-export-popup").FlipCelGodotExportPopup;
+    "flipcel-svg-export-popup": import("./panels/svg-export-popup").FlipCelSvgExportPopup;
   }
 }

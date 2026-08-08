@@ -423,19 +423,41 @@ export class FlipCelUniversalPanel extends FloatingPanel {
                 <blocky-button flat accent @click=${() => this.emit("doc-new")}
                   >New File</blocky-button
                 >
-                <blocky-button flat @click=${() => this.emit("doc-open")}
-                  >Open</blocky-button
-                >
+              </div>
+              <div class="row">
                 <blocky-button flat @click=${() => this.emit("doc-save")}
                   >Save JSON</blocky-button
                 >
+                <blocky-button flat @click=${() => this.emit("doc-open")}
+                  >Open JSON</blocky-button
+                >
+              </div>
+              <div class="row">
                 <blocky-button
                   flat
-                  @click=${() =>
+                  data-panel-trigger="svg-export-popup"
+                  @click=${(e: Event) =>
                     this.dispatchEvent(
-                      new CustomEvent("export-view-svg", { bubbles: true, composed: true }),
+                      new CustomEvent("export-svg-open", {
+                        detail: e.currentTarget as HTMLElement,
+                        bubbles: true,
+                        composed: true,
+                      }),
                     )}
                   >Export SVG</blocky-button
+                >
+                <blocky-button
+                  flat
+                  data-panel-trigger="godot-export-popup"
+                  @click=${(e: Event) =>
+                    this.dispatchEvent(
+                      new CustomEvent("export-godot-open", {
+                        detail: e.currentTarget as HTMLElement,
+                        bubbles: true,
+                        composed: true,
+                      }),
+                    )}
+                  >Export Godot</blocky-button
                 >
               </div>
             </flipcel-panel-section>
