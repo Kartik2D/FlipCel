@@ -41,6 +41,7 @@ import {
   forceUniteFamily,
   subtractOf,
   intersectOf,
+  fillArea,
 } from "./path-geometry";
 import { OnionSkin } from "./onion-skin";
 import { extractPaths, flattenGroups, importSVG } from "./svg-io";
@@ -2028,7 +2029,12 @@ export class PaperRenderer {
         this.copyEmfKeyframeFrame(candidate, selectedPiece);
 
         const remainder = subtractOf(candidate, selectionPath);
-        if (remainder === "gone") {
+        const candArea = fillArea(candidate);
+        const pieceArea = fillArea(selectedPiece);
+        const takeWhole =
+          remainder == null &&
+          Math.abs(pieceArea - candArea) <= 1e-4 + 1e-6 * (candArea + pieceArea);
+        if (remainder === "gone" || takeWhole) {
           this.clearSelectionMarker(candidate);
           candidate.remove();
         } else if (remainder && remainder !== "unchanged") {
