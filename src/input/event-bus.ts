@@ -81,6 +81,8 @@ export const Events = {
 
   // Timeline
   PLAY_TOGGLE: "timeline:play-toggle",
+  /** Delete / Backspace: remove the current selection. */
+  DELETE_SELECTION: "edit:delete-selection",
 } as const;
 
 // Type for event names

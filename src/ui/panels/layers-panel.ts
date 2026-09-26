@@ -1171,6 +1171,14 @@ export class FlipCelLayersPanel extends FloatingPanel {
     return this.frameSelection;
   }
 
+  /** Clear a frame-range selection and return it, for the Delete key. */
+  consumeFrameSelection(): LayersFrameSelection | null {
+    const sel = this.frameSelection;
+    if (!sel) return null;
+    this.clearFrameSelection();
+    return sel;
+  }
+
   /** Whether the EMF preference toggle is on (auto-enter on range select). */
   isEmfPreferred(): boolean {
     return this.emfPreferred;

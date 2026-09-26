@@ -513,6 +513,11 @@ export class UnifiedInputManager {
       bus.emit(Events.PLAY_TOGGLE, null);
       return;
     }
+    if (action === "edit.delete") {
+      e.preventDefault();
+      bus.emit(Events.DELETE_SELECTION, null);
+      return;
+    }
 
     const toolId = parseToolActionId(action);
     if (toolId && toolId !== this.currentTool) {

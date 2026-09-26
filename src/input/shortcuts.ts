@@ -31,7 +31,7 @@ export type ModifierBinding = {
 export type Binding = ChordBinding | ModifierBinding;
 
 export type ToolActionId = `tool.${ToolId}`;
-export type EditActionId = "edit.undo" | "edit.redo" | "edit.playToggle";
+export type EditActionId = "edit.undo" | "edit.redo" | "edit.playToggle" | "edit.delete";
 export type ModActionId =
   | "mod.paintMode"
   | "mod.wheelPan"
@@ -79,6 +79,7 @@ export function getShortcutActions(): ShortcutActionMeta[] {
     { id: "edit.undo", label: "Undo", group: "edit" },
     { id: "edit.redo", label: "Redo", group: "edit" },
     { id: "edit.playToggle", label: "Play / Pause", group: "edit" },
+    { id: "edit.delete", label: "Delete selection", group: "edit" },
     { id: "mod.paintMode", label: "Paint mode toggle", group: "modifiers" },
     { id: "mod.wheelPan", label: "Wheel pan", group: "modifiers" },
     { id: "mod.constrainMove", label: "Constrain move", group: "modifiers" },
@@ -112,6 +113,7 @@ export function getDefaultBindings(): ShortcutBindings {
   bindings["edit.undo"] = { kind: "chord", key: "z", mod: true };
   bindings["edit.redo"] = { kind: "chord", key: "z", mod: true, shift: true };
   bindings["edit.playToggle"] = { kind: "chord", key: "space" };
+  bindings["edit.delete"] = { kind: "chord", key: "delete" };
   bindings["mod.paintMode"] = { kind: "modifier", modifier: "ctrl" };
   bindings["mod.wheelPan"] = { kind: "modifier", modifier: "shift" };
   bindings["mod.constrainMove"] = { kind: "modifier", modifier: "shift" };
@@ -200,9 +202,13 @@ export function formatChord(binding: ChordBinding): string {
   const keyLabel =
     binding.key === "space"
       ? "Space"
-      : binding.key.length === 1
-        ? binding.key.toUpperCase()
-        : binding.key;
+      : binding.key === "delete"
+        ? "Delete"
+        : binding.key === "backspace"
+          ? "Backspace"
+          : binding.key.length === 1
+            ? binding.key.toUpperCase()
+            : binding.key;
   parts.push(keyLabel);
   return parts.join(mac ? "" : "+");
 }
@@ -274,13 +280,32 @@ export function matchChordAction(
     "edit.redo",
     "edit.undo",
     "edit.playToggle",
+    "edit.delete",
     ...tools.map((t) => toolActionId(t.id)),
   ];
   for (const id of order) {
     const b = bindings[id];
     if (b?.kind === "chord" && eventMatchesChord(e, b)) return id;
   }
+  // Mac/iPad label the Backspace key "delete"; full keyboards send "Delete".
+  const del = bindings["edit.delete"];
+  if (del?.kind === "chord" && deleteKeyAliasMatches(e, del)) return "edit.delete";
   return null;
+}
+
+function deleteKeyAliasMatches(e: KeyboardEvent, binding: ChordBinding): boolean {
+  const want = expandChord(binding);
+  const key = normalizeKey(e.key);
+  const alias =
+    (want.key === "delete" && key === "backspace") ||
+    (want.key === "backspace" && key === "delete");
+  return (
+    alias &&
+    e.shiftKey === want.shift &&
+    e.altKey === want.alt &&
+    e.ctrlKey === want.ctrl &&
+    e.metaKey === want.meta
+  );
 }
 
 export function findChordConflict(

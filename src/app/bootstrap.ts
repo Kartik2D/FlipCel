@@ -621,6 +621,7 @@ class App {
     bus.on(Events.UNDO, () => this.onUndo());
     bus.on(Events.REDO, () => this.onRedo());
     bus.on(Events.PLAY_TOGGLE, () => this.onPlayToggle());
+    bus.on(Events.DELETE_SELECTION, () => this.onDeleteSelection());
   }
 
   private setupPanelEvents() {
@@ -1873,7 +1874,20 @@ class App {
     this.requestRedraw();
   }
 
-  private onFunctionInvoke(functionId: string) {
+  /** Delete key: selected vertices, selected artwork, then a selected frame range. */
+  private onDeleteSelection() {
+    if (this.onFunctionInvoke("delete-vertices")) return;
+    if (this.onFunctionInvoke("delete")) return;
+    const sel = this.layersPanel.consumeFrameSelection();
+    if (!sel) return;
+    this.onKeyframeRemove({
+      layerIds: sel.layerIds,
+      start: sel.start,
+      end: sel.end,
+    });
+  }
+
+  private onFunctionInvoke(functionId: string): boolean {
     const didRun = runContextualAction(functionId, this.buildFunctionContext(), {
       paperRenderer: this.paperRenderer,
       selectionController: this.selectionController,
@@ -1886,6 +1900,7 @@ class App {
     if (didRun) {
       requestAnimationFrame(() => this.updateFunctionsPanel());
     }
+    return didRun;
   }
 
   /** Quick option: lift the current selection onto a brand-new layer above it. */
