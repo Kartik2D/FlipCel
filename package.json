@@ -10,7 +10,9 @@
     "check:merge": "node --import ./scripts/ts-resolve.mjs src/render/paper/merge-layer.check.ts"
   },
   "dependencies": {
+    "@visioncortex/vtracer": "^1.0.0-alpha.4",
     "esm-potrace-wasm": "^0.4.1",
+    "firebase": "^12.19.0",
     "lit": "^3.3.1",
     "paper": "^0.12.18",
     "reinvented-color-wheel": "^0.4.0"

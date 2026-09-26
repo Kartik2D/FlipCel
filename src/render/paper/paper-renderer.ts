@@ -41,12 +41,12 @@ import {
   forceUniteFamily,
   subtractOf,
   intersectOf,
-  fillArea,
 } from "./path-geometry";
 import { OnionSkin } from "./onion-skin";
 import { extractPaths, flattenGroups, importSVG } from "./svg-io";
 import {
   addToLayer,
+  addToLayerSequential,
   exportItemsJson,
   mergeJsons,
   paintInsideLayer,
@@ -1052,6 +1052,20 @@ export class PaperRenderer {
     return addToLayer(layer, additions, this.adopt());
   }
 
+  /**
+   * Import overlapping stacked fills (VTracer stacked / painter's SVG) without
+   * the back-most full-image path deleting everything else already on the layer.
+   * Each path only cuts fills committed earlier (back → front).
+   */
+  private mergeAddSequential(
+    layer: paper.Layer,
+    additions: paper.PathItem[],
+  ): void {
+    this.markPaperLayerDirty(layer);
+    this.tagEmfPlayhead(additions);
+    addToLayerSequential(layer, additions, this.adopt());
+  }
+
   private mergeSubtractInto(cutters: paper.PathItem[]): void {
     for (const cutter of cutters) this.markItemLayerDirty(cutter);
     subtractFromLayer(paper.project.activeLayer, cutters, this.adopt());
@@ -1266,6 +1280,8 @@ export class PaperRenderer {
       fillOverride?: string | null;
       snapColors?: string[];
       convertStrokesToFills?: boolean;
+      /** Leave painter's-order fills as-is (VTracer stacked hangs if planarized). */
+      skipMerge?: boolean;
     },
   ): Promise<boolean> {
     await this.mergeIdle();
@@ -1346,7 +1362,12 @@ export class PaperRenderer {
       paper.view.update();
       return false;
     }
-    this.mergeAddInto(layer, additions);
+    if (options.skipMerge) {
+      this.markPaperLayerDirty(layer);
+      this.tagEmfPlayhead(additions);
+    } else {
+      this.mergeAddSequential(layer, additions);
+    }
     flattenGroups();
     paper.view.update();
     return true;
@@ -2019,6 +2040,13 @@ export class PaperRenderer {
         .filter((item) => selectionPath.bounds.expand(4).intersects(item.bounds));
 
       for (const candidate of candidates) {
+        // Fully inside the marquee AABB: keep the item. Boolean subtract
+        // returns empty on holed compounds with no cut edge.
+        if (selectionPath.bounds.contains(candidate.bounds)) {
+          this.setSelectionMarker(candidate, selectionMarker);
+          selectedItems.push(candidate);
+          continue;
+        }
         if (!pathsCollide(candidate, selectionPath)) continue;
         const fill = candidate.fillColor;
         const selectedPiece = intersectOf(candidate, selectionPath);
@@ -2029,12 +2057,7 @@ export class PaperRenderer {
         this.copyEmfKeyframeFrame(candidate, selectedPiece);
 
         const remainder = subtractOf(candidate, selectionPath);
-        const candArea = fillArea(candidate);
-        const pieceArea = fillArea(selectedPiece);
-        const takeWhole =
-          remainder == null &&
-          Math.abs(pieceArea - candArea) <= 1e-4 + 1e-6 * (candArea + pieceArea);
-        if (remainder === "gone" || takeWhole) {
+        if (remainder === "gone") {
           this.clearSelectionMarker(candidate);
           candidate.remove();
         } else if (remainder && remainder !== "unchanged") {

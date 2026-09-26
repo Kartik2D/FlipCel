@@ -150,6 +150,25 @@ export function addToLayer(
   return splitResult({ survivors, changedItems: changed }, adopt);
 }
 
+/**
+ * Stacked / painter's SVGs: add back → front so each fill only cuts what is
+ * already committed. Avoids a full-image back fill deleting everything else.
+ */
+export function addToLayerSequential(
+  layer: paper.Layer,
+  additions: paper.PathItem[],
+  adopt: MergeAdopt,
+): void {
+  const pending = [...additions];
+  for (const item of pending) item.remove();
+  let committed = new Set<number>();
+  for (const item of pending) {
+    layer.addChild(item);
+    addToLayer(layer, [item], adopt, committed);
+    committed = new Set(pathsOnLayer(layer).map((child) => child.id));
+  }
+}
+
 /** Erase: cut every fill the cutters touch, then drop the cutters. */
 export function subtractFromLayer(
   layer: paper.Layer,

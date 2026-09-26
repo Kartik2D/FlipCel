@@ -76,6 +76,7 @@ import type {
   FlipCelGodotExportPopup,
   FlipCelSvgExportPopup,
   FlipCelImageImportPopup,
+  FlipCelGenerateImagePopup,
   FlipCelSvgImportPopup,
 } from "../ui/register";
 import "../ui/register"; // Register Lit components
@@ -120,7 +121,6 @@ import {
 } from "../export/svg-export";
 import { downloadExportFiles } from "../export/download";
 import {
-  fileToTraceCanvas,
   isImageFile,
   pickImageFile,
 } from "../import/image-import";
@@ -130,6 +130,7 @@ import {
   pickSvgFile,
 } from "../import/svg-import";
 import type { ImageImportDetail } from "../ui/panels/image-import-popup";
+import type { GenerateImageReadyDetail } from "../ui/panels/generate-image-popup";
 import type { SvgImportDetail } from "../ui/panels/svg-import-popup";
 import { documentNameStore } from "../state/document-ui";
 import { assetCache, isAudioFile, putAsset } from "../document/assets";
@@ -145,6 +146,14 @@ const ROTATION_SNAP_TO_ZERO_MS = 280;
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+}
+
+function nextImportedImageName(): string {
+  const used = new Set(layerStore.get().layers.map((layer) => layer.name));
+  for (let n = 1; ; n += 1) {
+    const name = `Imported image ${n}`;
+    if (!used.has(name)) return name;
+  }
 }
 
 class App {
@@ -195,6 +204,7 @@ class App {
   private godotExportPopup: FlipCelGodotExportPopup;
   private svgExportPopup: FlipCelSvgExportPopup;
   private imageImportPopup: FlipCelImageImportPopup;
+  private generateImagePopup: FlipCelGenerateImagePopup;
   private svgImportPopup: FlipCelSvgImportPopup;
   private camera: Camera;
   private isInitialized = false;
@@ -421,9 +431,16 @@ class App {
     this.imageImportPopup = document.getElementById(
       "image-import-popup",
     ) as FlipCelImageImportPopup;
-    this.imageImportPopup.setTracer(this.tracer);
     this.imageImportPopup.addEventListener("image-import", (e: Event) => {
       void this.onImportImage((e as CustomEvent<ImageImportDetail>).detail);
+    });
+    this.generateImagePopup = document.getElementById(
+      "generate-image-popup",
+    ) as FlipCelGenerateImagePopup;
+    this.generateImagePopup.addEventListener("generate-image-ready", (e: Event) => {
+      void this.onGenerateImageReady(
+        (e as CustomEvent<GenerateImageReadyDetail>).detail,
+      );
     });
     this.svgImportPopup = document.getElementById(
       "svg-import-popup",
@@ -668,6 +685,9 @@ class App {
       },
       onImportImageOpen: (anchor) => {
         void this.onImportImageOpen(anchor);
+      },
+      onGenerateImageOpen: (anchor) => {
+        void this.generateImagePopup.open(anchor);
       },
       onImportSvgOpen: (anchor) => {
         void this.onImportSvgOpen(anchor);
@@ -2059,6 +2079,10 @@ class App {
     await this.imageImportPopup.openForFile(file, anchor);
   }
 
+  private async onGenerateImageReady(detail: GenerateImageReadyDetail) {
+    await this.imageImportPopup.openForFile(detail.file, detail.anchor);
+  }
+
   private async onImportSvgOpen(anchor: HTMLElement) {
     const file = await pickSvgFile();
     if (!file) return;
@@ -2103,22 +2127,36 @@ class App {
 
   private async onImportImage(detail: ImageImportDetail) {
     await this.timelineSession.commitLiveEdits();
+    const id = generateLayerId();
+    const name = nextImportedImageName();
     try {
-      const canvas = await fileToTraceCanvas(detail.file);
-      const svg = await this.tracer.traceSource(canvas, detail.options);
-      if (!svg) {
-        alert("Could not trace that image.");
-        return;
-      }
+      stageSelectedStore.set(false);
+      this.paperRenderer.createLayer(id, name);
+      layerStore.update((state) => {
+        const activeIndex = state.layers.findIndex(
+          (layer) => layer.id === state.activeLayerId,
+        );
+        const insertAt = activeIndex < 0 ? state.layers.length : activeIndex + 1;
+        const nextLayers = [...state.layers];
+        nextLayers.splice(insertAt, 0, {
+          id,
+          name,
+          visible: true,
+          locked: false,
+          kind: "regular",
+        });
+        return { ...state, layers: nextLayers, activeLayerId: id };
+      });
+      this.paperRenderer.reorderLayers(layerStore.get().layers.map((layer) => layer.id));
+      this.documentManager.syncFromLayerStore(layerStore.get());
+      this.selectionController.clearSelection();
+      this.directSelectController.clearSelection();
 
       const stage = stageStore.get();
-      const ok = await this.paperRenderer.addImportedSvg(svg, {
+      const ok = await this.paperRenderer.addImportedSvg(detail.svg, {
         stageWidth: stage.width,
         stageHeight: stage.height,
-        fillOverride: detail.options.extractcolors ? null : colorStore.get(),
-        snapColors: detail.options.snapToDocumentColors
-          ? documentColorsStore.get()
-          : undefined,
+        skipMerge: true,
       });
       if (!ok) {
         alert("Tracing produced no paths.");

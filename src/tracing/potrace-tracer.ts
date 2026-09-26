@@ -16,12 +16,50 @@
  * - Creates ImageBitmap for potrace
  * - Returns SVG string or null on error
  */
-import {
-  DEFAULT_POTRACE_OPTIONS,
-  MAX_POTRACE_PIXELS,
-  toPotraceWasmOptions,
-  type PotraceTraceOptions,
-} from "../import/image-import";
+type PotraceTraceOptions = {
+  turdsize: number;
+  turnpolicy: number;
+  alphamax: number;
+  opticurve: boolean;
+  opttolerance: number;
+  threshold: number;
+  extractcolors: boolean;
+  posterizelevel: number;
+  posterizationalgorithm: 0 | 1;
+};
+
+const DEFAULT_POTRACE_OPTIONS: PotraceTraceOptions = {
+  turdsize: 2,
+  turnpolicy: 4,
+  alphamax: 1,
+  opticurve: true,
+  opttolerance: 0.2,
+  threshold: 0.5,
+  extractcolors: false,
+  posterizelevel: 4,
+  posterizationalgorithm: 0,
+};
+
+const MAX_POTRACE_PIXELS = 1_200_000;
+
+function toPotraceWasmOptions(options: PotraceTraceOptions): Record<string, unknown> {
+  const opts: Record<string, unknown> = {
+    turdsize: options.turdsize,
+    turnpolicy: options.turnpolicy,
+    alphamax: options.alphamax,
+    opticurve: options.opticurve ? 1 : 0,
+    opttolerance: options.opttolerance,
+    pathonly: false,
+    extractcolors: options.extractcolors,
+  };
+  if (options.extractcolors) {
+    opts.posterizelevel = options.posterizelevel;
+    opts.posterizationalgorithm = options.posterizationalgorithm;
+  } else {
+    opts.threshold = options.threshold;
+  }
+  return opts;
+}
 
 interface TraceBounds {
   x: number;
@@ -79,34 +117,6 @@ export class Tracer {
         return `<svg${nextAttrs} width="${sourceCanvas.width}" height="${sourceCanvas.height}" viewBox="0 0 ${sourceCanvas.width} ${sourceCanvas.height}"><g transform="translate(${bounds.x} ${bounds.y})">`;
       })
       .replace(/<\/svg>\s*$/, "</g></svg>");
-  }
-
-  /**
-   * Trace an arbitrary bitmap (e.g. imported image) with the given potrace options.
-   * Caller is responsible for downscaling oversized sources.
-   */
-  async traceSource(
-    source: ImageBitmapSource,
-    options: Partial<PotraceTraceOptions> = {},
-  ): Promise<string | null> {
-    const merged: PotraceTraceOptions = { ...DEFAULT_POTRACE_OPTIONS, ...options };
-    let imageBitmap: ImageBitmap | null = null;
-    try {
-      imageBitmap = await createImageBitmap(source as ImageBitmapSource);
-      if (imageBitmap.width * imageBitmap.height > MAX_POTRACE_PIXELS) {
-        console.warn(
-          `Skipping trace: raster ${imageBitmap.width}x${imageBitmap.height} exceeds ${MAX_POTRACE_PIXELS} pixels`,
-        );
-        return null;
-      }
-      return await this.potrace(imageBitmap, toPotraceWasmOptions(merged));
-    } catch (error) {
-      console.error("Tracing error:", error);
-      await this.recover?.();
-      return null;
-    } finally {
-      imageBitmap?.close();
-    }
   }
 
   async trace(canvas: HTMLCanvasElement): Promise<string | null> {

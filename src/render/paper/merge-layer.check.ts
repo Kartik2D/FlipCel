@@ -2,6 +2,7 @@
 import paper from "paper";
 import {
   addToLayer,
+  addToLayerSequential,
   mergeJsons,
   paintInsideLayer,
   plainAdopt,
@@ -203,6 +204,17 @@ const PI = Math.PI;
   result.importJSON(out);
   eq("json: red pieces", fills(result, RED).length, 2);
   eq("json: blue pieces", fills(result, BLUE).length, 1);
+}
+
+// 11. stacked painter's order: back fill must not delete the front fill
+{
+  const layer = fresh();
+  const back = rect(0, 0, 100, 100, RED);
+  const front = rect(25, 25, 75, 75, BLUE);
+  addToLayerSequential(layer, [back, front], adopt);
+  eq("stacked: red remains", fills(layer, RED).length, 1);
+  eq("stacked: blue remains", fills(layer, BLUE).length, 1);
+  near("stacked: blue area", area(fills(layer, BLUE)), 2500);
 }
 
 console.log("merge kernel: all checks passed");

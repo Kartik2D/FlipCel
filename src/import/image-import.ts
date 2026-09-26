@@ -1,50 +1,126 @@
 import { hexToRgb, rgbToHex } from "../color/spaces";
 import { normalizeDocumentHex } from "../document/colors";
 
-/** Potrace options used for image import (and defaults for stroke tracing). */
-export type PotraceTraceOptions = {
-  turdsize: number;
-  turnpolicy: number;
-  alphamax: number;
-  opticurve: boolean;
-  opttolerance: number;
-  threshold: number;
-  extractcolors: boolean;
-  posterizelevel: number;
-  posterizationalgorithm: 0 | 1;
-};
+export type VtracerClustering = "watershed";
+export type VtracerHierarchical = "cutout";
+export type VtracerMode = "pixel" | "polygon" | "spline";
+export type VtracerPreset = "cel" | "flat" | "ink";
+export type VtracerOptimize = 0 | 1 | 2;
 
-export type ImageImportOptions = PotraceTraceOptions & {
+export type ImageImportOptions = {
+  clustering: VtracerClustering;
+  hierarchical: VtracerHierarchical;
+  mode: VtracerMode;
+  filterSpeckle: number;
+  colorPrecision: number;
+  layerDifference: number;
+  cornerThreshold: number;
+  lengthThreshold: number;
+  maxIterations: number;
+  spliceThreshold: number;
+  simplify: number;
+  pathPrecision: number;
+  maxColors: number;
+  optimize: VtracerOptimize;
+  binaryThreshold: number;
+  adaptive: boolean;
+  adaptiveWindow: number;
+  adaptiveT: number;
+  watershedDetail: number;
+  useDocPalette: boolean;
   snapToDocumentColors: boolean;
 };
 
-export const DEFAULT_POTRACE_OPTIONS: PotraceTraceOptions = {
-  turdsize: 2,
-  turnpolicy: 4,
-  alphamax: 1,
-  opticurve: true,
-  opttolerance: 0.2,
-  threshold: 0.5,
-  extractcolors: true,
-  posterizelevel: 4,
-  posterizationalgorithm: 0,
-};
-
 export const DEFAULT_IMAGE_IMPORT_OPTIONS: ImageImportOptions = {
-  ...DEFAULT_POTRACE_OPTIONS,
+  clustering: "watershed",
+  hierarchical: "cutout",
+  mode: "spline",
+  filterSpeckle: 6,
+  colorPrecision: 6,
+  layerDifference: 24,
+  cornerThreshold: 60,
+  lengthThreshold: 4,
+  maxIterations: 10,
+  spliceThreshold: 45,
+  simplify: 0.4,
+  pathPrecision: 2,
+  maxColors: 12,
+  optimize: 1,
+  binaryThreshold: 128,
+  adaptive: false,
+  adaptiveWindow: 0,
+  adaptiveT: 15,
+  watershedDetail: 128,
+  useDocPalette: false,
   snapToDocumentColors: false,
 };
 
-export const TURN_POLICY_OPTIONS: { value: number; label: string }[] = [
-  { value: 0, label: "Black" },
-  { value: 1, label: "White" },
-  { value: 2, label: "Left" },
-  { value: 3, label: "Right" },
-  { value: 4, label: "Minority" },
-  { value: 5, label: "Majority" },
-];
+const CEL_PRESET: ImageImportOptions = { ...DEFAULT_IMAGE_IMPORT_OPTIONS };
 
-export const MAX_POTRACE_PIXELS = 1_200_000;
+const FLAT_PRESET: ImageImportOptions = {
+  ...DEFAULT_IMAGE_IMPORT_OPTIONS,
+  filterSpeckle: 14,
+  colorPrecision: 4,
+  layerDifference: 48,
+  cornerThreshold: 80,
+  simplify: 1.2,
+  maxColors: 6,
+  watershedDetail: 72,
+};
+
+const INK_PRESET: ImageImportOptions = {
+  ...DEFAULT_IMAGE_IMPORT_OPTIONS,
+  filterSpeckle: 10,
+  colorPrecision: 3,
+  layerDifference: 64,
+  simplify: 0.8,
+  maxColors: 2,
+  watershedDetail: 40,
+};
+
+export const VTRACER_PRESETS: Record<VtracerPreset, ImageImportOptions> = {
+  cel: CEL_PRESET,
+  flat: FLAT_PRESET,
+  ink: INK_PRESET,
+};
+
+export const MAX_IMPORT_PIXELS = 4_000_000;
+
+export function applyVtracerPreset(
+  preset: VtracerPreset,
+  keep: Pick<ImageImportOptions, "useDocPalette" | "snapToDocumentColors">,
+): ImageImportOptions {
+  return { ...VTRACER_PRESETS[preset], ...keep };
+}
+
+export function toVtracerWasmOptions(
+  options: ImageImportOptions,
+  docPalette: string[] = [],
+): Record<string, unknown> {
+  const wasm: Record<string, unknown> = {
+    clustering: "watershed",
+    hierarchical: "cutout",
+    mode: options.mode,
+    filterSpeckle: options.filterSpeckle,
+    colorPrecision: options.colorPrecision,
+    layerDifference: options.layerDifference,
+    cornerThreshold: options.cornerThreshold,
+    lengthThreshold: options.lengthThreshold,
+    maxIterations: options.maxIterations,
+    spliceThreshold: options.spliceThreshold,
+    pathPrecision: options.pathPrecision,
+    optimize: options.optimize,
+    binaryThreshold: options.binaryThreshold,
+    adaptive: options.adaptive,
+    adaptiveWindow: options.adaptiveWindow,
+    adaptiveT: options.adaptiveT,
+    watershedDetail: options.watershedDetail,
+  };
+  if (options.simplify > 0) wasm.simplify = options.simplify;
+  if (options.maxColors > 0) wasm.maxColors = options.maxColors;
+  if (options.useDocPalette && docPalette.length > 0) wasm.palette = docPalette;
+  return wasm;
+}
 
 export function isImageFile(file: File): boolean {
   // SVGs use the direct import path (no tracer).
@@ -78,14 +154,14 @@ export function pickImageFile(): Promise<File | null> {
   });
 }
 
-/** Decode an image file onto a canvas, downscaling if above potrace's safe size. */
+/** Decode an image file onto a canvas, downscaling if above the wasm-safe size. */
 export async function fileToTraceCanvas(file: File): Promise<HTMLCanvasElement> {
   const bitmap = await createImageBitmap(file);
   try {
     let { width, height } = bitmap;
     const pixels = width * height;
-    if (pixels > MAX_POTRACE_PIXELS) {
-      const scale = Math.sqrt(MAX_POTRACE_PIXELS / pixels);
+    if (pixels > MAX_IMPORT_PIXELS) {
+      const scale = Math.sqrt(MAX_IMPORT_PIXELS / pixels);
       width = Math.max(1, Math.floor(width * scale));
       height = Math.max(1, Math.floor(height * scale));
     }
@@ -100,6 +176,12 @@ export async function fileToTraceCanvas(file: File): Promise<HTMLCanvasElement> 
   } finally {
     bitmap.close();
   }
+}
+
+export function canvasToImageData(canvas: HTMLCanvasElement): ImageData {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not get 2D context");
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
 }
 
 export function nearestDocumentColor(hex: string, palette: string[]): string {
@@ -124,23 +206,4 @@ export function paperColorToHex(color: {
   blue: number;
 }): string {
   return normalizeDocumentHex(rgbToHex(color.red * 255, color.green * 255, color.blue * 255));
-}
-
-export function toPotraceWasmOptions(options: PotraceTraceOptions): Record<string, unknown> {
-  const opts: Record<string, unknown> = {
-    turdsize: options.turdsize,
-    turnpolicy: options.turnpolicy,
-    alphamax: options.alphamax,
-    opticurve: options.opticurve ? 1 : 0,
-    opttolerance: options.opttolerance,
-    pathonly: false,
-    extractcolors: options.extractcolors,
-  };
-  if (options.extractcolors) {
-    opts.posterizelevel = options.posterizelevel;
-    opts.posterizationalgorithm = options.posterizationalgorithm;
-  } else {
-    opts.threshold = options.threshold;
-  }
-  return opts;
 }

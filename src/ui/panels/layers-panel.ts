@@ -1267,6 +1267,16 @@ export class FlipCelLayersPanel extends FloatingPanel {
   /** One-finger touch pan: last point in client coords. */
   private touchPan: { lastX: number; lastY: number; pointerId?: number } | null =
     null;
+  /**
+   * Apple Pencil tap that may need a synthetic click. iPadOS often delivers
+   * pointer events for a pencil but never the click buttons are bound to.
+   */
+  private penTap: {
+    pointerId: number;
+    x: number;
+    y: number;
+    clicked: boolean;
+  } | null = null;
   /** Wrap element currently holding non-passive touch listeners. */
   private layersTouchWrap: HTMLElement | null = null;
 
@@ -1414,6 +1424,55 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
   private onLayersTouchEnd = () => {
     this.touchPan = null;
+  };
+
+  /**
+   * html/body use touch-action: none so the canvas doesn't scroll. iPadOS
+   * Scribble then drops Apple Pencil pointer and click events on that region
+   * unless touchmove is cancelled. Finger taps already work with this.
+   */
+  private onPencilTouchMove = (e: TouchEvent) => {
+    const top = e.composedPath()[0];
+    if (top instanceof Element && top.closest("input, textarea, select")) return;
+    if (e.cancelable) e.preventDefault();
+  };
+
+  private onPenPointerDown = (e: PointerEvent) => {
+    if (e.pointerType !== "pen" || e.button !== 0) return;
+    this.penTap = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, clicked: false };
+  };
+
+  private onPenClick = () => {
+    if (this.penTap) this.penTap.clicked = true;
+  };
+
+  private onPenPointerCancel = (e: PointerEvent) => {
+    if (this.penTap?.pointerId === e.pointerId) this.penTap = null;
+  };
+
+  private penClickControl(e: PointerEvent): HTMLElement | null {
+    const top = e.composedPath().find((n): n is Element => n instanceof Element);
+    if (!top || top.closest("input, textarea, select")) return null;
+    const button = top.closest("button, a");
+    if (button instanceof HTMLButtonElement) return button.disabled ? null : button;
+    if (button instanceof HTMLElement) return button;
+    const row = top.closest(".layer-item");
+    return row instanceof HTMLElement ? row : null;
+  }
+
+  private onPenPointerUp = (e: PointerEvent) => {
+    const tap = this.penTap;
+    if (!tap || tap.pointerId !== e.pointerId) return;
+    const moved =
+      this.rowDrag?.active === true ||
+      Math.hypot(e.clientX - tap.x, e.clientY - tap.y) >= 8;
+    const control = moved ? null : this.penClickControl(e);
+    if (control?.hasAttribute("data-help-suppress-click")) tap.clicked = true;
+    requestAnimationFrame(() => {
+      if (this.penTap === tap) this.penTap = null;
+      if (tap.clicked || !control?.isConnected) return;
+      control.click();
+    });
   };
 
   private bindLayersTouchListeners() {
@@ -2407,6 +2466,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
   connectedCallback() {
     super.connectedCallback();
+    this.addEventListener("touchmove", this.onPencilTouchMove, { capture: true, passive: false });
+    this.addEventListener("pointerdown", this.onPenPointerDown, true);
+    this.addEventListener("pointerup", this.onPenPointerUp, true);
+    this.addEventListener("pointercancel", this.onPenPointerCancel, true);
+    this.addEventListener("click", this.onPenClick, true);
     window.addEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
     window.addEventListener("pointercancel", this.globalFrameDuplicateDragEndHandler);
     window.addEventListener("blur", this.globalFrameDuplicateDragEndHandler);
@@ -2417,6 +2481,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.clearTagResizeListeners();
     this.clearCellLongPress();
     this.unbindLayersTouchListeners();
+    this.removeEventListener("touchmove", this.onPencilTouchMove, { capture: true });
+    this.removeEventListener("pointerdown", this.onPenPointerDown, true);
+    this.removeEventListener("pointerup", this.onPenPointerUp, true);
+    this.removeEventListener("pointercancel", this.onPenPointerCancel, true);
+    this.removeEventListener("click", this.onPenClick, true);
     window.removeEventListener("pointerup", this.globalFrameDuplicateDragEndHandler);
     window.removeEventListener("pointercancel", this.globalFrameDuplicateDragEndHandler);
     window.removeEventListener("blur", this.globalFrameDuplicateDragEndHandler);
@@ -2448,7 +2517,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
     const row = handle.closest<HTMLElement>(".layer-item");
     if (!row) return;
     // Capture on the row: its move/up handlers then receive the whole drag.
-    row.setPointerCapture(e.pointerId);
+    // Assign first so a pencil capture failure still leaves the gesture live.
     this.rowDrag = {
       pointerId: e.pointerId,
       fromIndex: index,
@@ -2457,6 +2526,11 @@ export class FlipCelLayersPanel extends FloatingPanel {
       active: false,
       el: row,
     };
+    try {
+      row.setPointerCapture(e.pointerId);
+    } catch {
+      // Pointer capture can throw for Apple Pencil; moves over the list still hit each row.
+    }
   }
 
   private activateRowDrag() {

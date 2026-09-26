@@ -405,6 +405,15 @@ export class FlipCelFilePanel extends FloatingPanel {
           <div class="row">
             <blocky-button
               flat
+              data-panel-trigger="generate-image-popup"
+              @click=${(e: Event) =>
+                this.emit("generate-image-open", e.currentTarget as HTMLElement)}
+              >Generate Image</blocky-button
+            >
+          </div>
+          <div class="row">
+            <blocky-button
+              flat
               data-panel-trigger="svg-export-popup"
               @click=${(e: Event) =>
                 this.emit("export-svg-open", e.currentTarget as HTMLElement)}

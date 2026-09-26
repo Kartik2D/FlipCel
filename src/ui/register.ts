@@ -27,6 +27,7 @@ import "./panels/auto-morph-popup";
 import "./panels/godot-export-popup";
 import "./panels/svg-export-popup";
 import "./panels/image-import-popup";
+import "./panels/generate-image-popup";
 import "./panels/svg-import-popup";
 import "./panels/help-popup";
 
@@ -60,6 +61,7 @@ export { FlipCelAutoMorphPopup } from "./panels/auto-morph-popup";
 export { FlipCelGodotExportPopup } from "./panels/godot-export-popup";
 export { FlipCelSvgExportPopup } from "./panels/svg-export-popup";
 export { FlipCelImageImportPopup } from "./panels/image-import-popup";
+export { FlipCelGenerateImagePopup } from "./panels/generate-image-popup";
 export { FlipCelSvgImportPopup } from "./panels/svg-import-popup";
 
 declare global {
@@ -91,6 +93,7 @@ declare global {
     "flipcel-godot-export-popup": import("./panels/godot-export-popup").FlipCelGodotExportPopup;
     "flipcel-svg-export-popup": import("./panels/svg-export-popup").FlipCelSvgExportPopup;
     "flipcel-image-import-popup": import("./panels/image-import-popup").FlipCelImageImportPopup;
+    "flipcel-generate-image-popup": import("./panels/generate-image-popup").FlipCelGenerateImagePopup;
     "flipcel-svg-import-popup": import("./panels/svg-import-popup").FlipCelSvgImportPopup;
   }
 }
