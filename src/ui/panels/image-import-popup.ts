@@ -42,6 +42,7 @@ export class FlipCelImageImportPopup extends FloatingPanel {
     :host {
       --panel-width: 640px;
       --panel-min-width: 420px;
+      height: min(560px, calc(100vh - 16px));
       font-size: 12px;
     }
 
@@ -362,6 +363,12 @@ export class FlipCelImageImportPopup extends FloatingPanel {
       }
       raisePanelZIndex(this);
       this.playShowAnimation();
+      // Pin a height so `.face` is a real scrollport (auto-height + max-height
+      // otherwise grows with content and the face scrollbar never appears).
+      if (this.blockHeight == null) {
+        const h = this.getBoundingClientRect().height;
+        if (h > 0) this.blockHeight = Math.round(h);
+      }
     };
     requestAnimationFrame(place);
 
@@ -825,7 +832,6 @@ export class FlipCelImageImportPopup extends FloatingPanel {
                 )}
               </div>
             </details>
-          </div>
           <blocky-button
             flat
             accent
