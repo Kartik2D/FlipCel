@@ -2710,11 +2710,15 @@ export class PaperRenderer {
   }
 
   /** Recolor a shape. Symbol instances are not recolorable (no-op). */
-  setItemFillColor(item: paper.Item, color: string): void {
+  setItemFillColor(item: paper.Item, color: string, redraw = true): void {
     if (!item.parent) return;
     if (!(item instanceof paper.Path || item instanceof paper.CompoundPath)) return;
     this.markItemLayerDirty(item);
     this.applyPathStyle(item, new paper.Color(color));
+    if (redraw) paper.view.update();
+  }
+
+  updateView(): void {
     paper.view.update();
   }
 

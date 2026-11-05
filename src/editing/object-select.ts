@@ -325,6 +325,12 @@ export class SelectionController {
     this.drawUI();
   }
 
+  /** Block marquee revert during a live edit. Does not republish or redraw. */
+  pinLiveEdit(): void {
+    if (!this.hasSelection()) return;
+    this.noteLiveEditStarted();
+  }
+
   markSelectionAsModified(): void {
     if (!this.hasSelection()) return;
     this.noteLiveEditStarted();

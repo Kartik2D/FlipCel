@@ -13,18 +13,6 @@ export abstract class BaseColorPicker extends LitElement {
   protected abstract syncFromColor(hex: string): void;
   protected abstract getColorFromState(): string;
 
-  protected emitChange() {
-    this.color = this.getColorFromState();
-    this.dispatchEvent(
-      new CustomEvent("input", {
-        detail: { value: this.color },
-        bubbles: true,
-        composed: true,
-      })
-    );
-    this.requestUpdate();
-  }
-
   protected emitChangeEnd() {
     this.dispatchEvent(
       new CustomEvent("change", {
@@ -53,16 +41,21 @@ export abstract class BaseColorPicker extends LitElement {
         });
       }
     };
+    let ended = false;
     const up = () => {
+      if (ended) return;
+      ended = true;
       if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      this._isDragging = false;
+      window.removeEventListener("pointercancel", up);
       if (lastEv) onUpdate(lastEv);
-      this.emitChangeEnd();
+      this._isDragging = false;
       onEnd?.();
+      this.emitChangeEnd();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   }
 }

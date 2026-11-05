@@ -1068,6 +1068,15 @@ export class DocumentManager {
     return { ref: top.ref, timeline: top.saved };
   }
 
+  /**
+   * Parent instances are baked when edit starts. Rebuild after a commit so
+   * they show the symbol you are drawing, without leaving the edit.
+   */
+  refreshSymbolEditBackdrop(): void {
+    if (this.contextStack.length === 0) return;
+    this.syncContextBackdrop();
+  }
+
   /** Rebuild (or clear) the renderer's in-place backdrop from the context stack. */
   private syncContextBackdrop(): void {
     if (this.contextStack.length === 0) {

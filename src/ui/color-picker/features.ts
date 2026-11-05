@@ -385,13 +385,14 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
             .prevColor=${this.prevColor}
             .prefs=${prefs}
             @input=${(e: CustomEvent<{ value: string }>) => {
-              this.color = e.detail.value;
-              colorStore.set(this.color);
-              this.emitPickerColor(this.color, false);
+              this.emitPickerColor(e.detail.value, false);
             }}
-            @change=${() => {
-              prevColorStore.set(this.color);
-              this.emitPickerColor(this.color, true);
+            @change=${(e: CustomEvent<{ value: string }>) => {
+              const color = e.detail.value;
+              this.color = color;
+              colorStore.set(color);
+              prevColorStore.set(color);
+              this.emitPickerColor(color, true);
             }}
           ></generic-color-picker>
         </div>

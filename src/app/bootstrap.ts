@@ -1470,20 +1470,23 @@ class App {
     return true;
   }
 
+  /** One view paint for the whole selection. History and selection chrome wait until pointer-up. */
+  private paintSelectionColor(color: string): boolean {
+    const items = selectionStore.get().items.filter((item) => item.parent);
+    if (items.length === 0) return false;
+    for (const item of items) this.paperRenderer.setItemFillColor(item, color, false);
+    this.paperRenderer.updateView();
+    this.selectionController.pinLiveEdit();
+    return true;
+  }
+
   private onColorPickerChange(color: string) {
     if (this.applyOnionPopupColor(color)) return;
     if (this.colorPopupSession === "stage" || stageSelectedStore.get()) {
       stageStore.update((s) => ({ ...s, color }));
       return;
     }
-    const items = selectionStore.get().items.filter((item) => item.parent);
-    if (items.length === 0) return;
-    for (const item of items) {
-      this.paperRenderer.setItemFillColor(item, color);
-    }
-    // Keep marquee/EMF selections from reverting on deselect (same as flip/transform).
-    this.selectionController.markSelectionAsModified();
-    if (toolStore.get() === "direct-select") this.directSelectController.drawUI();
+    this.paintSelectionColor(color);
   }
 
   private onColorPickerChangeEnd(color: string) {
@@ -1494,12 +1497,10 @@ class App {
       this.historyManager.snapshot();
       return;
     }
-    const items = selectionStore.get().items.filter((item) => item.parent);
-    if (items.length === 0) return;
-    for (const item of items) {
-      this.paperRenderer.setItemFillColor(item, color);
-    }
+    if (!this.paintSelectionColor(color)) return;
+    // Keep marquee/EMF selections from reverting on deselect (same as flip/transform).
     this.selectionController.markSelectionAsModified();
+    if (toolStore.get() === "direct-select") this.directSelectController.drawUI();
     this.historyManager.snapshot();
   }
 

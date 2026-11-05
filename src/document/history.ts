@@ -80,6 +80,7 @@ export class HistoryManager {
     const layerState = layerStore.get();
     this.doc.syncFromLayerStore(layerState);
     this.doc.commitDirtyLayerContent();
+    this.doc.refreshSymbolEditBackdrop();
 
     // Truncate any redo entries (we're starting a new branch)
     this.stack = this.stack.slice(0, this.index + 1);

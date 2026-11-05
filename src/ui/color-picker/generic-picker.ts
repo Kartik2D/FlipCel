@@ -1,5 +1,5 @@
-import { html, css } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { html, css, type PropertyValues } from "lit";
+import { customElement, property } from "lit/decorators.js";
 import {
   getColorSpaceAdapter,
   valuesToHex,
@@ -19,7 +19,7 @@ import { pickerVars, handleStyles, sliderColumnStyles } from "./styles";
 export class GenericColorPicker extends BaseColorPicker {
   @property({ type: Object }) prefs!: ColorPanelPrefs;
 
-  @state() private values: ChannelValues = {};
+  private values: ChannelValues = {};
   private canvas: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
   private planeResizeObserver: ResizeObserver | null = null;
@@ -27,8 +27,12 @@ export class GenericColorPicker extends BaseColorPicker {
      Keeps drawPlane cheap even for expensive OK* conversions on every slider
      tick while still looking smooth at typical panel sizes. */
   private static readonly PLANE_RES = 192;
+  /* ponytail: OK* is a full gamut solve per pixel. 64px, CSS-scaled. Raise if the field bands. */
+  private static readonly OK_PLANE_RES = 64;
   private drawRaf: number | null = null;
   private lastPlaneSignature = "";
+  /** Last hex already sent for this drag, so identical samples skip the app. */
+  private liveHex = "";
 
   static styles = [pickerVars, handleStyles, sliderColumnStyles, css`
     :host {
@@ -46,6 +50,7 @@ export class GenericColorPicker extends BaseColorPicker {
       min-width: 0;
       min-height: 0;
       align-items: stretch;
+      touch-action: none;
     }
 
     .plane-area {
@@ -142,10 +147,15 @@ export class GenericColorPicker extends BaseColorPicker {
     }
   }
 
+  protected override willUpdate(changed: PropertyValues) {
+    if (changed.has("prefs") || (changed.has("color") && !this._isDragging)) {
+      this.syncFromColor(this.color);
+    }
+  }
+
   firstUpdated() {
     this.ensureCanvas();
     this.setupPlaneResizeObserver();
-    this.syncFromColor(this.color);
     this.syncPlaneCanvasSize();
   }
 
@@ -155,11 +165,7 @@ export class GenericColorPicker extends BaseColorPicker {
       this.lastPlaneSignature = "";
       this.setupPlaneResizeObserver();
     }
-    if (changed.has("color") && !this._isDragging) {
-      this.syncFromColor(this.color);
-    }
-    if (changed.has("prefs")) this.syncFromColor(this.color);
-    if ((changed.has("color") && !this._isDragging) || changed.has("prefs")) {
+    if (changed.has("prefs") || (changed.has("color") && !this._isDragging)) {
       this.syncPlaneCanvasSize();
     }
   }
@@ -191,9 +197,16 @@ export class GenericColorPicker extends BaseColorPicker {
    * element's CSS size. This trades pixel-perfect sharpness (unneeded on a
    * smooth colour gradient) for a ~10× speed-up on every slider tick.
    */
+  private planeResolution(): number {
+    const space = this.prefs?.space;
+    return space === "okhsl" || space === "okhsv"
+      ? GenericColorPicker.OK_PLANE_RES
+      : GenericColorPicker.PLANE_RES;
+  }
+
   private syncPlaneCanvasSize() {
     if (!this.canvas || !this.ctx) return;
-    const size = GenericColorPicker.PLANE_RES;
+    const size = this.planeResolution();
     if (this.canvas.width !== size || this.canvas.height !== size) {
       this.canvas.width = size;
       this.canvas.height = size;
@@ -334,6 +347,47 @@ export class GenericColorPicker extends BaseColorPicker {
 
   // --- Interaction ---
 
+  /**
+   * Move handles and the current swatch without a Lit render.
+   * Slider drags keep the gradient (it doesn't depend on the dragged channel).
+   */
+  private paintLive(fromSlider: boolean) {
+    const hex = this.getColorFromState();
+    const current = this.renderRoot.querySelector(".color-half:last-child") as HTMLElement | null;
+    if (current) current.style.background = hex;
+
+    const pos = this.prefs.geometry === "square" ? this.squareHandle() : this.circleHandle();
+    const handle = this.renderRoot.querySelector(".handle") as HTMLElement | null;
+    if (handle) {
+      handle.style.left = `${pos.left}%`;
+      handle.style.top = `${pos.top}%`;
+    }
+
+    const sid = this.sliderId();
+    if (sid) {
+      const sh = this.renderRoot.querySelector(".s-handle") as HTMLElement | null;
+      if (sh) sh.style.top = `${this.sliderTop(sid)}%`;
+      if (!fromSlider) {
+        const grad = this.renderRoot.querySelector(".s-gradient") as HTMLElement | null;
+        if (grad) grad.style.background = this.sliderGradient(sid);
+      }
+    }
+
+    if (hex === this.liveHex) return;
+    this.liveHex = hex;
+    this.dispatchEvent(
+      new CustomEvent("input", {
+        detail: { value: hex },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  private finishDrag() {
+    this.color = this.getColorFromState();
+  }
+
   private handleSquareDown(e: PointerEvent) {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const adapter = this.getAdapter();
@@ -347,9 +401,10 @@ export class GenericColorPicker extends BaseColorPicker {
         [planeX]: mx.min + u * (mx.max - mx.min),
         [planeY]: my.max - v * (my.max - my.min),
       });
-      this.emitChange();
+      this.paintLive(false);
     };
-    this.startDrag(e, update);
+    this.liveHex = this.color;
+    this.startDrag(e, update, () => this.finishDrag());
   }
 
   private handleCircleDown(e: PointerEvent) {
@@ -367,9 +422,10 @@ export class GenericColorPicker extends BaseColorPicker {
       const vx = mx.cyclic ? angleDeg : mx.min + (angleDeg / 360) * (mx.max - mx.min);
       const vy = my.min + t * (my.max - my.min);
       this.values = clampChannelValues(adapter, { ...this.values, [planeX]: vx, [planeY]: vy });
-      this.emitChange();
+      this.paintLive(false);
     };
-    this.startDrag(e, update);
+    this.liveHex = this.color;
+    this.startDrag(e, update, () => this.finishDrag());
   }
 
   private handleSliderDown(e: PointerEvent) {
@@ -380,10 +436,12 @@ export class GenericColorPicker extends BaseColorPicker {
     const update = (ev: PointerEvent) => {
       const v = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height));
       this.values = clampChannelValues(adapter, { ...this.values, [sid]: m.max - v * (m.max - m.min) });
-      this.emitChange();
-      this.scheduleDrawPlane();
+      const prev = this.liveHex;
+      this.paintLive(true);
+      if (this.liveHex !== prev) this.scheduleDrawPlane();
     };
-    this.startDrag(e, update);
+    this.liveHex = this.color;
+    this.startDrag(e, update, () => this.finishDrag());
   }
 
   // --- Handle positioning ---
