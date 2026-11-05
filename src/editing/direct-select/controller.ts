@@ -801,7 +801,7 @@ export class DirectSelectController {
       return;
     }
 
-    const shapeHit = this.paperRenderer.resolveSelectableItem(
+    const shapeHit = this.paperRenderer.resolveSelectablePath(
       this.paperRenderer.hitTestSelectable(viewportPoint),
     );
     if (shapeHit) {

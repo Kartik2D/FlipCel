@@ -2,9 +2,9 @@
  * Selection Controller
  *
  * Manages the selection tool state and interactions.
- * Hold or double-click / double-tap a shape to select it (mouse and touch).
- * Drag always marquees (rect/lasso) unless something is already selected —
- * then click-drag moves / transforms it. Touch drag before hold pans.
+ * Click a shape or symbol to select it. Drag marquees (rect/lasso).
+ * Click-drag on an already selected item moves / transforms it.
+ * Touch drag before the gesture starts pans.
  */
 import type { Point, CanvasConfig } from "../geometry/types";
 import type {
@@ -28,6 +28,10 @@ import {
 import { pixelToViewport } from "../geometry/coords";
 import { LassoQuickShapeSession } from "../geometry/quick-shape";
 import { MarqueeTracker } from "./marquee";
+import {
+  isSymbolInstance,
+  type SymbolInstanceGroup,
+} from "../render/paper/symbol-instances";
 import {
   isAddToSelectionModifierHeld,
   isConstrainMoveModifierHeld,
@@ -55,9 +59,8 @@ export class SelectionController {
   private dragPastThreshold = false;
 
   /**
-   * Last click on an unselected shape. A second press within
-   * `doubleClickWindowMs` / `doubleClickDistanceSq` selects that shape.
-   * Single click / drag on unselected content always starts a marquee.
+   * Last click that selected a symbol instance. A second press within
+   * `doubleClickWindowMs` / `doubleClickDistanceSq` edits it in place.
    */
   private lastShapeClick: {
     timestampMs: number;
@@ -71,8 +74,8 @@ export class SelectionController {
   private layerScope: SelectLayerScope = "all";
   private hideGizmoWhileMoving = false;
   private lassoQuickShape = new LassoQuickShapeSession();
-  private selectedItems: paper.PathItem[] = [];
-  private pendingExtractionSnapshot: Map<string, paper.PathItem[]> | null = null;
+  private selectedItems: paper.Item[] = [];
+  private pendingExtractionSnapshot: Map<string, paper.Item[]> | null = null;
   private isDragging = false;
   private dragStartPoint: Point | null = null;
   private lastAppliedWorld: Point = { x: 0, y: 0 };
@@ -84,6 +87,7 @@ export class SelectionController {
   private onSnapshot?: () => void;
   private onLiveEditStart?: () => void;
   private onActivateLayer?: (layerId: string) => void;
+  private onEnterInstance?: (instance: SymbolInstanceGroup) => void;
 
   private paperRenderer: PaperRenderer;
   private camera: Camera;
@@ -94,6 +98,8 @@ export class SelectionController {
   private handles: SelectionHandle[] = [];
   private marquee = new MarqueeTracker();
   private transformGizmo: TransformGizmoController;
+  /** Symbol instance whose pivot handle is being dragged. */
+  private pivotDragItem: paper.Item | null = null;
 
   // Current cursor in viewport space (for rotation visual feedback)
   private lastViewportPoint: Point | null = null;
@@ -176,16 +182,21 @@ export class SelectionController {
     this.onActivateLayer = callback;
   }
 
+  /** Double-tap on a selected symbol instance (edit in place). */
+  setEnterInstanceCallback(callback: (instance: SymbolInstanceGroup) => void): void {
+    this.onEnterInstance = callback;
+  }
+
   getSelectedItem(): paper.Item | null {
     return this.selectedItems[0] ?? null;
   }
 
-  getSelectedItems(): paper.PathItem[] {
+  getSelectedItems(): paper.Item[] {
     return [...this.selectedItems];
   }
 
   setSelectedItems(
-    items: paper.PathItem[],
+    items: paper.Item[],
     options?: { needsPlacement?: boolean; didMove?: boolean },
   ): void {
     this.selectedItems = [...items];
@@ -202,11 +213,11 @@ export class SelectionController {
    * Clones are parked off-layer during place so merge can't eat them, and
    * selectionStore never pulses empty (that cancels the functions-panel drag).
    */
-  duplicateSelection(offsetX: number, offsetY: number): paper.PathItem[] {
+  duplicateSelection(offsetX: number, offsetY: number): paper.Item[] {
     const sources = this.selectedItems.filter((item) => item.parent);
     if (sources.length === 0) return [];
 
-    const parked: { clone: paper.PathItem; parent: paper.Item }[] = [];
+    const parked: { clone: paper.Item; parent: paper.Item }[] = [];
     for (const item of sources) {
       const clone = this.paperRenderer.duplicateItem(item, offsetX, offsetY);
       if (!clone?.parent) continue;
@@ -225,7 +236,7 @@ export class SelectionController {
     }
     this.pendingExtractionSnapshot = null;
 
-    const duplicates: paper.PathItem[] = [];
+    const duplicates: paper.Item[] = [];
     for (const { clone, parent } of parked) {
       parent.addChild(clone);
       duplicates.push(clone);
@@ -327,13 +338,22 @@ export class SelectionController {
     this.selectionNeedsPlacement = false;
   }
 
-  handleStart(point: Point, options?: { fromTouchHold?: boolean }): void {
+  handleStart(point: Point): void {
     const viewportPoint = pixelToViewport(point, this.config);
-    const fromTouchHold = options?.fromTouchHold === true;
 
     // Check transform handles on existing selection first
     if (this.hasSelection() && this.handles.length > 0) {
       const hitHandle = this.hitTestHandle(viewportPoint);
+      if (hitHandle === "pivot") {
+        // Symbol instance pivot: drag relocates the transform origin only.
+        this.lastShapeClick = null;
+        this.pivotDragItem = this.selectedItems[0] ?? null;
+        this.isDragging = true;
+        this.dragStartPoint = viewportPoint;
+        this.beginDragThreshold(viewportPoint);
+        this.didMove = false;
+        return;
+      }
       if (hitHandle && this.transformGizmo.begin(hitHandle, viewportPoint, this.camera)) {
         this.lastShapeClick = null;
         this.isDragging = true;
@@ -350,7 +370,22 @@ export class SelectionController {
 
     // Already-selected shape: click-drag moves the selection.
     if (initialHitItem && this.isSelectedItem(initialHitItem)) {
-      this.lastShapeClick = null;
+      // Double-tap a selected symbol instance: edit it in place.
+      if (this.onEnterInstance && isSymbolInstance(initialHitItem)) {
+        const now = performance.now();
+        if (this.isDoubleClickOnShape(viewportPoint, initialHitItem.id, now)) {
+          this.lastShapeClick = null;
+          this.onEnterInstance(initialHitItem);
+          return;
+        }
+        this.lastShapeClick = {
+          timestampMs: now,
+          point: { ...viewportPoint },
+          itemId: initialHitItem.id,
+        };
+      } else {
+        this.lastShapeClick = null;
+      }
       this.activateLayerForItem(initialHitItem);
       this.isDragging = true;
       this.dragStartPoint = viewportPoint;
@@ -361,44 +396,10 @@ export class SelectionController {
       return;
     }
 
-    const hitItem = initialHitItem;
+    if (!initialHitItem) this.lastShapeClick = null;
 
-    // Hold or double-click / double-tap on an unselected shape selects it.
-    if (hitItem) {
-      const now = performance.now();
-      const shouldSelectShape =
-        fromTouchHold || this.isDoubleClickOnShape(viewportPoint, hitItem.id, now);
-      if (shouldSelectShape) {
-        this.lastShapeClick = null;
-        const selectItem =
-          this.paperRenderer.resolveSelectableItem(
-            this.paperRenderer.hitTestSelectable(viewportPoint, this.layerScope),
-          ) ?? hitItem;
-        this.activateLayerForItem(selectItem);
-        if (isAddToSelectionModifierHeld(modifiersStore.get())) {
-          this.addItemToSelection(selectItem);
-        } else {
-          this.resolvePendingSelectionForNewGesture();
-          this.setSelectedItems([selectItem]);
-        }
-        this.isDragging = true;
-        this.dragStartPoint = viewportPoint;
-        this.beginDragThreshold(viewportPoint);
-        this.didMove = false;
-        this.bringSelectionToFront();
-        this.drawUI();
-        return;
-      }
-      this.lastShapeClick = {
-        timestampMs: now,
-        point: { ...viewportPoint },
-        itemId: hitItem.id,
-      };
-    } else {
-      this.lastShapeClick = null;
-    }
-
-    // Single click / drag on empty space or an unselected shape: marquee only.
+    // Press on empty space or an unselected shape: marquee until release.
+    // A tap (no drag) selects on pointer-up. A drag stays a marquee.
     // Defer placing/clearing the current selection until pointer-up so a tap
     // outside can deselect without a tiny jitter re-extracting the same shapes.
     this.startMarquee(viewportPoint);
@@ -435,7 +436,21 @@ export class SelectionController {
       return;
     }
 
-    if (this.transformGizmo.isTransforming()) {
+    if (this.pivotDragItem) {
+      const snapped = snapScreenPoint(
+        viewportPoint,
+        this.camera,
+        this.paperRenderer,
+        new Set<number>(),
+        undefined,
+        [],
+        false,
+      );
+      this.snapGuides = snapped.guides;
+      const world = this.camera.screenToWorld(snapped.screen.x, snapped.screen.y);
+      this.paperRenderer.setInstancePivotWorld(this.pivotDragItem, world);
+      this.noteLiveEditStarted();
+    } else if (this.transformGizmo.isTransforming()) {
       let vp = viewportPoint;
       if (this.transformGizmo.getActiveHandle() !== "rotate") {
         const snapped = snapScreenPoint(
@@ -475,7 +490,7 @@ export class SelectionController {
       }
       if (this.hasActiveMarquee()) {
         const add = isAddToSelectionModifierHeld(modifiersStore.get());
-        let kept: paper.PathItem[] = [];
+        let kept: paper.Item[] = [];
         if (add && this.selectedItems.length > 0) {
           // Commit prior selection but keep survivors so the new extract unions in.
           if (this.selectionNeedsPlacement || this.didMove) {
@@ -497,7 +512,7 @@ export class SelectionController {
         const keptIds = new Set(kept.map((item) => item.id));
         const itemFilter =
           keptIds.size > 0
-            ? (item: paper.PathItem) => !keptIds.has(item.id)
+            ? (item: paper.Item) => !keptIds.has(item.id)
             : undefined;
         const extracted =
           this.selectionShape === "lasso"
@@ -512,7 +527,7 @@ export class SelectionController {
                 this.layerScope,
                 itemFilter,
               );
-        const byId = new Map<number, paper.PathItem>();
+        const byId = new Map<number, paper.Item>();
         for (const item of kept) byId.set(item.id, item);
         for (const item of extracted) byId.set(item.id, item);
         this.selectedItems = [...byId.values()];
@@ -524,15 +539,36 @@ export class SelectionController {
         }
         selectionStore.set({ items: [...this.selectedItems] });
       } else {
-        // Tap outside / on an unselected shape: deselect only.
-        // With add-to-selection held, keep the current selection.
+        // Tap: select the shape or symbol under the pointer. Empty space deselects.
+        // Shift-click adds. A drag never reaches here — that stays a marquee.
+        const hitItem = this.paperRenderer.resolveSelectableItem(
+          this.paperRenderer.hitTestSelectable(marqueeStartPoint, this.layerScope),
+        );
         this.lassoQuickShape.reset();
         this.marquee.reset();
         this.isDragging = false;
         this.dragStartPoint = null;
         this.resetDragThreshold();
         this.clearTransformState();
-        if (!isAddToSelectionModifierHeld(modifiersStore.get())) {
+        const add = isAddToSelectionModifierHeld(modifiersStore.get());
+        if (hitItem) {
+          this.activateLayerForItem(hitItem);
+          if (add) this.addItemToSelection(hitItem);
+          else {
+            this.resolvePendingSelectionForNewGesture();
+            this.setSelectedItems([hitItem]);
+          }
+          if (this.onEnterInstance && isSymbolInstance(hitItem)) {
+            this.lastShapeClick = {
+              timestampMs: performance.now(),
+              point: { ...marqueeStartPoint },
+              itemId: hitItem.id,
+            };
+          } else {
+            this.lastShapeClick = null;
+          }
+          this.drawUI();
+        } else if (!add) {
           this.clearSelection();
         } else {
           this.drawUI();
@@ -698,6 +734,7 @@ export class SelectionController {
 
   private clearTransformState(): void {
     this.transformGizmo.reset();
+    this.pivotDragItem = null;
     this.lastViewportPoint = null;
   }
 
@@ -774,8 +811,8 @@ export class SelectionController {
   }
 
   /** Union `item` into the current selection, committing any pending extract first. */
-  private addItemToSelection(item: paper.PathItem): void {
-    let kept: paper.PathItem[] = [];
+  private addItemToSelection(item: paper.Item): void {
+    let kept: paper.Item[] = [];
     if (this.selectedItems.length > 0) {
       if (this.selectionNeedsPlacement || this.didMove) {
         kept = this.paperRenderer.placeItemsAsSelection(this.selectedItems);
@@ -806,7 +843,7 @@ export class SelectionController {
     selectionStore.set({ items: [] });
   }
 
-  private activateLayerForItem(item: paper.PathItem): void {
+  private activateLayerForItem(item: paper.Item): void {
     const layerId = this.paperRenderer.getLayerIdForPathItem(item);
     if (layerId) this.onActivateLayer?.(layerId);
   }

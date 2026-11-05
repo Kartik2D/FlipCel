@@ -187,8 +187,13 @@ export class HistoryManager {
   private gcContent(): void {
     const referenced = new Set<string>();
     for (const entry of this.stack) {
-      for (const track of entry.doc.tracks) {
+      for (const track of entry.doc.root.tracks) {
         for (const kf of track.keyframes) referenced.add(kf.contentId);
+      }
+      for (const sym of Object.values(entry.doc.symbols)) {
+        for (const track of sym.tracks) {
+          for (const kf of track.keyframes) referenced.add(kf.contentId);
+        }
       }
     }
     this.doc.gcContent(referenced);

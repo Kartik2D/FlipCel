@@ -15,6 +15,7 @@ import type {
   FlipCelHistoryPanel,
   FlipCelKeyboardShortcutsPanel,
   FlipCelViewPanel,
+  FlipCelLibraryPanel,
   FlipCelTopBarPanel,
   FlipCelLayersPanel,
   FlipCelWheelPanel,
@@ -45,6 +46,7 @@ export type PanelBridgeDeps = {
   historyPanel: FlipCelHistoryPanel;
   keyboardShortcutsPanel: FlipCelKeyboardShortcutsPanel;
   viewPanel: FlipCelViewPanel;
+  libraryPanel: FlipCelLibraryPanel;
   topBarPanel: FlipCelTopBarPanel;
   layersPanel: FlipCelLayersPanel;
   wheelPanel: FlipCelWheelPanel;
@@ -129,6 +131,12 @@ export type PanelBridgeDeps = {
     start: number,
     end: number,
   ) => void;
+  onFramesToSymbol: (
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+  ) => void;
   onEditMultipleFramesToggle: (
     enabled: boolean,
     layerIds: string[] | undefined,
@@ -159,6 +167,12 @@ export type PanelBridgeDeps = {
   onLayerReorder: (order: string[], movedId: string) => void;
   onLayerRename: (id: string, name: string) => void;
   onLayerMergeDown: (layerId: string) => void;
+  onSymbolPlace: (id: string, client?: { x: number; y: number }) => void;
+  onSymbolEdit: (id: string) => void;
+  onSymbolRename: (id: string, name: string) => void;
+  onSymbolDuplicate: (id: string) => void;
+  onSymbolDelete: (id: string) => void;
+  onExitSymbolTo: (depth: number) => void;
   onFunctionInvoke: (id: string) => void;
   onFunctionDragStart: (id: string) => void;
   onFunctionDragMove: (id: string, dx: number, dy: number) => void;
@@ -176,6 +190,7 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     historyPanel,
     keyboardShortcutsPanel,
     viewPanel,
+    libraryPanel,
     topBarPanel,
     layersPanel,
     wheelPanel,
@@ -252,6 +267,9 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
       e as CustomEvent<{ which: "prev" | "next"; anchor: HTMLElement }>
     ).detail;
     deps.openOnionSkinColorPicker(which, anchor);
+  });
+  topBarPanel.addEventListener("context-exit-to", (e: Event) => {
+    deps.onExitSymbolTo((e as CustomEvent<number>).detail);
   });
   topBarPanel.addEventListener("zoom-reset", () => deps.onDockZoomReset());
   topBarPanel.addEventListener("mode-cycle", () => deps.onModeCycle());
@@ -352,6 +370,12 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
     ).detail;
     deps.onFramesReverse(layerIds, layerId, start, end);
   });
+  layersPanel.addEventListener("frames-to-symbol", (e: Event) => {
+    const { layerId, layerIds, start, end } = (
+      e as CustomEvent<FrameRangeDetail>
+    ).detail;
+    deps.onFramesToSymbol(layerIds, layerId, start, end);
+  });
   layersPanel.addEventListener("frames-edit-multiple", (e: Event) => {
     const { enabled, layerId, layerIds, start, end } = (
       e as CustomEvent<FrameRangeDetail & { enabled: boolean }>
@@ -437,6 +461,27 @@ export function bindPanelEvents(deps: PanelBridgeDeps): void {
       e as CustomEvent<{ order: string[]; movedId: string }>
     ).detail;
     deps.onLayerReorder(order, movedId);
+  });
+  libraryPanel.addEventListener("symbol-place", (e: Event) => {
+    const detail = (e as CustomEvent<{ id: string; clientX?: number; clientY?: number }>).detail;
+    const client =
+      detail.clientX != null && detail.clientY != null
+        ? { x: detail.clientX, y: detail.clientY }
+        : undefined;
+    deps.onSymbolPlace(detail.id, client);
+  });
+  libraryPanel.addEventListener("symbol-edit", (e: Event) => {
+    deps.onSymbolEdit((e as CustomEvent<{ id: string }>).detail.id);
+  });
+  libraryPanel.addEventListener("symbol-rename", (e: Event) => {
+    const { id, name } = (e as CustomEvent<{ id: string; name: string }>).detail;
+    deps.onSymbolRename(id, name);
+  });
+  libraryPanel.addEventListener("symbol-duplicate", (e: Event) => {
+    deps.onSymbolDuplicate((e as CustomEvent<{ id: string }>).detail.id);
+  });
+  libraryPanel.addEventListener("symbol-delete", (e: Event) => {
+    deps.onSymbolDelete((e as CustomEvent<{ id: string }>).detail.id);
   });
   layersPanel.addEventListener("layer-rename", (e: Event) => {
     const { id, name } = (e as CustomEvent<{ id: string; name: string }>).detail;

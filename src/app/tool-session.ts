@@ -324,11 +324,7 @@ export class ToolSession {
     }
   }
 
-  onToolStart(
-    point: Point,
-    tool: ToolId,
-    options?: { fromTouchHold?: boolean },
-  ): void {
+  onToolStart(point: Point, tool: ToolId): void {
     if (tool === "pan") return;
 
     const { deps } = this;
@@ -391,9 +387,7 @@ export class ToolSession {
 
     if (tool === "select") {
       deps.setSelectionGestureActive(true);
-      deps.selectionController.handleStart(point, {
-        fromTouchHold: options?.fromTouchHold === true,
-      });
+      deps.selectionController.handleStart(point);
       deps.updateFunctionsPanel();
       return;
     }

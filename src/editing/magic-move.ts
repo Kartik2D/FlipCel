@@ -19,6 +19,8 @@ import {
   selectionStore,
   magicMoveUiStore,
   layerStore,
+  isPathItem,
+  pathItemsOf,
 } from "../state/index";
 import { pixelToViewport } from "../geometry/coords";
 import { MarqueeTracker } from "./marquee";
@@ -238,7 +240,7 @@ export class MagicMoveController {
 
   private phase: Phase = "select";
   private groups: MagicMoveGroup[] = [];
-  private pendingExtractionSnapshot: Map<string, paper.PathItem[]> | null =
+  private pendingExtractionSnapshot: Map<string, paper.Item[]> | null =
     null;
   private selectionNeedsPlacement = false;
 
@@ -1139,10 +1141,13 @@ export class MagicMoveController {
     const scope = this.readSettings().scope;
     this.pendingExtractionSnapshot =
       this.paperRenderer.captureSelectableLayersSnapshot(scope);
-    const items = this.paperRenderer.extractSelectionFromScreenLasso(
-      lassoViewportPts,
-      scope,
-      this.activeFrameItemFilter(),
+    // Magic Move bakes path geometry; symbol instances are left alone (v1).
+    const items = pathItemsOf(
+      this.paperRenderer.extractSelectionFromScreenLasso(
+        lassoViewportPts,
+        scope,
+        this.activeFrameItemFilter(),
+      ),
     );
 
     if (items.length === 0) {
@@ -1183,12 +1188,14 @@ export class MagicMoveController {
    * content — across all layers. Held content covering the playhead counts.
    */
   private activeFrameItemFilter():
-    | ((item: paper.PathItem) => boolean)
+    | ((item: paper.Item) => boolean)
     | undefined {
     const dm = this.documentManager;
-    if (!dm?.isEditMultipleFrames()) return undefined;
-    const playhead = dm.getCurrentFrame();
+    const emf = dm?.isEditMultipleFrames() ?? false;
+    const playhead = dm?.getCurrentFrame() ?? 0;
     return (item) => {
+      if (!isPathItem(item)) return false;
+      if (!emf || !dm) return true;
       const layerId = this.paperRenderer.getLayerIdForPathItem(item);
       if (!layerId) return false;
       const tag = this.paperRenderer.getEmfKeyframeFrame(item) ?? playhead;

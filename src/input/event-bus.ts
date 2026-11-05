@@ -83,6 +83,8 @@ export const Events = {
   PLAY_TOGGLE: "timeline:play-toggle",
   /** Delete / Backspace: remove the current selection. */
   DELETE_SELECTION: "edit:delete-selection",
+  /** F8: convert the stage selection into a new symbol. */
+  CONVERT_TO_SYMBOL: "edit:convert-to-symbol",
 } as const;
 
 // Type for event names

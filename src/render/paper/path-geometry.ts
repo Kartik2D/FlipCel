@@ -353,6 +353,32 @@ function covers(cutter: paper.PathItem, target: paper.PathItem): boolean {
   return !!pt && pointIn(cutter, pt);
 }
 
+/**
+ * `item` sits entirely inside `container`. The container's bounding box is
+ * not enough: a slash's box holds the whole drawing. Boolean subtract also
+ * returns empty on a holed compound that is fully inside and has no cut edge.
+ */
+export function fullyInside(container: paper.PathItem, item: paper.PathItem): boolean {
+  if (pathAbsArea(container) + AREA_EPS < pathAbsArea(item)) return false;
+  try {
+    if (item.intersects(container)) return false;
+  } catch {
+    return false;
+  }
+  let saw = false;
+  let ok = true;
+  eachTargetPath(item, (path) => {
+    const pt = getContainmentPoint(path);
+    if (!pt || !pointIn(container, pt)) {
+      ok = false;
+      return false;
+    }
+    saw = true;
+    return true;
+  });
+  return saw && ok;
+}
+
 /** Result of `target − cutter`: new item | provably empty | disjoint | failed. */
 export type Cut = paper.PathItem | "gone" | "unchanged" | null;
 

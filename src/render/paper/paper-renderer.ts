@@ -41,8 +41,10 @@ import {
   forceUniteFamily,
   subtractOf,
   intersectOf,
+  fullyInside,
 } from "./path-geometry";
 import { OnionSkin } from "./onion-skin";
+import { ContextBackdrop, type BackdropLevel } from "./context-backdrop";
 import { extractPaths, flattenGroups, importSVG } from "./svg-io";
 import {
   addToLayer,
@@ -55,8 +57,28 @@ import {
   type MergeAdopt,
 } from "./merge-layer";
 import { createMergeBaker, MergeQueue } from "./merge-queue";
+import type { SymbolInstanceData, SymbolResolver } from "../../document/symbols";
+import {
+  createInstance,
+  hydrateInstance,
+  hydrateLayer,
+  duplicateInstance,
+  instancesOnLayer,
+  instanceRootOf,
+  isSymbolInstance,
+  normalizeInstanceOrder,
+  readInstance,
+  replaceLayerContentKeepingInstances,
+  withInstancesStripped,
+  writeInstance,
+} from "./symbol-instances";
 
 export type { SelectionHandle, SelectionHandleId, MergePassResult } from "./types";
+
+const NULL_SYMBOL_RESOLVER: SymbolResolver = {
+  getSymbol: () => null,
+  getContent: () => "",
+};
 
 /** Select tool layer scope: active layer only, or all unlocked visible layers. */
 export type SelectLayerScope = "active" | "all";
@@ -77,6 +99,8 @@ export class PaperRenderer {
   // frames. Deliberately NOT in layerMap, so layer restore/reorder/flatten
   // logic never treats them as document content.
   private readonly onionSkin = new OnionSkin();
+  /** Edit-in-place parent artwork (dimmed, locked; not in layerMap). */
+  private readonly contextBackdrop = new ContextBackdrop();
 
   // Logical layer IDs → Paper.js layers.
   private layerMap = new Map<string, paper.Layer>();
@@ -99,6 +123,14 @@ export class PaperRenderer {
     onBaked: () => this.onMergeBaked?.(),
   });
   private imageResolver: (assetId: string) => HTMLImageElement | null = () => null;
+  private symbolResolver: SymbolResolver = NULL_SYMBOL_RESOLVER;
+  /**
+   * Frames elapsed since each layer's covering keyframe started (set by the
+   * document before every load) — drives which symbol frame instances show.
+   */
+  private elapsedByLayer = new Map<string, number>();
+  /** Layers whose instances change with the playhead inside a hold. */
+  private animatedInstanceLayers = new Set<string>();
   private lastStageW = 0;
   private lastStageH = 0;
 
@@ -117,6 +149,65 @@ export class PaperRenderer {
 
   setImageResolver(resolver: (assetId: string) => HTMLImageElement | null): void {
     this.imageResolver = resolver;
+  }
+
+  setSymbolResolver(resolver: SymbolResolver): void {
+    this.symbolResolver = resolver;
+    // Onion ghosts show neighbor keyframes at their start (elapsed 0).
+    this.onionSkin.hydrate = (layer) => hydrateLayer(layer, resolver, 0);
+  }
+
+  /** Elapsed frames into the covering keyframe, per layer (before a load). */
+  setLayerElapsed(elapsed: Map<string, number>): void {
+    this.elapsedByLayer = elapsed;
+  }
+
+  private elapsedFor(layerId: string): number {
+    return this.elapsedByLayer.get(layerId) ?? 0;
+  }
+
+  /** Frames since the covering keyframe started on `layerId` (last reload). */
+  getLayerElapsed(layerId: string): number {
+    return this.elapsedFor(layerId);
+  }
+
+  /** Hydrate instances on a Paper layer and track whether they animate. */
+  private hydratePaperLayer(layerId: string, layer: paper.Layer): void {
+    if (instancesOnLayer(layer).length === 0) {
+      this.animatedInstanceLayers.delete(layerId);
+      return;
+    }
+    const animates = hydrateLayer(layer, this.symbolResolver, this.elapsedFor(layerId));
+    if (animates) this.animatedInstanceLayers.add(layerId);
+    else this.animatedInstanceLayers.delete(layerId);
+  }
+
+  /** Re-resolve instance children on a layer (e.g. new elapsed). */
+  rehydrateLayerInstances(layerId: string): void {
+    const layer = this.layerMap.get(layerId);
+    if (!layer) return;
+    this.hydratePaperLayer(layerId, layer);
+  }
+
+  /** Layers whose content id is unchanged but whose instances animate on scrub. */
+  getAnimatedInstanceLayerIds(): string[] {
+    return [...this.animatedInstanceLayers];
+  }
+
+  /** Re-hydrate every layer with instances (symbol content edited / swapped). */
+  rehydrateAllInstances(): void {
+    for (const [id, layer] of this.layerMap) this.hydratePaperLayer(id, layer);
+    paper.view.update();
+  }
+
+  /** Root symbol instance for an item, or null. */
+  instanceOf(item: paper.Item | null): paper.Group | null {
+    return instanceRootOf(item);
+  }
+
+  /** Keep instances above shapes on a layer after a merge pass. */
+  private normalizeInstances(layer: paper.Layer | null | undefined): void {
+    if (layer) normalizeInstanceOrder(layer);
   }
 
   setMergeBakedCallback(callback: (() => void) | null): void {
@@ -197,8 +288,30 @@ export class PaperRenderer {
       }
       scratch.remove();
     }
+    // Instances in an EMF composite: the bucket at the playhead's covering
+    // keyframe shows its true elapsed frame; other buckets show their first.
+    const playhead = this.emfPlayheadFrame;
+    for (const inst of instancesOnLayer(layer)) {
+      const bucket = this.getEmfKeyframeFrame(inst);
+      const elapsed =
+        playhead !== null && bucket !== null && playhead >= bucket
+          ? this.emfElapsedFor(layerId, bucket, playhead)
+          : 0;
+      hydrateInstance(inst, this.symbolResolver, elapsed);
+    }
     this.markerByItemId.clear();
     paper.view.update();
+  }
+
+  /**
+   * Elapsed frames for an EMF bucket: playhead − bucket start when the
+   * playhead sits inside that bucket's span (tracked via `elapsedByLayer`
+   * for the covering keyframe), else 0.
+   */
+  private emfElapsedFor(layerId: string, bucket: number, playhead: number): number {
+    const coveringElapsed = this.elapsedByLayer.get(layerId);
+    if (coveringElapsed === undefined) return 0;
+    return playhead - coveringElapsed === bucket ? coveringElapsed : 0;
   }
 
   /**
@@ -234,7 +347,9 @@ export class PaperRenderer {
       layer.visible = true;
       out.set(
         frame,
-        layer.children.length === 0 ? "" : ((layer.exportJSON() as string) ?? ""),
+        layer.children.length === 0
+          ? ""
+          : withInstancesStripped(layer, () => (layer.exportJSON() as string) ?? ""),
       );
       layer.visible = wasVisible;
       layer.removeChildren();
@@ -373,7 +488,7 @@ export class PaperRenderer {
     onlyLayerId?: string | null;
     stageFill?: string | null;
   }): string {
-    return this.onionSkin.withHidden(() => {
+    return this.onionSkin.withHidden(() => this.contextBackdrop.withHidden(() => {
       const visibility = new Map<string, boolean>();
       if (opts.onlyLayerId) {
         for (const [id, layer] of this.layerMap) {
@@ -409,7 +524,7 @@ export class PaperRenderer {
           if (!box) {
             for (const layer of paper.project.layers) {
               if (!layer.visible) continue;
-              if (this.onionSkin.includes(layer)) continue;
+              if (this.onionSkin.includes(layer) || this.contextBackdrop.includes(layer)) continue;
               const b = layer.bounds;
               if (!b || (b.width <= 0 && b.height <= 0)) continue;
               box = box ? box.unite(b) : b.clone();
@@ -445,7 +560,7 @@ export class PaperRenderer {
           }
         }
       }
-    });
+    }));
   }
 
   // ============================================================
@@ -455,7 +570,7 @@ export class PaperRenderer {
   /**
    * Logical layer id for a path item’s Paper.js layer, or null if unknown.
    */
-  getLayerIdForPathItem(item: paper.PathItem): string | null {
+  getLayerIdForPathItem(item: paper.Item): string | null {
     const pl = item.layer;
     if (!pl) return null;
     return this.getLayerIdForPaperLayer(pl);
@@ -508,7 +623,7 @@ export class PaperRenderer {
   }
 
   /** Move live path items onto an existing layer (keeps draw order among them). */
-  moveItemsToLayer(items: paper.PathItem[], layerId: string): void {
+  moveItemsToLayer(items: paper.Item[], layerId: string): void {
     const layer = this.layerMap.get(layerId);
     if (!layer) return;
     for (const item of items) {
@@ -516,6 +631,7 @@ export class PaperRenderer {
       this.markItemLayerDirty(item);
       layer.addChild(item);
     }
+    this.normalizeInstances(layer);
     this.markLayerDirty(layerId);
     paper.view.update();
   }
@@ -615,9 +731,120 @@ export class PaperRenderer {
     if (!layer) return null;
     const wasVisible = layer.visible;
     layer.visible = true;
-    const json = layer.exportJSON() as string;
+    // Symbol instances export as empty groups (matrix + pivot + data only).
+    const json = withInstancesStripped(layer, () => layer.exportJSON() as string);
     layer.visible = wasVisible;
     return json;
+  }
+
+  /**
+   * Serialize clones of `items` as a standalone layer JSON, translated so
+   * `origin` (world) becomes (0,0). Originals are untouched. Used by
+   * Convert to Symbol; the result is a symbol-content blob.
+   */
+  /** Union bounds of a stored layer JSON, or null when empty. */
+  measureLayerJsonBounds(
+    json: string,
+  ): { x: number; y: number; width: number; height: number } | null {
+    if (!json) return null;
+    const scratch = new paper.Layer();
+    scratch.importJSON(json);
+    const b = scratch.bounds;
+    const out =
+      !b || (b.width <= 0 && b.height <= 0)
+        ? null
+        : { x: b.x, y: b.y, width: b.width, height: b.height };
+    scratch.remove();
+    return out;
+  }
+
+  /** Translate every child of a stored layer JSON by `delta`. */
+  translateLayerJson(json: string, delta: { x: number; y: number }): string {
+    if (!json || (delta.x === 0 && delta.y === 0)) return json;
+    const scratch = new paper.Layer();
+    scratch.importJSON(json);
+    const point = new paper.Point(delta.x, delta.y);
+    for (const child of scratch.children) child.translate(point);
+    const out = scratch.exportJSON() as string;
+    scratch.remove();
+    return out;
+  }
+
+  /** Layer JSON containing one empty instance at `world` (for placing after convert). */
+  exportInstanceLayerJSON(
+    data: SymbolInstanceData,
+    world: { x: number; y: number },
+    name: string,
+  ): string {
+    const temp = new paper.Layer({ insert: false });
+    temp.name = name;
+    temp.addChild(createInstance(data, world));
+    const json = temp.exportJSON() as string;
+    temp.remove();
+    return json;
+  }
+
+  exportItemsAsLayerJSON(items: paper.Item[], origin: { x: number; y: number }): string {
+    const temp = new paper.Layer({ insert: false });
+    for (const item of items) {
+      if (!item.parent) continue;
+      const clone = item.clone({ insert: false });
+      if (isSymbolInstance(clone)) clone.removeChildren();
+      const data = clone.data as Record<string, unknown> | null;
+      if (data && "emfKeyframeFrame" in data) delete data.emfKeyframeFrame;
+      clone.translate(new paper.Point(-origin.x, -origin.y));
+      temp.addChild(clone);
+    }
+    normalizeInstanceOrder(temp);
+    const json = temp.exportJSON() as string;
+    temp.remove();
+    return json;
+  }
+
+  /**
+   * Insert a new symbol instance on `layerId` at `world`, hydrate it, and
+   * mark the layer dirty. Returns the group (already selectable).
+   */
+  addInstanceToLayer(
+    layerId: string,
+    data: SymbolInstanceData,
+    world: { x: number; y: number },
+  ): paper.Group | null {
+    const layer = this.layerMap.get(layerId);
+    if (!layer) return null;
+    const group = createInstance(data, world);
+    layer.addChild(group);
+    hydrateInstance(group, this.symbolResolver, this.elapsedFor(layerId));
+    this.normalizeInstances(layer);
+    this.markLayerDirty(layerId);
+    this.overlayLayer?.bringToFront();
+    paper.view.update();
+    return group;
+  }
+
+  /**
+   * Change an instance's symbol / playback and re-resolve its artwork.
+   * Returns false when the item is not a live instance.
+   */
+  updateInstance(item: paper.Item, patch: Partial<Omit<SymbolInstanceData, "iid">>): boolean {
+    if (!isSymbolInstance(item) || !item.parent) return false;
+    const data = readInstance(item);
+    if (!data) return false;
+    writeInstance(item, { ...data, ...patch, iid: data.iid });
+    const layerId = this.getLayerIdForPathItem(item);
+    hydrateInstance(item, this.symbolResolver, layerId ? this.elapsedFor(layerId) : 0);
+    if (layerId) this.markLayerDirty(layerId);
+    paper.view.update();
+    return true;
+  }
+
+  /** Move an instance's pivot back to the symbol's registration point (local 0,0). */
+  resetInstancePivot(item: paper.Item): boolean {
+    if (!isSymbolInstance(item) || !item.parent) return false;
+    this.markItemLayerDirty(item);
+    item.pivot = new paper.Point(0, 0);
+    paper.view.update();
+    return true;
   }
 
   /** True when the layer has no children (lets empty layers share one content id). */
@@ -650,6 +877,7 @@ export class PaperRenderer {
       if (!wantedIds.has(id)) {
         layer.remove();
         this.layerMap.delete(id);
+        this.animatedInstanceLayers.delete(id);
       }
     }
 
@@ -665,6 +893,7 @@ export class PaperRenderer {
       if (wanted.json !== undefined) {
         layer.removeChildren();
         if (wanted.json) this.importLayerContent(layer, wanted.json);
+        this.hydratePaperLayer(wanted.id, layer);
         contentChanged = true;
       }
       // Re-apply after importJSON: Layer exports can embed a stale `name`
@@ -737,6 +966,26 @@ export class PaperRenderer {
   /** Remove all onion-skin ghost layers. */
   clearOnionSkin(): void {
     this.onionSkin.clear();
+  }
+
+  // ============================================================
+  // Edit-in-place backdrop
+  // ============================================================
+
+  /** Rebuild the dimmed parent artwork behind a symbol being edited in place. */
+  setContextBackdrop(levels: BackdropLevel[]): void {
+    const prevActive = this.activeLayerId ? this.layerMap.get(this.activeLayerId) : null;
+    this.contextBackdrop.set(levels, this.symbolResolver, prevActive);
+    this.overlayLayer?.bringToFront();
+    prevActive?.activate();
+  }
+
+  clearContextBackdrop(): void {
+    this.contextBackdrop.clear();
+  }
+
+  hasContextBackdrop(): boolean {
+    return this.contextBackdrop.isActive();
   }
 
   /**
@@ -816,6 +1065,7 @@ export class PaperRenderer {
 
     // Outline ghosts above artwork; filled ghosts under the active layer.
     this.onionSkin.reposition(active);
+    this.contextBackdrop.reposition();
     this.overlayLayer?.bringToFront();
     active?.activate();
 
@@ -853,23 +1103,32 @@ export class PaperRenderer {
    */
   captureSelectableLayersSnapshot(
     scope: SelectLayerScope = "all",
-  ): Map<string, paper.PathItem[]> {
-    const map = new Map<string, paper.PathItem[]>();
+  ): Map<string, paper.Item[]> {
+    const map = new Map<string, paper.Item[]>();
     for (const layer of this.getSelectablePaperLayersTopFirst(scope)) {
       const id = this.getLayerIdForPaperLayer(layer);
       if (!id) continue;
+      // Paths and symbol instances (clones keep matrix / data / children).
       map.set(
         id,
-        this.getPathsOnPaperLayer(layer).map(
-          (item) => item.clone({ insert: false }) as paper.PathItem,
-        ),
+        layer.children
+          .filter((c) => this.isSelectableRoot(c))
+          .map((item) => item.clone({ insert: false })),
       );
     }
     return map;
   }
 
+  private isSelectableRoot(item: paper.Item): boolean {
+    return (
+      item instanceof paper.Path ||
+      item instanceof paper.CompoundPath ||
+      isSymbolInstance(item)
+    );
+  }
+
   restoreSelectableLayersSnapshot(
-    snapshot: Map<string, paper.PathItem[]>,
+    snapshot: Map<string, paper.Item[]>,
   ): void {
     const prev = paper.project.activeLayer;
     this.markerByItemId.clear();
@@ -1025,8 +1284,10 @@ export class PaperRenderer {
     const layer = this.layerMap.get(layerId);
     if (!layer) return;
     this.markLayerDirty(layerId);
-    layer.removeChildren();
-    if (json) layer.importJSON(json);
+    // Keep instance objects (by iid) so a selected instance survives the
+    // worker rebuild; then re-resolve their artwork.
+    replaceLayerContentKeepingInstances(layer, json);
+    this.hydratePaperLayer(layerId, layer);
     const active = this.activeLayerId ? this.layerMap.get(this.activeLayerId) : null;
     active?.activate();
     this.updateAliasFixStrokesForCurrentZoom();
@@ -1049,7 +1310,9 @@ export class PaperRenderer {
   ): MergePassResult {
     this.markPaperLayerDirty(layer);
     this.tagEmfPlayhead(additions);
-    return addToLayer(layer, additions, this.adopt());
+    const result = addToLayer(layer, additions, this.adopt());
+    this.normalizeInstances(layer);
+    return result;
   }
 
   /**
@@ -1064,12 +1327,14 @@ export class PaperRenderer {
     this.markPaperLayerDirty(layer);
     this.tagEmfPlayhead(additions);
     addToLayerSequential(layer, additions, this.adopt());
+    this.normalizeInstances(layer);
   }
 
   private mergeSubtractInto(cutters: paper.PathItem[]): void {
     for (const cutter of cutters) this.markItemLayerDirty(cutter);
     subtractFromLayer(paper.project.activeLayer, cutters, this.adopt());
     flattenGroups();
+    this.normalizeInstances(paper.project.activeLayer);
     paper.view.update();
   }
 
@@ -1223,6 +1488,7 @@ export class PaperRenderer {
     this.tagEmfPlayhead(pieces);
     paintInsideLayer(layer, pieces, clip?.parent ? clip : null, this.adopt());
     flattenGroups();
+    this.normalizeInstances(layer);
     paper.view.update();
   }
 
@@ -1393,8 +1659,17 @@ export class PaperRenderer {
   /**
    * Resolve any hit-tested child back to the selectable root shape (any layer).
    */
-  resolveSelectableItem(hit: paper.Item | null): paper.PathItem | null {
+  resolveSelectableItem(hit: paper.Item | null): paper.Item | null {
     if (!hit) return null;
+    const instance = instanceRootOf(hit);
+    if (instance) return instance;
+    return this.resolveSelectablePath(hit);
+  }
+
+  /** Like `resolveSelectableItem`, but ignores symbol instances (vertex tools). */
+  resolveSelectablePath(hit: paper.Item | null): paper.PathItem | null {
+    if (!hit) return null;
+    if (instanceRootOf(hit)) return null;
     let cur: paper.Item | null = hit;
     let root: paper.PathItem | null = null;
     while (cur) {
@@ -1552,7 +1827,10 @@ export class PaperRenderer {
     };
     for (const layer of this.getSelectablePaperLayersTopFirst(scope)) {
       const result = layer.hitTest(paperPoint, options);
-      if (result?.item) return result.item;
+      if (result?.item) {
+        // Hits inside a symbol instance select the instance as a whole.
+        return instanceRootOf(result.item) ?? result.item;
+      }
     }
     return null;
   }
@@ -1564,11 +1842,30 @@ export class PaperRenderer {
     return this.getPathsOnPaperLayer(layer);
   }
 
+  /** Every selectable root on the active layer: merge shapes and symbol instances. */
+  getAllSelectableItems(): paper.Item[] {
+    const layer = paper.project?.activeLayer;
+    if (!layer) return [];
+    flattenGroups();
+    return [...this.getPathsOnPaperLayer(layer), ...instancesOnLayer(layer)];
+  }
+
   /** Paths in the select tool’s layer scope (unlocked + effectively visible). */
   getSelectablePaths(scope: SelectLayerScope = "all"): paper.PathItem[] {
     const out: paper.PathItem[] = [];
     for (const layer of this.getSelectablePaperLayersTopFirst(scope)) {
       out.push(...this.getPathsOnPaperLayer(layer));
+    }
+    return out;
+  }
+
+  /** Selectable roots in that scope: merge shapes and symbol instances. */
+  getSelectableItems(scope: SelectLayerScope = "all"): paper.Item[] {
+    const out: paper.Item[] = [];
+    for (const layer of this.getSelectablePaperLayersTopFirst(scope)) {
+      for (const child of layer.children) {
+        if (this.isSelectableRoot(child)) out.push(child);
+      }
     }
     return out;
   }
@@ -1627,14 +1924,14 @@ export class PaperRenderer {
   }
 
   /** Top-most selected item’s layer id (among the given items), or null. */
-  getTopmostSelectedLayerId(items: paper.PathItem[]): string | null {
+  getTopmostSelectedLayerId(items: paper.Item[]): string | null {
     if (items.length === 0) return null;
     const ids = new Set(items.map((item) => item.id));
     for (const layer of this.getSelectablePaperLayersTopFirst()) {
       for (let i = layer.children.length - 1; i >= 0; i--) {
         const child = layer.children[i];
         if (!ids.has(child.id)) continue;
-        if (child instanceof paper.Path || child instanceof paper.CompoundPath) {
+        if (this.isSelectableRoot(child)) {
           return this.getLayerIdForPaperLayer(layer);
         }
       }
@@ -1947,7 +2244,7 @@ export class PaperRenderer {
   }
 
   flipItemsInViewSpace(
-    items: paper.PathItem[],
+    items: paper.Item[],
     axis: "horizontal" | "vertical",
   ): void {
     const liveItems = items.filter((item) => item.parent);
@@ -1973,8 +2270,8 @@ export class PaperRenderer {
     start: { x: number; y: number },
     end: { x: number; y: number },
     scope: SelectLayerScope = "all",
-    itemFilter?: (item: paper.PathItem) => boolean,
-  ): paper.PathItem[] {
+    itemFilter?: (item: paper.Item) => boolean,
+  ): paper.Item[] {
     // Build the selection polygon from all four screen corners projected to
     // world. This keeps the marquee matching what the user drew on screen
     // even when the camera is rotated (a camera-rotated screen rect maps to
@@ -2003,8 +2300,8 @@ export class PaperRenderer {
   extractSelectionFromScreenLasso(
     points: Array<{ x: number; y: number }>,
     scope: SelectLayerScope = "all",
-    itemFilter?: (item: paper.PathItem) => boolean,
-  ): paper.PathItem[] {
+    itemFilter?: (item: paper.Item) => boolean,
+  ): paper.Item[] {
     if (points.length < 3) return [];
 
     const worldPoints = points.map((point) => this.screenToWorld(point.x, point.y));
@@ -2018,15 +2315,32 @@ export class PaperRenderer {
     return selectedItems;
   }
 
+  /** Does the selection polygon overlap an axis-aligned world rect? */
+  private pathTouchesBounds(selectionPath: paper.Path, bounds: paper.Rectangle): boolean {
+    if (bounds.width <= 0 && bounds.height <= 0) {
+      return selectionPath.contains(bounds.center);
+    }
+    const rect = new paper.Path.Rectangle({ rectangle: bounds, insert: false });
+    try {
+      return (
+        selectionPath.intersects(rect) ||
+        selectionPath.contains(bounds.center) ||
+        rect.contains(selectionPath.firstSegment.point)
+      );
+    } finally {
+      rect.remove();
+    }
+  }
+
   private extractSelectionFromPath(
     selectionPath: paper.Path,
     scope: SelectLayerScope = "all",
-    itemFilter?: (item: paper.PathItem) => boolean,
-  ): paper.PathItem[] {
+    itemFilter?: (item: paper.Item) => boolean,
+  ): paper.Item[] {
     if (selectionPath.isEmpty()) return [];
 
     const selectionMarker = this.createSelectionMarker();
-    const selectedItems: paper.PathItem[] = [];
+    const selectedItems: paper.Item[] = [];
     const changedItems: paper.PathItem[] = [];
     const prev = paper.project.activeLayer;
 
@@ -2034,15 +2348,26 @@ export class PaperRenderer {
       this.markPaperLayerDirty(layer);
       layer.activate();
       flattenGroups();
+      // Symbol instances are selected whole (never cut) when the marquee
+      // touches their bounds.
+      for (const inst of instancesOnLayer(layer)) {
+        if (itemFilter && !itemFilter(inst)) continue;
+        if (inst.children.length === 0) continue;
+        if (!selectionPath.bounds.intersects(inst.bounds)) continue;
+        if (this.pathTouchesBounds(selectionPath, inst.bounds)) {
+          selectedItems.push(inst);
+        }
+      }
       const candidates = this.getPathsOnPaperLayer(layer)
         .filter((item) => item.parent)
         .filter((item) => !itemFilter || itemFilter(item))
         .filter((item) => selectionPath.bounds.expand(4).intersects(item.bounds));
 
       for (const candidate of candidates) {
-        // Fully inside the marquee AABB: keep the item. Boolean subtract
-        // returns empty on holed compounds with no cut edge.
-        if (selectionPath.bounds.contains(candidate.bounds)) {
+        // Polygon containment, not the lasso box. A slash's box holds the
+        // whole drawing; boolean subtract also returns empty when a holed
+        // compound sits fully inside with no cut edge.
+        if (fullyInside(selectionPath, candidate)) {
           this.setSelectionMarker(candidate, selectionMarker);
           selectedItems.push(candidate);
           continue;
@@ -2076,8 +2401,14 @@ export class PaperRenderer {
 
     prev.activate();
 
-    if (changedItems.length || selectedItems.length) {
-      splitCompounds([...changedItems, ...selectedItems], this.adopt());
+    const selectedPaths = selectedItems.filter(
+      (item): item is paper.PathItem =>
+        item instanceof paper.Path || item instanceof paper.CompoundPath,
+    );
+    const selectedInstances = selectedItems.filter((item) => isSymbolInstance(item));
+
+    if (changedItems.length || selectedPaths.length) {
+      splitCompounds([...changedItems, ...selectedPaths], this.adopt());
       const survivingSelectedItems = this.getSelectablePaths(scope).filter(
         (item) => this.getSelectionMarker(item) === selectionMarker,
       );
@@ -2085,11 +2416,16 @@ export class PaperRenderer {
         if (item.parent) item.bringToFront();
         this.clearSelectionMarker(item);
       }
+      // Shapes went to the top of their layers; instances stay above them.
+      for (const layer of this.getSelectablePaperLayersTopFirst(scope)) {
+        this.normalizeInstances(layer);
+      }
       paper.view.update();
-      return survivingSelectedItems;
+      return [...survivingSelectedItems, ...selectedInstances];
     }
 
-    return [];
+    if (selectedInstances.length) paper.view.update();
+    return selectedInstances;
   }
 
   scalePath(
@@ -2140,16 +2476,26 @@ export class PaperRenderer {
    */
   bringToFront(item: paper.Item) {
     item.bringToFront();
+    // Shapes never sit above symbol instances on their layer.
+    if (!isSymbolInstance(item) && item.layer) this.normalizeInstances(item.layer);
     paper.view.update();
   }
 
   /**
    * Place a selected item using "add" logic - union with same color, cut different colors.
    * Merges into the item’s own layer (not necessarily the active layer).
+   * Symbol instances don't merge; they are just kept above the shapes.
    */
-  placeSelection(item: paper.PathItem): void {
+  placeSelection(item: paper.Item): void {
     const layer = item.layer;
     if (!layer) return;
+    if (isSymbolInstance(item)) {
+      this.markPaperLayerDirty(layer);
+      this.normalizeInstances(layer);
+      paper.view.update();
+      return;
+    }
+    if (!(item instanceof paper.Path || item instanceof paper.CompoundPath)) return;
     const prev = paper.project.activeLayer;
     layer.activate();
     try {
@@ -2166,18 +2512,28 @@ export class PaperRenderer {
     paper.view.update();
   }
 
-  placeItemsAsSelection(items: paper.PathItem[]): paper.PathItem[] {
+  placeItemsAsSelection(items: paper.Item[]): paper.Item[] {
     const liveItems = items.filter((item) => item.parent);
     if (liveItems.length === 0) return [];
 
+    const instances: paper.Item[] = [];
+    const paths: paper.PathItem[] = [];
+    for (const item of liveItems) {
+      if (isSymbolInstance(item)) instances.push(item);
+      else if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
+        paths.push(item);
+      }
+    }
+    for (const inst of instances) this.placeSelection(inst);
+
     const markerOrder = new Map<string, number>();
-    for (const [index, item] of liveItems.entries()) {
+    for (const [index, item] of paths.entries()) {
       const marker = this.createSelectionMarker();
       markerOrder.set(marker, index);
       this.setSelectionMarker(item, marker);
     }
 
-    for (const item of liveItems) {
+    for (const item of paths) {
       if (!item.parent) continue;
       this.placeSelection(item);
     }
@@ -2199,7 +2555,7 @@ export class PaperRenderer {
     }
 
     paper.view.update();
-    return survivors;
+    return [...survivors, ...instances.filter((i) => i.parent)];
   }
 
   /**
@@ -2276,8 +2632,16 @@ export class PaperRenderer {
   /**
    * Duplicate a path item on the active layer with a small offset.
    */
-  duplicateItem(item: paper.PathItem, offsetX = 10, offsetY = 10): paper.PathItem | null {
+  duplicateItem(item: paper.Item, offsetX = 10, offsetY = 10): paper.Item | null {
     if (!item.parent) return null;
+    if (isSymbolInstance(item)) {
+      const copy = duplicateInstance(item);
+      copy.position = copy.position.add(new paper.Point(offsetX, offsetY));
+      this.markItemLayerDirty(item);
+      paper.view.update();
+      return copy;
+    }
+    if (!(item instanceof paper.Path || item instanceof paper.CompoundPath)) return null;
     const clone = item.clone() as paper.PathItem;
     clone.position = clone.position.add(new paper.Point(offsetX, offsetY));
     this.applyPathStyle(clone, item.fillColor);
@@ -2324,6 +2688,7 @@ export class PaperRenderer {
         }
       }
       flattenGroups();
+      this.normalizeInstances(layer);
     } finally {
       prev.activate();
     }
@@ -2334,16 +2699,20 @@ export class PaperRenderer {
   /**
    * Delete a path item from the active layer.
    */
-  deleteItem(item: paper.PathItem): void {
+  deleteItem(item: paper.Item): void {
     if (!item.parent) return;
     this.markItemLayerDirty(item);
-    this.clearSelectionMarker(item);
+    if (item instanceof paper.Path || item instanceof paper.CompoundPath) {
+      this.clearSelectionMarker(item);
+    }
     item.remove();
     paper.view.update();
   }
 
-  setItemFillColor(item: paper.PathItem, color: string): void {
+  /** Recolor a shape. Symbol instances are not recolorable (no-op). */
+  setItemFillColor(item: paper.Item, color: string): void {
     if (!item.parent) return;
+    if (!(item instanceof paper.Path || item instanceof paper.CompoundPath)) return;
     this.markItemLayerDirty(item);
     this.applyPathStyle(item, new paper.Color(color));
     paper.view.update();
@@ -2408,6 +2777,29 @@ export class PaperRenderer {
       this.strokeSelectionShapeOutline(ctx, it);
     }
 
-    return this.drawTransformChrome(screenBounds, ctx, rotating);
+    const pivotWorld = this.getInstancePivotWorld(items);
+    const pivotScreen = pivotWorld ? this.worldToScreen(pivotWorld.x, pivotWorld.y) : null;
+    return drawTransformChromeHelper(screenBounds, ctx, rotating, pivotScreen);
+  }
+
+  /** World-space pivot when the selection is exactly one symbol instance. */
+  getInstancePivotWorld(items: paper.Item[]): { x: number; y: number } | null {
+    if (items.length !== 1) return null;
+    const item = items[0];
+    if (!isSymbolInstance(item) || !item.parent) return null;
+    const pos = item.position;
+    return { x: pos.x, y: pos.y };
+  }
+
+  /**
+   * Move a symbol instance's transform origin to `world` without moving its
+   * artwork. Paper's `position` is the pivot mapped through the matrix, so
+   * only the local pivot changes.
+   */
+  setInstancePivotWorld(item: paper.Item, world: { x: number; y: number }): void {
+    if (!isSymbolInstance(item)) return;
+    this.markItemLayerDirty(item);
+    item.pivot = item.matrix.inverseTransform(new paper.Point(world.x, world.y));
+    paper.view.update();
   }
 }

@@ -6,6 +6,10 @@ import {
   toolStore,
   StoreController,
 } from "../../state";
+import {
+  editContextStore,
+  type EditContextState,
+} from "../../state/document-ui";
 import { FloatingPanel } from "../primitives/floating-panel";
 import { phosphorIcon, PANEL_ICON_MAP } from "../icons/phosphor";
 import { anchorPanelBelowTrigger, raisePanelZIndex } from "../primitives/panel-anchor";
@@ -34,6 +38,8 @@ export class FlipCelTopBarPanel extends FloatingPanel {
 
   private dockColor = new StoreController(this, colorStore);
   private tool = new StoreController(this, toolStore);
+  @state() private editContext: EditContextState = { path: [], inPlace: false };
+  private unsubEditContext: (() => void) | null = null;
   private readonly outsidePointerHandler = (e: PointerEvent) => this.closePanelsOnOutsideClick(e);
   private readonly panelVisibilityChangeHandler = (e: Event) =>
     this.onPanelVisibilityChange(
@@ -136,6 +142,66 @@ export class FlipCelTopBarPanel extends FloatingPanel {
       left: 50%;
       top: 0;
       transform: translateX(-50%);
+    }
+
+    /* Edit-in-place breadcrumb: Scene › Symbol — sits under the icon dock. */
+    .context-crumbs {
+      position: absolute;
+      left: 50%;
+      top: calc(var(--flipcel-dock-row-h) + (2 * var(--flipcel-block-face-padding)) + 6px);
+      transform: translateX(-50%);
+    }
+
+    .context-crumbs .bar {
+      height: 28px;
+      min-height: 28px;
+      max-height: 28px;
+      gap: 2px;
+      align-items: center;
+    }
+
+    .crumb {
+      appearance: none;
+      margin: 0;
+      border: none;
+      border-radius: var(--flipcel-content-radius);
+      padding: 0 8px;
+      height: 100%;
+      background: transparent;
+      color: var(--flipcel-panel-border, #8a8a8a);
+      font: inherit;
+      font-size: var(--flipcel-block-font-size, 11px);
+      font-weight: 600;
+      letter-spacing: var(--flipcel-letter-spacing, -0.011em);
+      cursor: pointer;
+      white-space: nowrap;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    .crumb:hover {
+      background: var(--flipcel-panel-depth, #070707);
+      color: #ffffff;
+    }
+
+    .crumb[aria-current="location"] {
+      color: #ffffff;
+      cursor: default;
+    }
+
+    .crumb[aria-current="location"]:hover {
+      background: transparent;
+    }
+
+    .crumb-sep {
+      color: var(--flipcel-panel-border, #8a8a8a);
+      opacity: 0.7;
+      font-size: var(--flipcel-block-font-size, 11px);
+    }
+
+    .crumb-exit {
+      margin-left: 4px;
+      padding: 0 6px;
     }
 
     .face {
@@ -291,12 +357,23 @@ export class FlipCelTopBarPanel extends FloatingPanel {
     this.pinned = true;
     this.showPinnedClose = false;
     this.initializePanelVisibility();
+    this.unsubEditContext?.();
+    try {
+      this.unsubEditContext = editContextStore.subscribe((value) => {
+        this.editContext = value;
+      });
+      this.editContext = editContextStore.get();
+    } catch {
+      this.unsubEditContext = null;
+    }
     document.addEventListener("pointerdown", this.outsidePointerHandler, true);
     document.addEventListener("panel-visibility-change", this.panelVisibilityChangeHandler as EventListener);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.unsubEditContext?.();
+    this.unsubEditContext = null;
     this.clearDockBtnGestureListeners();
     this.dockBtnGesture = null;
     document.removeEventListener("pointerdown", this.outsidePointerHandler, true);
@@ -468,8 +545,8 @@ export class FlipCelTopBarPanel extends FloatingPanel {
     });
 
     el.pinned = true;
+    el.style.visibility = "";
     el.style.display = "";
-    await el.updateComplete;
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
     const gesture = this.dockBtnGesture?.id === id ? this.dockBtnGesture : null;
@@ -512,15 +589,17 @@ export class FlipCelTopBarPanel extends FloatingPanel {
     this.dockBtnGesture = null;
   }
 
-  private async togglePanel(id: string, triggerEl?: HTMLElement) {
+  private togglePanel(id: string, triggerEl?: HTMLElement) {
     const el = document.getElementById(id) as ToggleablePanel | null;
     if (!el) return;
     const panel = this.panelVisibility.find((p) => p.id === id);
     if (!panel) return;
 
-    // Trust the DOM, not panel.visible — dock-drop used to leave those out of
-    // sync, so the next click called hide on an already-hidden panel.
-    if (el.style.display !== "none") {
+    // Trust the DOM, not panel.visible — a failed open used to leave
+    // display set and visibility hidden, so the next click hid it again.
+    const closed =
+      el.style.display === "none" || el.style.visibility === "hidden";
+    if (!closed) {
       el.hidePanel();
       return;
     }
@@ -532,21 +611,22 @@ export class FlipCelTopBarPanel extends FloatingPanel {
       otherEl.hidePanel();
     });
 
-    // Opening from the dock always re-docks the panel under the trigger.
+    // Show first. Awaiting updateComplete left the panel visibility:hidden
+    // forever when the timeline update rejected or never settled, and the
+    // entrance animation's opacity:0 frame then ate canvas clicks.
     el.pinned = false;
-    el.style.visibility = "hidden";
-    el.style.display = "";
-    await el.updateComplete;
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
-    if (triggerEl) {
-      anchorPanelBelowTrigger(el, triggerEl);
-    }
     el.style.visibility = "";
+    el.style.display = "";
+    if (triggerEl) anchorPanelBelowTrigger(el, triggerEl);
     raisePanelZIndex(el);
-    el.playShowAnimation();
+    el.playShowAnimation?.();
     this.panelVisibility = this.panelVisibility.map((p) =>
       p.id === id ? { ...p, visible: true, detached: false } : p,
     );
+    requestAnimationFrame(() => {
+      if (el.style.display === "none" || !triggerEl) return;
+      anchorPanelBelowTrigger(el, triggerEl);
+    });
   }
 
   private onPanelVisibilityChange(
@@ -660,7 +740,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
   private renderPanelTriggerContent(panelId: string) {
     if (panelId === "color-panel") return nothing;
     if (panelId === "tools-panel") {
-      const currentToolName = getTool(this.tool.value).name;
+      const currentToolName = getTool(this.tool.value)?.name ?? "Tools";
       return html`<span class="btn-content btn-content-text">${currentToolName}</span>`;
     }
     return html`<span class="btn-content">${phosphorIcon(PANEL_ICON_MAP[panelId], 14)}</span>`;
@@ -676,7 +756,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
   private renderPanelGroup(panelTriggers: PanelVisibility[]) {
     if (panelTriggers.length === 0) return nothing;
 
-    const currentToolName = getTool(this.tool.value).name;
+    const currentToolName = getTool(this.tool.value)?.name ?? "Tools";
     const entering = new Set(this.enteringPanelIds);
     return html`
       <div class="dock-group dock-group-panels">
@@ -705,6 +785,8 @@ export class FlipCelTopBarPanel extends FloatingPanel {
                     ? "dock.view"
                     : panel.id === "assist-panel"
                       ? "dock.assist"
+                      : panel.id === "library-panel"
+                        ? "dock.library"
                       : panel.id === "tools-panel"
                         ? "dock.tools"
                         : panel.id === "color-panel"
@@ -733,6 +815,64 @@ export class FlipCelTopBarPanel extends FloatingPanel {
     `;
   }
 
+  private emitExitTo(depth: number) {
+    this.dispatchEvent(
+      new CustomEvent("context-exit-to", { detail: depth, bubbles: true, composed: true }),
+    );
+  }
+
+  /** Scene › Symbol A › Symbol B — tap a crumb to exit back to it; Esc exits one. */
+  private renderContextCrumbs() {
+    const path = this.editContext.path;
+    const inPlace = this.editContext.inPlace;
+    if (path.length === 0) return nothing;
+    const last = path.length;
+    return html`
+      <div class="block context-crumbs" data-interactive>
+        <div class="face">
+          <div class="bar">
+            <button type="button" class="crumb" data-interactive @click=${() => this.emitExitTo(0)}>
+              Scene
+            </button>
+            ${path.map((crumb, i) => {
+              const depth = i + 1;
+              const current = depth === last;
+              return html`
+                <span class="crumb-sep" aria-hidden="true">›</span>
+                <button
+                  type="button"
+                  class="crumb"
+                  data-interactive
+                  aria-current=${current ? "location" : nothing}
+                  title=${current
+                    ? inPlace
+                      ? "Editing in place (Esc to exit)"
+                      : "Editing symbol (Esc to exit)"
+                    : `Back to ${crumb.name}`}
+                  @click=${() => {
+                    if (!current) this.emitExitTo(depth);
+                  }}
+                >
+                  ${crumb.name}
+                </button>
+              `;
+            })}
+            <button
+              type="button"
+              class="crumb crumb-exit"
+              data-interactive
+              aria-label="Exit symbol"
+              title="Exit symbol (Esc)"
+              @click=${() => this.emitExitTo(last - 1)}
+            >
+              ${phosphorIcon("x", 12)}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   render() {
     const panelTriggers = this.visiblePanelTriggers();
     return html`
@@ -745,6 +885,7 @@ export class FlipCelTopBarPanel extends FloatingPanel {
             </div>
           `
         : nothing}
+      ${this.renderContextCrumbs()}
     `;
   }
 }

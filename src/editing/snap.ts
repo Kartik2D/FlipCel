@@ -80,6 +80,20 @@ export function setSnapGuides(guides: SnapGuide[]): void {
 const NODE_CAP = 64;
 const IGNORE_EPS = 1e-3;
 
+/** Path, compound, or symbol group → leaf paths. */
+function pathsOf(item: paper.Item): paper.Path[] {
+  if (item instanceof paper.Path) return [item];
+  const out: paper.Path[] = [];
+  for (const child of item.children ?? []) out.push(...pathsOf(child));
+  return out;
+}
+
+/** Segment space → project space. Identity for layer paths; instance matrix for symbols. */
+function worldOf(path: paper.Path, local: paper.Point): Point {
+  const g = path.localToGlobal(local);
+  return { x: g.x, y: g.y };
+}
+
 function isIgnored(p: Point, ignore: Point[]): boolean {
   for (const i of ignore) {
     if (Math.abs(p.x - i.x) <= IGNORE_EPS && Math.abs(p.y - i.y) <= IGNORE_EPS) {
@@ -153,11 +167,11 @@ export function collectTargets(
     ys.push({ value, lo, hi });
   };
 
-  const addGeometry = (item: paper.PathItem) => {
-    for (const path of renderer.getChildPaths(item)) {
+  const addGeometry = (item: paper.Item) => {
+    for (const path of pathsOf(item)) {
       paths.push(path);
       for (const seg of path.segments) {
-        const p = { x: seg.point.x, y: seg.point.y };
+        const p = worldOf(path, seg.point);
         if (isIgnored(p, ignorePoints)) continue;
         points.push(p);
         addX(p.x, p.y, p.y);
@@ -178,7 +192,7 @@ export function collectTargets(
   }
 
   if (settings.bounds || settings.geometry) {
-    for (const item of renderer.getSelectablePaths("all")) {
+    for (const item of renderer.getSelectableItems("all")) {
       if (excludeIds.has(item.id)) {
         if (settings.selfGeometry && settings.geometry) addGeometry(item);
         continue;
@@ -223,13 +237,14 @@ function nearestOnPaths(
   let bestD = Infinity;
   const query = new paper.Point(p.x, p.y);
   for (const path of paths) {
-    const n = path.getNearestPoint(query);
+    const n = path.getNearestPoint(path.globalToLocal(query));
     if (!n) continue;
-    if (isIgnored({ x: n.x, y: n.y }, ignore)) continue;
-    const d = (n.x - p.x) * (n.x - p.x) + (n.y - p.y) * (n.y - p.y);
+    const w = worldOf(path, n);
+    if (isIgnored(w, ignore)) continue;
+    const d = (w.x - p.x) * (w.x - p.x) + (w.y - p.y) * (w.y - p.y);
     if (d < bestD) {
       bestD = d;
-      best = { x: n.x, y: n.y };
+      best = w;
     }
   }
   return best;

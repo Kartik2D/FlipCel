@@ -31,7 +31,12 @@ export type ModifierBinding = {
 export type Binding = ChordBinding | ModifierBinding;
 
 export type ToolActionId = `tool.${ToolId}`;
-export type EditActionId = "edit.undo" | "edit.redo" | "edit.playToggle" | "edit.delete";
+export type EditActionId =
+  | "edit.undo"
+  | "edit.redo"
+  | "edit.playToggle"
+  | "edit.delete"
+  | "edit.toSymbol";
 export type ModActionId =
   | "mod.paintMode"
   | "mod.wheelPan"
@@ -80,6 +85,7 @@ export function getShortcutActions(): ShortcutActionMeta[] {
     { id: "edit.redo", label: "Redo", group: "edit" },
     { id: "edit.playToggle", label: "Play / Pause", group: "edit" },
     { id: "edit.delete", label: "Delete selection", group: "edit" },
+    { id: "edit.toSymbol", label: "Convert to Symbol", group: "edit" },
     { id: "mod.paintMode", label: "Paint mode toggle", group: "modifiers" },
     { id: "mod.wheelPan", label: "Wheel pan", group: "modifiers" },
     { id: "mod.constrainMove", label: "Constrain move", group: "modifiers" },
@@ -114,6 +120,7 @@ export function getDefaultBindings(): ShortcutBindings {
   bindings["edit.redo"] = { kind: "chord", key: "z", mod: true, shift: true };
   bindings["edit.playToggle"] = { kind: "chord", key: "space" };
   bindings["edit.delete"] = { kind: "chord", key: "delete" };
+  bindings["edit.toSymbol"] = { kind: "chord", key: "f8" };
   bindings["mod.paintMode"] = { kind: "modifier", modifier: "ctrl" };
   bindings["mod.wheelPan"] = { kind: "modifier", modifier: "shift" };
   bindings["mod.constrainMove"] = { kind: "modifier", modifier: "shift" };
@@ -281,6 +288,7 @@ export function matchChordAction(
     "edit.undo",
     "edit.playToggle",
     "edit.delete",
+    "edit.toSymbol",
     ...tools.map((t) => toolActionId(t.id)),
   ];
   for (const id of order) {

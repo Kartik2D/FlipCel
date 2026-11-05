@@ -4,8 +4,14 @@
  * Documents are plain versioned JSON. File → Save JSON downloads the payload
  * and writes the same object to IndexedDB for startup “Restore previous file”.
  */
-import type { AssetMeta, LayerTrack, SerializedDocument } from "./document";
+import type {
+  AssetMeta,
+  LayerTrack,
+  SerializedDocument,
+  SymbolDefinition,
+} from "./document";
 import { trackKind } from "./document";
+import { normalizeSymbol } from "./symbols";
 import { DEFAULT_STAGE_HEIGHT, DEFAULT_STAGE_WIDTH } from "../state/index";
 import { AUTOSAVE_KEY, DOC_STORE, openDatabase } from "./assets";
 
@@ -62,7 +68,7 @@ export function parseSerializedDocument(data: unknown): SerializedDocument {
     throw new Error("Not a document (expected a JSON object)");
   }
   const doc = data as Partial<SerializedDocument>;
-  if (doc.version !== 1 && doc.version !== 2) {
+  if (doc.version !== 1 && doc.version !== 2 && doc.version !== 3) {
     throw new Error(`Unsupported document version: ${String(doc.version)}`);
   }
   if (!Array.isArray(doc.tracks) || typeof doc.content !== "object" || doc.content === null) {
@@ -74,8 +80,15 @@ export function parseSerializedDocument(data: unknown): SerializedDocument {
     }
   }
   const assets = parseAssetRecord(doc.assets);
+  const symbols: Record<string, SymbolDefinition> = {};
+  if (doc.symbols && typeof doc.symbols === "object") {
+    for (const [key, raw] of Object.entries(doc.symbols)) {
+      const sym = normalizeSymbol(raw, key);
+      if (sym) symbols[sym.id] = sym;
+    }
+  }
   return {
-    version: 2,
+    version: 3,
     stage: {
       width: Number(doc.stage?.width) || DEFAULT_STAGE_WIDTH,
       height: Number(doc.stage?.height) || DEFAULT_STAGE_HEIGHT,
@@ -90,6 +103,7 @@ export function parseSerializedDocument(data: unknown): SerializedDocument {
       : {}),
     ...(Array.isArray(doc.tags) ? { tags: doc.tags } : {}),
     ...(assets ? { assets } : {}),
+    ...(Object.keys(symbols).length > 0 ? { symbols } : {}),
   };
 }
 

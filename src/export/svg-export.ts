@@ -3,6 +3,7 @@
  * Multi-frame export uses an offscreen PaperScope — does not seek the live playhead.
  */
 import paper from "paper";
+import { hydrateLayer } from "../render/paper/symbol-instances";
 import type { DocumentManager } from "../document/document";
 import type { StageSettings } from "../state/document-ui";
 import {
@@ -129,6 +130,10 @@ function exportFrameSvgString(opts: {
       if (!json) continue;
       const layer = new scope.Layer();
       layer.importJSON(json);
+      // Symbol instances are stored as empty groups: resolve their artwork.
+      const start =
+        opts.documentManager.getCoveringKeyframeFrame(layerId, opts.frame) ?? opts.frame;
+      hydrateLayer(layer, opts.documentManager.symbolResolver, opts.frame - start, scope);
     }
 
     let bg: paper.Path | null = null;

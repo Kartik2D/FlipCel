@@ -39,6 +39,17 @@ import {
   timelineStore,
   type SerializedDocument,
 } from "../document/document";
+import { childFrameFor, type SymbolPlayMode } from "../document/symbols";
+import {
+  isSymbolInstance,
+  readInstance,
+  type SymbolInstanceGroup,
+} from "../render/paper/symbol-instances";
+import type {
+  InstancePlaybackDetail,
+  SymbolInstancePopupModel,
+} from "../ui/panels/symbol-instance-popup";
+import { composeContextToLocal } from "../render/paper/context-backdrop";
 import { bus, Events } from "../input/event-bus";
 import type { CanvasConfig, Point, Modifiers } from "../geometry/types";
 import { cycleDockMode, type ToolId, type AllToolSettings } from "../tools/registry";
@@ -55,6 +66,12 @@ import {
   getSelectionClipboard,
   setSelectionClipboardFromItems,
 } from "../editing/selection-clipboard";
+import {
+  convertFrameRangeToSymbol,
+  convertSelectionToSymbol,
+  placeSymbolInstance,
+  type SymbolActionServices,
+} from "../editing/symbol-actions";
 import type {
   FlipCelColorPanel,
   FlipCelColorPopup,
@@ -66,6 +83,7 @@ import type {
   FlipCelKeyboardShortcutsPanel,
   FlipCelStartupPanel,
   FlipCelViewPanel,
+  FlipCelLibraryPanel,
   FlipCelTopBarPanel,
   FlipCelLayersPanel,
   FlipCelWheelPanel,
@@ -73,6 +91,7 @@ import type {
   FlipCelMagicMovePopup,
   FlipCelMagicMorphPopup,
   FlipCelAutoMorphPopup,
+  FlipCelSymbolInstancePopup,
   FlipCelGodotExportPopup,
   FlipCelSvgExportPopup,
   FlipCelImageImportPopup,
@@ -90,6 +109,8 @@ import {
   toolSettingsStore,
   layerStore,
   selectionStore,
+  isPathItem,
+  pathItemsOf,
   viewOverlayStore,
   normalizeViewOverlaySettings,
   symmetryStore,
@@ -194,6 +215,7 @@ class App {
   private keyboardShortcutsPanel: FlipCelKeyboardShortcutsPanel;
   private startupPanel: FlipCelStartupPanel;
   private viewPanel: FlipCelViewPanel;
+  private libraryPanel: FlipCelLibraryPanel;
   private topBarPanel: FlipCelTopBarPanel;
   private layersPanel: FlipCelLayersPanel;
   private wheelPanel: FlipCelWheelPanel;
@@ -201,6 +223,7 @@ class App {
   private magicMovePopup: FlipCelMagicMovePopup;
   private magicMorphPopup: FlipCelMagicMorphPopup;
   private autoMorphPopup: FlipCelAutoMorphPopup;
+  private symbolInstancePopup: FlipCelSymbolInstancePopup;
   private godotExportPopup: FlipCelGodotExportPopup;
   private svgExportPopup: FlipCelSvgExportPopup;
   private imageImportPopup: FlipCelImageImportPopup;
@@ -220,9 +243,11 @@ class App {
   private lastFunctionsPanelKey = "";
   private colorPopupSession: "stage" | "onion-prev" | "onion-next" | null = null;
   private selectionGestureActive = false;
+  /** Camera compensation currently applied for edit-in-place (see onEditContextChanged). */
+  private contextOriginOffset = { x: 0, y: 0 };
   private duplicateDragSession:
     | {
-        items: paper.PathItem[];
+        items: paper.Item[];
         lastWorldDelta: { x: number; y: number };
       }
     | null = null;
@@ -354,6 +379,7 @@ class App {
       if (this.documentManager.isPlaying()) this.timelineSession?.syncAudio();
     };
     this.paperRenderer.setMergeBakedCallback(() => this.historyManager.snapshot());
+    this.documentManager.onContextChanged = () => this.onEditContextChanged();
     this.magicMoveController.setDocumentManager(this.documentManager);
     this.magicMoveController.setHistoryManager(this.historyManager);
     this.magicMorphController.setDocumentManager(this.documentManager);
@@ -362,6 +388,10 @@ class App {
     this.selectionController.setLiveEditStartCallback(() =>
       this.documentManager.refreshOnionSkin(),
     );
+    this.selectionController.setEnterInstanceCallback((instance) => {
+      const data = readInstance(instance);
+      if (data) void this.enterSymbol(data.symbol, instance);
+    });
     this.selectionController.setActivateLayerCallback((layerId) =>
       this.activateLayerFromSelect(layerId),
     );
@@ -403,6 +433,7 @@ class App {
     ) as FlipCelKeyboardShortcutsPanel;
     this.startupPanel = document.getElementById("startup-panel") as FlipCelStartupPanel;
     this.viewPanel = document.getElementById("view-panel") as FlipCelViewPanel;
+    this.libraryPanel = document.getElementById("library-panel") as FlipCelLibraryPanel;
     this.topBarPanel = document.getElementById("top-bar") as FlipCelTopBarPanel;
     this.layersPanel = document.getElementById("layers-panel") as FlipCelLayersPanel;
     this.wheelPanel = document.getElementById("wheel-panel") as FlipCelWheelPanel;
@@ -416,6 +447,30 @@ class App {
     this.autoMorphPopup = document.getElementById(
       "auto-morph-popup",
     ) as FlipCelAutoMorphPopup;
+    this.symbolInstancePopup = document.getElementById(
+      "symbol-instance-popup",
+    ) as FlipCelSymbolInstancePopup;
+    this.symbolInstancePopup.addEventListener("instance-playback-change", (e: Event) => {
+      const { mode, firstFrame } = (e as CustomEvent<InstancePlaybackDetail>).detail;
+      this.updateSelectedInstance({ mode, firstFrame });
+    });
+    this.symbolInstancePopup.addEventListener("instance-swap", (e: Event) => {
+      const { symbolId } = (e as CustomEvent<{ symbolId: string }>).detail;
+      this.updateSelectedInstance({ symbol: symbolId });
+    });
+    this.symbolInstancePopup.addEventListener("instance-edit", () => {
+      const instance = this.selectedInstance();
+      const data = instance ? readInstance(instance) : null;
+      this.symbolInstancePopup.hidePanel();
+      if (instance && data) void this.enterSymbol(data.symbol, instance);
+    });
+    this.symbolInstancePopup.addEventListener("instance-reset-pivot", () => {
+      const instance = this.selectedInstance();
+      if (!instance || !this.paperRenderer.resetInstancePivot(instance)) return;
+      this.selectionController.markSelectionAsModified();
+      this.historyManager.snapshot();
+      this.redrawActiveSelectionUI();
+    });
     this.godotExportPopup = document.getElementById(
       "godot-export-popup",
     ) as FlipCelGodotExportPopup;
@@ -477,7 +532,8 @@ class App {
     this.toolSettingsPanel.addEventListener("magic-move-apply", onMagicMoveApply);
     this.magicMovePopup.addEventListener("magic-move-apply", onMagicMoveApply);
     this.toolSettingsPanel.addEventListener("select-copy", () => {
-      const items = selectionStore.get().items.filter((item) => item.parent);
+      // Clipboard carries merge shapes only (instances: phase 2).
+      const items = pathItemsOf(selectionStore.get().items).filter((item) => item.parent);
       setSelectionClipboardFromItems(items);
     });
     this.toolSettingsPanel.addEventListener("select-paste", () => {
@@ -597,8 +653,8 @@ class App {
   }
 
   private subscribeToInputEvents() {
-    bus.on(Events.TOOL_START, (d: { point: Point; tool: ToolId; fromTouchHold?: boolean }) =>
-      this.onToolStart(d.point, d.tool, d.fromTouchHold),
+    bus.on(Events.TOOL_START, (d: { point: Point; tool: ToolId }) =>
+      this.onToolStart(d.point, d.tool),
     );
     bus.on(Events.TOOL_MOVE, (d: { point: Point; tool: ToolId }) => this.onToolMove(d.point, d.tool));
     bus.on(Events.TOOL_END, (tool: ToolId) => this.onToolEnd(tool));
@@ -622,6 +678,7 @@ class App {
     bus.on(Events.REDO, () => this.onRedo());
     bus.on(Events.PLAY_TOGGLE, () => this.onPlayToggle());
     bus.on(Events.DELETE_SELECTION, () => this.onDeleteSelection());
+    bus.on(Events.CONVERT_TO_SYMBOL, () => this.convertSelectionToSymbol());
   }
 
   private setupPanelEvents() {
@@ -635,6 +692,7 @@ class App {
       historyPanel: this.historyPanel,
       keyboardShortcutsPanel: this.keyboardShortcutsPanel,
       viewPanel: this.viewPanel,
+      libraryPanel: this.libraryPanel,
       topBarPanel: this.topBarPanel,
       layersPanel: this.layersPanel,
       wheelPanel: this.wheelPanel,
@@ -715,6 +773,8 @@ class App {
         this.onFramesDuplicateDragEnd(layerIds, layerId, start, end, delta),
       onFramesReverse: (layerIds, layerId, start, end) =>
         this.onFramesReverse(layerIds, layerId, start, end),
+      onFramesToSymbol: (layerIds, layerId, start, end) =>
+        this.onFramesToSymbol(layerIds, layerId, start, end),
       onEditMultipleFramesToggle: (enabled, layerIds, layerId, start, end) =>
         this.onEditMultipleFramesToggle(enabled, layerIds, layerId, start, end),
       onKeyframeHoldToggle: (layerId, frame) => this.onKeyframeHoldToggle(layerId, frame),
@@ -747,6 +807,12 @@ class App {
       onLayerReorder: (order, movedId) => this.onLayerReorder(order, movedId),
       onLayerRename: (id, name) => this.onLayerRename(id, name),
       onLayerMergeDown: (layerId) => this.onLayerMergeDown(layerId),
+      onSymbolPlace: (id, client) => void this.placeSymbolInstance(id, client),
+      onSymbolEdit: (id) => void this.enterSymbol(id),
+      onSymbolRename: (id, name) => this.onSymbolRename(id, name),
+      onSymbolDuplicate: (id) => this.onSymbolDuplicate(id),
+      onSymbolDelete: (id) => this.onSymbolDelete(id),
+      onExitSymbolTo: (depth) => void this.exitSymbol(depth),
       onFunctionInvoke: (id) => this.onFunctionInvoke(id),
       onFunctionDragStart: (id) => this.onFunctionDragStart(id),
       onFunctionDragMove: (id, dx, dy) => this.onFunctionDragMove(id, dx, dy),
@@ -1132,8 +1198,8 @@ class App {
   // Tool Action Handlers (from UnifiedInputManager)
   // ============================================================
 
-  private onToolStart(point: Point, tool: ToolId, fromTouchHold?: boolean) {
-    this.toolSession.onToolStart(point, tool, { fromTouchHold });
+  private onToolStart(point: Point, tool: ToolId) {
+    this.toolSession.onToolStart(point, tool);
   }
 
   private onToolMove(point: Point, tool: ToolId) {
@@ -1150,6 +1216,17 @@ class App {
 
   /** Escape while idle — peel/clear the active tool’s transient state. */
   private onToolReset(tool: ToolId) {
+    // Nothing transient to peel: Esc leaves the symbol being edited.
+    const idle =
+      !this.selectionController.hasTransientUI() &&
+      !this.directSelectController.hasSelection() &&
+      !this.createPointsController.hasDraft() &&
+      !this.magicMoveController.hasTransientUI() &&
+      !this.magicMorphController.hasTransientUI();
+    if (idle && this.documentManager.isEditingSymbol()) {
+      void this.exitSymbol();
+      return;
+    }
     this.toolSession.onToolCancel(tool);
     if (tool === "select") {
       this.selectionController.clearSelection();
@@ -1248,8 +1325,8 @@ class App {
     }
   }
 
-  private onSelectionItemsChange(items: paper.PathItem[]) {
-    if (items.length === 1) {
+  private onSelectionItemsChange(items: paper.Item[]) {
+    if (items.length === 1 && isPathItem(items[0])) {
       const fill = items[0].fillColor;
       if (fill) {
         const toHex = (channel: number) =>
@@ -1574,6 +1651,8 @@ class App {
     kind: LayerKind = "regular",
     file?: File,
   ) {
+    // Symbols hold vector layers only.
+    if (kind !== "regular" && this.documentManager.isEditingSymbol()) return;
     stageSelectedStore.set(false);
     // Create the layer in Paper.js (it lands at the top of z-order by default).
     this.paperRenderer.createLayer(id, name);
@@ -1772,7 +1851,7 @@ class App {
     if (toolStore.get() !== "select") {
       this.switchTool("select");
     }
-    const allItems = this.paperRenderer.getAllPaths();
+    const allItems = this.paperRenderer.getAllSelectableItems();
     this.selectionController.setSelectedItems(allItems);
   }
 
@@ -1896,11 +1975,184 @@ class App {
       camera: this.camera,
       closePanel: () => this.functionsPanel.close("hidden"),
       moveSelectionToNewLayer: () => this.moveSelectionToNewLayer(),
+      convertSelectionToSymbol: () => this.convertSelectionToSymbol(),
+      openSymbolInstancePopup: () => void this.openSymbolInstancePopup(),
     });
     if (didRun) {
       requestAnimationFrame(() => this.updateFunctionsPanel());
     }
     return didRun;
+  }
+
+  private symbolActionServices(): SymbolActionServices {
+    return {
+      documentManager: this.documentManager,
+      paperRenderer: this.paperRenderer,
+      selectionController: this.selectionController,
+      historyManager: this.historyManager,
+      camera: this.camera,
+    };
+  }
+
+  /** Convert to Symbol (F8): selection → new library symbol + one instance. */
+  private convertSelectionToSymbol(): void {
+    if (toolStore.get() !== "select") return;
+    if (!convertSelectionToSymbol(this.symbolActionServices())) return;
+    this.updateFunctionsPanel();
+  }
+
+  /** Library Place, or a drag onto the stage (`client` is the drop point). */
+  private async placeSymbolInstance(
+    symbolId: string,
+    client?: { x: number; y: number },
+  ): Promise<void> {
+    if (toolStore.get() !== "select") await this.switchToolAsync("select");
+    await this.timelineSession.commitLiveEdits();
+    let world: { x: number; y: number } | undefined;
+    if (client) {
+      const rect = this.uiCanvas.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return;
+      const vx = ((client.x - rect.left) / rect.width) * this.config.viewportWidth;
+      const vy = ((client.y - rect.top) / rect.height) * this.config.viewportHeight;
+      world = this.camera.screenToWorld(vx, vy);
+    }
+    if (!placeSymbolInstance(this.symbolActionServices(), symbolId, world)) return;
+    this.updateFunctionsPanel();
+  }
+
+  /** The single selected symbol instance, or null. */
+  private selectedInstance(): SymbolInstanceGroup | null {
+    const items = this.selectionController.getSelectedItems().filter((item) => item.parent);
+    const item = items.length === 1 ? items[0] : null;
+    return item && isSymbolInstance(item) ? item : null;
+  }
+
+  private instancePopupModel(instance: SymbolInstanceGroup): SymbolInstancePopupModel | null {
+    const data = readInstance(instance);
+    const symbol = data ? this.documentManager.getSymbol(data.symbol) : null;
+    if (!data || !symbol) return null;
+    const editing = this.documentManager.getEditingSymbolId();
+    const swapCandidates = this.documentManager
+      .listSymbols()
+      .filter((s) => s.id !== symbol.id)
+      .filter((s) => !editing || !this.documentManager.symbolWouldCycle(editing, s.id))
+      .map((s) => ({ id: s.id, name: s.name }));
+    return {
+      symbolId: symbol.id,
+      symbolName: symbol.name,
+      duration: symbol.duration,
+      tags: symbol.tags.map((t) => ({ ...t })),
+      mode: data.mode,
+      firstFrame: data.firstFrame,
+      swapCandidates,
+    };
+  }
+
+  private async openSymbolInstancePopup(): Promise<void> {
+    const instance = this.selectedInstance();
+    const model = instance ? this.instancePopupModel(instance) : null;
+    if (!model) return;
+    await this.symbolInstancePopup.openFor(model, this.functionsPanel);
+  }
+
+  /** Apply a playback / swap change to the selected instance and record it. */
+  private updateSelectedInstance(
+    patch: Partial<{ symbol: string; mode: SymbolPlayMode; firstFrame: number }>,
+  ): void {
+    const instance = this.selectedInstance();
+    if (!instance) return;
+    if (!this.paperRenderer.updateInstance(instance, patch)) return;
+    this.selectionController.markSelectionAsModified();
+    this.historyManager.snapshot();
+    const model = this.instancePopupModel(instance);
+    if (model) this.symbolInstancePopup.setModel(model);
+    this.redrawActiveSelectionUI();
+  }
+
+  private onSymbolRename(id: string, name: string): void {
+    if (!this.documentManager.renameSymbol(id, name)) return;
+    this.historyManager.snapshot();
+  }
+
+  private onSymbolDuplicate(id: string): void {
+    if (!this.documentManager.duplicateSymbol(id)) return;
+    this.historyManager.snapshot();
+  }
+
+  private onSymbolDelete(id: string): void {
+    if (!this.documentManager.deleteSymbol(id)) return;
+    this.historyManager.snapshot();
+  }
+
+  /**
+   * Enter a symbol for editing. With `instance`, the edit happens in place
+   * (parent artwork stays visible behind); without, it is an isolated edit
+   * from the Library. Entering is not a history entry.
+   */
+  private async enterSymbol(symbolId: string, instance?: SymbolInstanceGroup): Promise<void> {
+    if (toolStore.get() === "magic-move") return;
+    let via: Parameters<DocumentManager["enterSymbol"]>[1];
+    if (instance?.parent) {
+      const layerId = this.paperRenderer.getLayerIdForPathItem(instance);
+      const symbol = this.documentManager.getSymbol(symbolId);
+      if (!layerId || !symbol) return;
+      const data = readInstance(instance);
+      if (!data) return;
+      const m = instance.globalMatrix;
+      via = {
+        layerId,
+        instanceIid: data.iid,
+        childFrame: childFrameFor(data, this.paperRenderer.getLayerElapsed(layerId), symbol.duration),
+        worldMatrix: [m.a, m.b, m.c, m.d, m.tx, m.ty],
+      };
+    }
+    await this.timelineSession.commitLiveEdits();
+    this.selectionController.discardSelection();
+    this.directSelectController.clearSelection();
+    this.functionsPanel.close("hidden");
+    if (!this.documentManager.enterSymbol(symbolId, via)) return;
+    this.requestRedraw();
+  }
+
+  /**
+   * Context stack changed (enter / exit / undo across contexts): keep the
+   * symbol's local origin where the instance origin was on screen, and draw
+   * the artboard in the symbol's local space.
+   */
+  private onEditContextChanged(): void {
+    const next = this.documentManager.getContextOriginOffset();
+    const dx = next.x - this.contextOriginOffset.x;
+    const dy = next.y - this.contextOriginOffset.y;
+    this.contextOriginOffset = next;
+    if (dx !== 0 || dy !== 0) {
+      const state = this.camera.getState();
+      this.camera.setState({ ...state, x: state.x - dx, y: state.y - dy });
+    }
+    const toLocal = composeContextToLocal(
+      this.documentManager.getEditContext().map((ref) => ({
+        instanceIid: ref.instanceIid,
+        matrix: ref.worldMatrix,
+      })),
+    );
+    this.stageLayer.setLocalTransform(
+      toLocal ? [toLocal.a, toLocal.b, toLocal.c, toLocal.d, toLocal.tx, toLocal.ty] : null,
+    );
+    this.selectionController.discardSelection();
+    this.directSelectController.clearSelection();
+    this.functionsPanel.close("hidden");
+    this.requestRedraw();
+  }
+
+  /** Leave the innermost symbol (Esc / breadcrumb). */
+  private async exitSymbol(toDepth?: number): Promise<void> {
+    if (!this.documentManager.isEditingSymbol()) return;
+    await this.timelineSession.commitLiveEdits();
+    this.selectionController.discardSelection();
+    this.directSelectController.clearSelection();
+    this.functionsPanel.close("hidden");
+    if (toDepth === undefined) this.documentManager.exitSymbol();
+    else this.documentManager.exitSymbolTo(toDepth);
+    this.requestRedraw();
   }
 
   /** Quick option: lift the current selection onto a brand-new layer above it. */
@@ -2290,6 +2542,18 @@ class App {
     end: number,
   ) {
     this.timelineSession.onFramesReverse(layerIds, layerId, start, end);
+  }
+
+  private onFramesToSymbol(
+    layerIds: string[] | undefined,
+    layerId: string | undefined,
+    start: number,
+    end: number,
+  ) {
+    const ids = layerIds ?? (layerId ? [layerId] : []);
+    const anchor = layerId ?? ids[0];
+    if (!anchor || ids.length === 0) return;
+    convertFrameRangeToSymbol(this.symbolActionServices(), ids, start, end, anchor);
   }
 
   private onEditMultipleFramesToggle(

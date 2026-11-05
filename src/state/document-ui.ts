@@ -174,3 +174,30 @@ export function downloadDocumentName(name: string): string {
   const trimmed = name.trim() || DEFAULT_DOCUMENT_NAME;
   return /\.json$/i.test(trimmed) ? trimmed : `${trimmed}.json`;
 }
+
+/** One row in the Library panel (published by DocumentManager). */
+export interface SymbolLibraryEntry {
+  id: string;
+  name: string;
+  duration: number;
+  /** Keyframes (scene + symbols) whose content references this symbol. */
+  usageCount: number;
+  /** SVG data URL of frame 0, or null when empty. */
+  thumbnail: string | null;
+  /** False when placing it inside the symbol being edited would cycle. */
+  placeable: boolean;
+}
+
+export const symbolLibraryStore = new Store<{ symbols: SymbolLibraryEntry[] }>({
+  symbols: [],
+});
+
+/** Edit-in-place stack shown in the top-bar breadcrumb. */
+export interface EditContextState {
+  /** Outermost first; empty when editing the scene. */
+  path: Array<{ symbolId: string; name: string }>;
+  /** Innermost level was entered through an on-stage instance. */
+  inPlace: boolean;
+}
+
+export const editContextStore = new Store<EditContextState>({ path: [], inPlace: false });

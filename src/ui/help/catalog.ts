@@ -32,6 +32,7 @@ export type HelpId =
   | "dock.wheel"
   | "dock.view"
   | "dock.assist"
+  | "dock.library"
   | "dock.tools"
   | "dock.color"
   | "dock.undo"
@@ -46,6 +47,7 @@ export type HelpId =
   | "timeline.tag"
   | "timeline.auto-hold"
   | "timeline.emf"
+  | "timeline.to-symbol"
   | "layers.add"
   | "layers.add-audio"
   | "layers.delete"
@@ -94,7 +96,7 @@ export const HELP_CATALOG: Record<HelpId, HelpEntry> = {
   "tool.select": {
     id: "tool.select",
     title: "Select",
-    body: "Drag a box or lasso to select. Shift adds to the selection, or keeps a box square.",
+    body: "Click a shape or symbol to select it. Drag a box or lasso to select more. Shift adds to the selection, or keeps a box square.",
     section: "Tools",
   },
   "tool.direct-select": {
@@ -181,6 +183,12 @@ export const HELP_CATALOG: Record<HelpId, HelpEntry> = {
     body: "Snap, symmetry, and Quick Shape.",
     section: "Dock",
   },
+  "dock.library": {
+    id: "dock.library",
+    title: "Library",
+    body: "Your symbols. Drag one onto the stage to place it, including inside another symbol. Select artwork and press F8 to make a new one.",
+    section: "Dock",
+  },
   "dock.tools": {
     id: "dock.tools",
     title: "Tools",
@@ -263,6 +271,12 @@ export const HELP_CATALOG: Record<HelpId, HelpEntry> = {
     id: "timeline.emf",
     title: "Edit Multiple Frames",
     body: "Select a range of frames and edit them all at once.",
+    section: "Timeline",
+  },
+  "timeline.to-symbol": {
+    id: "timeline.to-symbol",
+    title: "To Symbol",
+    body: "Turn this frame range into a looping symbol. The range is replaced by one instance you can move, scale, and swap.",
     section: "Timeline",
   },
   "layers.add": {

@@ -63,10 +63,8 @@ export class UnifiedInputManager {
   private readonly touchDrawCommitDelayMs = 70; // grace period for second finger
 
   /**
-   * Select / direct-select (mouse + touch):
-   * - Hold → tool start with fromTouchHold (pick shape under pointer)
-   * - Quick tap → tap gesture (double-click / double-tap to pick)
-   * - Drag before hold → touch pans; mouse/pen starts marquee/move
+   * Select: tap picks the shape under the pointer; drag marquees.
+   * Direct-select: hold picks; drag before hold pans on touch, else marquees.
    */
   private pendingSelectHold: {
     pointerId: number;
@@ -259,7 +257,7 @@ export class UnifiedInputManager {
         return;
       }
 
-      // Select tools: same hold + double-tap path for mouse and touch.
+      // Select: tap picks, drag marquees. Direct-select still uses the hold.
       if (this.isSelectHoldTool()) {
         this.startPendingSelectHold(e, screenCoords);
         return;
@@ -335,7 +333,7 @@ export class UnifiedInputManager {
 
     if (!wasActive) return;
 
-    // Select-tool quick tap (no drag, no long-press): run a tap (for double-click).
+    // Quick tap (no drag): one click selects. A drag already started the marquee.
     if (
       this.pendingSelectHold &&
       this.pendingSelectHold.pointerId === e.pointerId &&
@@ -516,6 +514,11 @@ export class UnifiedInputManager {
     if (action === "edit.delete") {
       e.preventDefault();
       bus.emit(Events.DELETE_SELECTION, null);
+      return;
+    }
+    if (action === "edit.toSymbol") {
+      e.preventDefault();
+      bus.emit(Events.CONVERT_TO_SYMBOL, null);
       return;
     }
 
@@ -867,24 +870,27 @@ export class UnifiedInputManager {
       lastPressure: e.pressure || undefined,
       holdTimer: null as ReturnType<typeof setTimeout> | null,
     };
-    pending.holdTimer = setTimeout(() => {
-      if (!this.pendingSelectHold || this.pendingSelectHold !== pending) return;
-      if (this.gestureState !== "idle") return;
-      const p = this.pendingSelectHold;
-      this.clearPendingSelectHold();
-      this.startDrawingFromClient(
-        p.startClientX,
-        p.startClientY,
-        p.lastPressure,
-        p.pointerId,
-        { fromTouchHold: true },
-      );
-      try {
-        navigator.vibrate?.(10);
-      } catch {
-        // ignore
-      }
-    }, this.selectHoldMs);
+    // Select picks on click, so a hold must not select-and-drag. Direct-select still holds.
+    if (this.currentTool === "direct-select") {
+      pending.holdTimer = setTimeout(() => {
+        if (!this.pendingSelectHold || this.pendingSelectHold !== pending) return;
+        if (this.gestureState !== "idle") return;
+        const p = this.pendingSelectHold;
+        this.clearPendingSelectHold();
+        this.startDrawingFromClient(
+          p.startClientX,
+          p.startClientY,
+          p.lastPressure,
+          p.pointerId,
+          { fromTouchHold: true },
+        );
+        try {
+          navigator.vibrate?.(10);
+        } catch {
+          // ignore
+        }
+      }, this.selectHoldMs);
+    }
     this.pendingSelectHold = pending;
 
     const point = this.normalizePoint(e.clientX, e.clientY, e.pressure);

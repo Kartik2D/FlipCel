@@ -22,6 +22,7 @@ export const PANEL_VISIBILITY_DEFAULTS: PanelVisibility[] = [
   { id: "wheel-panel", label: "Wheel", visible: true, detached: true },
   { id: "view-panel", label: "View", visible: false, detached: false },
   { id: "assist-panel", label: "Assist", visible: false, detached: false },
+  { id: "library-panel", label: "Library", visible: false, detached: false },
   { id: "tools-panel", label: "Brush", visible: true, detached: true },
   { id: "color-panel", label: "Color", visible: false, detached: false },
 ];
@@ -33,6 +34,7 @@ export const TOP_BAR_PANEL_IDS = [
   "wheel-panel",
   "view-panel",
   "assist-panel",
+  "library-panel",
   "tools-panel",
   "color-panel",
 ] as const;

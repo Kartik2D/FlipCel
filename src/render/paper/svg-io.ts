@@ -1,6 +1,7 @@
 import paper from "paper";
 import type { CanvasConfig } from "../../geometry/types";
 import type { Camera } from "../camera";
+import { isSymbolInstance } from "./symbol-instances";
 
 /**
  * Extract all paths from an item (handles Groups recursively).
@@ -21,7 +22,8 @@ export function extractPaths(item: paper.Item): paper.PathItem[] {
 
 /**
  * Flatten active layer: ungroup all groups, move paths to layer root.
- * Returns true if any unwrapping actually happened.
+ * Symbol instance groups are kept intact. Returns true if any unwrapping
+ * actually happened.
  */
 export function flattenGroups(): boolean {
   const layer = paper.project?.activeLayer;
@@ -31,7 +33,7 @@ export function flattenGroups(): boolean {
   while (hasGroups) {
     hasGroups = false;
     for (const child of [...layer.children]) {
-      if (child instanceof paper.Group) {
+      if (child instanceof paper.Group && !isSymbolInstance(child)) {
         hasGroups = true;
         didFlatten = true;
         for (const gc of [...child.children]) {

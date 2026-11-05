@@ -12,6 +12,8 @@ export class StageLayer {
   private config: CanvasConfig;
   private camera: Camera | null = null;
   private unsubStage?: () => void;
+  /** Edit-in-place: draw the artboard in the edited symbol's local space. */
+  private localTransform: [number, number, number, number, number, number] | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -27,6 +29,15 @@ export class StageLayer {
 
   setCamera(camera: Camera) {
     this.camera = camera;
+    this.redraw();
+  }
+
+  /**
+   * Extra world → local matrix applied under the camera (null = scene). Set
+   * while editing a symbol in place so the artboard follows the parent.
+   */
+  setLocalTransform(matrix: [number, number, number, number, number, number] | null) {
+    this.localTransform = matrix;
     this.redraw();
   }
 
@@ -49,6 +60,10 @@ export class StageLayer {
 
     const [a, b, c, d, tx, ty] = this.camera.getTransformMatrix();
     this.ctx.setTransform(a * dpr, b * dpr, c * dpr, d * dpr, tx * dpr, ty * dpr);
+    if (this.localTransform) {
+      const [la, lb, lc, ld, ltx, lty] = this.localTransform;
+      this.ctx.transform(la, lb, lc, ld, ltx, lty);
+    }
 
     const stage = stageStore.get();
     this.ctx.fillStyle = stage.color;

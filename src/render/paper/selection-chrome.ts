@@ -3,7 +3,22 @@ import type { SelectionHandle } from "./types";
 
 export type WorldToScreen = (x: number, y: number) => { x: number; y: number };
 
-/** Trace each contour of a Path/CompoundPath in screen space. */
+/** Collect leaf paths of an item (Path, CompoundPath, or Group such as a symbol instance). */
+function collectOutlinePaths(item: paper.Item, out: paper.Path[]): void {
+  if (item instanceof paper.Path) {
+    out.push(item);
+    return;
+  }
+  if (item instanceof paper.CompoundPath || item instanceof paper.Group) {
+    for (const child of item.children) collectOutlinePaths(child, out);
+  }
+}
+
+/**
+ * Trace each contour of a Path/CompoundPath/Group in screen space. Segment
+ * points are in the path's own coordinate space; `globalMatrix` maps them to
+ * world so paths nested in a transformed symbol instance outline correctly.
+ */
 export function forEachOutlineContour(
   ctx: CanvasRenderingContext2D,
   item: paper.Item,
@@ -11,34 +26,31 @@ export function forEachOutlineContour(
   strokeContour: () => void,
 ): void {
   const paths: paper.Path[] = [];
-  if (item instanceof paper.Path) {
-    paths.push(item);
-  } else if (item instanceof paper.CompoundPath) {
-    for (const child of item.children) {
-      if (child instanceof paper.Path) paths.push(child);
-    }
-  }
+  collectOutlinePaths(item, paths);
   if (paths.length === 0) return;
 
   for (const path of paths) {
     const segs = path.segments;
     if (segs.length < 2) continue;
+    const m = path.globalMatrix;
+    const toScreen = (p: paper.Point) => {
+      const w = m.transform(p);
+      return worldToScreen(w.x, w.y);
+    };
 
     ctx.beginPath();
-    const first = worldToScreen(segs[0].point.x, segs[0].point.y);
+    const first = toScreen(segs[0].point);
     ctx.moveTo(first.x, first.y);
 
     for (let i = 1; i < segs.length; i++) {
       const prev = segs[i - 1];
       const cur = segs[i];
-      const sp = worldToScreen(cur.point.x, cur.point.y);
+      const sp = toScreen(cur.point);
       if (prev.handleOut.isZero() && cur.handleIn.isZero()) {
         ctx.lineTo(sp.x, sp.y);
       } else {
-        const cp1 = prev.point.add(prev.handleOut);
-        const cp2 = cur.point.add(cur.handleIn);
-        const s1 = worldToScreen(cp1.x, cp1.y);
-        const s2 = worldToScreen(cp2.x, cp2.y);
+        const s1 = toScreen(prev.point.add(prev.handleOut));
+        const s2 = toScreen(cur.point.add(cur.handleIn));
         ctx.bezierCurveTo(s1.x, s1.y, s2.x, s2.y, sp.x, sp.y);
       }
     }
@@ -46,14 +58,12 @@ export function forEachOutlineContour(
     if (path.closed && segs.length > 2) {
       const last = segs[segs.length - 1];
       const firstSeg = segs[0];
-      const sp = worldToScreen(firstSeg.point.x, firstSeg.point.y);
+      const sp = toScreen(firstSeg.point);
       if (last.handleOut.isZero() && firstSeg.handleIn.isZero()) {
         ctx.lineTo(sp.x, sp.y);
       } else {
-        const cp1 = last.point.add(last.handleOut);
-        const cp2 = firstSeg.point.add(firstSeg.handleIn);
-        const s1 = worldToScreen(cp1.x, cp1.y);
-        const s2 = worldToScreen(cp2.x, cp2.y);
+        const s1 = toScreen(last.point.add(last.handleOut));
+        const s2 = toScreen(firstSeg.point.add(firstSeg.handleIn));
         ctx.bezierCurveTo(s1.x, s1.y, s2.x, s2.y, sp.x, sp.y);
       }
       ctx.closePath();
@@ -135,6 +145,8 @@ export function drawTransformChrome(
   screenBounds: { x: number; y: number; width: number; height: number },
   ctx: CanvasRenderingContext2D,
   rotating?: { cursor: { x: number; y: number }; pivot: { x: number; y: number } } | null,
+  /** Screen position of a movable pivot (symbol instance); drawn as a crosshair handle. */
+  pivotScreen?: { x: number; y: number } | null,
 ): SelectionHandle[] {
   const b = screenBounds;
   const controlFill = "#000000";
@@ -228,6 +240,31 @@ export function drawTransformChrome(
     ctx.lineWidth = 2;
     ctx.fillRect(h.x - half, h.y - half, handleSize, handleSize);
     ctx.strokeRect(h.x - half, h.y - half, handleSize, handleSize);
+  }
+
+  if (pivotScreen) {
+    const p = pivotScreen;
+    const r = 6;
+    handles.push({ id: "pivot", x: p.x, y: p.y });
+    ctx.setLineDash([]);
+    ctx.lineCap = "round";
+    // Hollow ring with crosshair: white halo then black.
+    for (const pass of [
+      { style: controlStroke, width: 3.5 },
+      { style: controlFill, width: 1.5 },
+    ]) {
+      ctx.strokeStyle = pass.style;
+      ctx.lineWidth = pass.width;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p.x - r - 3, p.y);
+      ctx.lineTo(p.x + r + 3, p.y);
+      ctx.moveTo(p.x, p.y - r - 3);
+      ctx.lineTo(p.x, p.y + r + 3);
+      ctx.stroke();
+    }
   }
 
   ctx.restore();

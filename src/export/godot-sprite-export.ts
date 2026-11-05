@@ -6,6 +6,7 @@
  * live playhead.
  */
 import paper from "paper";
+import { hydrateLayer } from "../render/paper/symbol-instances";
 import type { DocumentManager, FrameTag } from "../document/document";
 import type { StageSettings } from "../state/document-ui";
 import {
@@ -193,6 +194,9 @@ function rasterizeFrame(
       if (!json) continue;
       const layer = new scope.Layer();
       layer.importJSON(json);
+      // Symbol instances are stored as empty groups: resolve their artwork.
+      const start = documentManager.getCoveringKeyframeFrame(layerId, frame) ?? frame;
+      hydrateLayer(layer, documentManager.symbolResolver, frame - start, scope);
     }
     scope.view.update();
   } finally {

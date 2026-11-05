@@ -96,6 +96,7 @@ export const PANEL_ICON_MAP: Record<string, string> = {
   "wheel-panel": "15",
   "view-panel": "14",
   "assist-panel": "16",
+  "library-panel": "shapes",
 };
 
 export function phosphorIcon(name: string, size = 16): TemplateResult {

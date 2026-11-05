@@ -1,6 +1,7 @@
 import paper from "paper";
 import { getContainmentPoint, intersectOf, subtractOf, uniteOf } from "./path-geometry";
 import { flattenGroups } from "./svg-io";
+import { normalizeInstanceOrder } from "./symbol-instances";
 import type { MergePassResult } from "./types";
 
 /**
@@ -379,6 +380,7 @@ export function mergeJsons(
   const additions = pathsOnLayer(scratch).filter((p) => !belowIds.has(p.id));
   if (additions.length > 0) addToLayer(scratch, additions, plainAdopt(emfActive));
   flattenGroups();
+  normalizeInstanceOrder(scratch);
   const out =
     scratch.children.length === 0 ? "" : ((scratch.exportJSON() as string) ?? "");
   scratch.remove();

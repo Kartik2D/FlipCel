@@ -10,6 +10,7 @@ import {
   isLayerEffectivelyVisible,
   autoHoldStore,
   realTimeLockStore,
+  editContextStore,
   type LayerKind,
 } from "../../state";
 import {
@@ -47,6 +48,7 @@ export class FlipCelLayersPanel extends FloatingPanel {
 
   private layers = new StoreController(this, layerStore);
   private timeline = new StoreController(this, timelineStore);
+  private symbolContext = new StoreController(this, editContextStore);
   private assetStatus = new StoreController(this, assetStatusStore);
   /** Last frame whose ruler chrome was patched outside guards. */
   private chromePlayheadFrame = -1;
@@ -770,6 +772,16 @@ export class FlipCelLayersPanel extends FloatingPanel {
     this.emit("frames-auto-morph", { ...layerActionDetail(sel), anchor });
   }
 
+  private onFrameActionToSymbolClick() {
+    const sel = this.frameSelection;
+    if (!sel || sel.layerIds.length === 0) return;
+    this.emit("frames-to-symbol", layerActionDetail(sel));
+  }
+
+  private inSymbol(): boolean {
+    return !!this.symbolContext.value?.path.length;
+  }
+
   private onFrameActionReverseClick() {
     const sel = this.frameSelection;
     if (!sel || this.reverseAnimation) return;
@@ -1135,6 +1147,14 @@ export class FlipCelLayersPanel extends FloatingPanel {
               @click=${(e: Event) =>
                 this.onFrameActionAutoMorphClick(e.currentTarget as HTMLElement)}
             >Morph</button>
+            <button
+              type="button"
+              class="frame-action-btn"
+              data-help="timeline.to-symbol"
+              title="Convert this range into a looping symbol"
+              aria-label="To Symbol"
+              @click=${() => this.onFrameActionToSymbolClick()}
+            >To Symbol</button>
             <button
               type="button"
               class="frame-action-btn negative"
@@ -2821,13 +2841,15 @@ export class FlipCelLayersPanel extends FloatingPanel {
         aria-label="Add layer"
         @click=${() => this.addLayer()}
       >+</button>
-      <button
-        type="button"
-        class="layer-action-button"
-        data-help="layers.add-audio"
-        aria-label="Add audio layer"
-        @click=${() => this.addAudioLayer()}
-      >${phosphorIcon("speaker-high", 14)}</button>
+      ${this.inSymbol()
+        ? nothing
+        : html`<button
+            type="button"
+            class="layer-action-button"
+            data-help="layers.add-audio"
+            aria-label="Add audio layer"
+            @click=${() => this.addAudioLayer()}
+          >${phosphorIcon("speaker-high", 14)}</button>`}
       <button
         type="button"
         class="layer-action-button layer-delete-current"
@@ -2954,9 +2976,10 @@ export class FlipCelLayersPanel extends FloatingPanel {
       t.tracks.map((track) => [track.id, track.keyframes]),
     );
 
+    const title = this.symbolContext.value?.path.at(-1)?.name ?? "Layers";
     return html`
       <div class="block">
-        ${this.renderDragHandlePill("Layers")}
+        ${this.renderDragHandlePill(title)}
         <div class="panel-body">
           <div class="face">
             <div class="panel-form">

@@ -41,7 +41,7 @@ import {
 export function createBlankSerializedDocument(): SerializedDocument {
   const layerId = generateLayerId();
   return {
-    version: 2,
+    version: 3,
     name: DEFAULT_DOCUMENT_NAME,
     stage: {
       width: DEFAULT_STAGE_WIDTH,
@@ -253,7 +253,7 @@ export class TimelineSession {
       if (toolStore.get() !== "select") {
         switchTool("select");
       }
-      const allItems = paperRenderer.getAllPaths();
+      const allItems = paperRenderer.getAllSelectableItems();
       selectionController.setSelectedItems(allItems);
     }
 

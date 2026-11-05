@@ -29,10 +29,12 @@ import {
   realTimeLockStore,
   selectionStore,
   STAGE_LAYER_ID,
+  generateLayerId,
   isLayerEffectivelyVisible,
   type Layer,
   type LayerState,
 } from "../state/index";
+import { symbolLibraryStore, editContextStore } from "../state/document-ui";
 import {
   collectDocumentColors,
   colorsFromPaperJson,
@@ -40,23 +42,38 @@ import {
   replaceColorInPaperJson,
 } from "./colors";
 import type { PaperRenderer } from "../render/paper-renderer";
+import {
+  EMPTY_CONTENT_ID,
+  contentIdAtFrame,
+  coveringKeyframeOf,
+  previousKeyframeOf,
+  type Keyframe,
+} from "./keyframes";
+import {
+  cloneSymbol,
+  cloneSymbols,
+  newInstanceId,
+  normalizeSymbol,
+  scanInstanceSymbolIds,
+  type SymbolDefinition,
+  type SymbolResolver,
+} from "./symbols";
+import { clearSymbolTemplateCache } from "../render/paper/symbol-instances";
+import {
+  clearSymbolThumbnailCache,
+  symbolThumbnailUrl,
+} from "../render/paper/symbol-thumbnail";
+
+export { EMPTY_CONTENT_ID, type Keyframe } from "./keyframes";
+export type {
+  SymbolDefinition,
+  SymbolInstanceData,
+  SymbolPlayMode,
+} from "./symbols";
 
 // ============================================================
 // Types
 // ============================================================
-
-export interface Keyframe {
-  frameIndex: number;
-  contentId: string;
-  /**
-   * Last frame (inclusive) this keyframe stays visible. Always in
-   * [frameIndex, nextKeyframe.frameIndex - 1]. A plain keyframe has
-   * holdUntil === frameIndex (one frame); larger values are explicit holds.
-   * Blank keyframes are always single-frame (holdUntil === frameIndex).
-   * Frames not covered by any keyframe's span render empty.
-   */
-  holdUntil: number;
-}
 
 export type TrackKind = "vector" | "image" | "audio";
 
@@ -171,9 +188,6 @@ export function applyFrameTagResize(
   return out;
 }
 
-/** Shared id for "empty layer" content, so blank layers/keyframes dedupe. */
-export const EMPTY_CONTENT_ID = "empty";
-
 export const DEFAULT_FRAME_RATE = 12;
 export const DEFAULT_DURATION = 24;
 
@@ -232,7 +246,7 @@ export type EmfRange = {
 
 /** Serialized document JSON (also the autosave payload). */
 export interface SerializedDocument {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   /** Display / download name. Optional on older saves. */
   name?: string;
   stage: { width: number; height: number; color: string };
@@ -246,16 +260,44 @@ export interface SerializedDocument {
   tags?: FrameTag[];
   /** Asset id → metadata. Bytes live in IndexedDB, not this JSON. */
   assets?: Record<string, AssetMeta>;
+  /** Symbol id → nested timeline (v3). Content ids point into `content`. */
+  symbols?: Record<string, SymbolDefinition>;
+}
+
+/** One timeline's mutable state (the scene or a symbol). */
+export interface TimelineSnapshot {
+  tracks: LayerTrack[];
+  duration: number;
+  tags: FrameTag[];
+  currentFrame: number;
+}
+
+/** One level of "edit symbol": which symbol, and (in place) via which instance. */
+export interface EditContextRef {
+  symbolId: string;
+  /** Instance entered through (null = isolated edit from the Library). */
+  instanceIid: string | null;
+  layerId: string | null;
+  /** Parent playhead when entered. */
+  parentFrame: number;
+  /** Instance world matrix `[a, b, c, d, tx, ty]` for the in-place backdrop. */
+  worldMatrix: [number, number, number, number, number, number] | null;
 }
 
 /** Snapshot of the document's mutable state, used by doc-level history. */
 export interface DocumentState {
-  tracks: LayerTrack[];
-  currentFrame: number;
-  duration: number;
+  /** The scene timeline. */
+  root: TimelineSnapshot;
+  symbols: Record<string, SymbolDefinition>;
+  /** Edit-symbol stack (outermost first). Empty = editing the scene. */
+  context: EditContextRef[];
+  /** Playhead of the timeline being edited (root or innermost symbol). */
+  activeFrame: number;
   frameRate: number;
-  tags: FrameTag[];
 }
+
+export type { EditContextState, SymbolLibraryEntry } from "../state/document-ui";
+export { editContextStore, symbolLibraryStore } from "../state/document-ui";
 
 export function cloneTracks(tracks: LayerTrack[]): LayerTrack[] {
   return tracks.map((t) => ({
@@ -266,6 +308,22 @@ export function cloneTracks(tracks: LayerTrack[]): LayerTrack[] {
 
 export function cloneTags(tags: FrameTag[]): FrameTag[] {
   return tags.map((t) => ({ ...t }));
+}
+
+/** Rescale tag spans by `ratio` into a timeline of `newDuration` frames. */
+function retimeTagList<T extends { start: number; end: number }>(
+  tags: T[],
+  ratio: number,
+  newDuration: number,
+): T[] {
+  const last = newDuration - 1;
+  return tags
+    .map((t) => {
+      const start = Math.max(0, Math.min(last, Math.round(t.start * ratio)));
+      const end = Math.max(start, Math.min(last, Math.round((t.end + 1) * ratio) - 1));
+      return { ...t, start, end };
+    })
+    .filter((t) => t.start <= t.end);
 }
 
 /** Parse a Paper layer JSON payload into `[tag, props, ...]`, or null. */
@@ -349,12 +407,31 @@ export class DocumentManager {
   private editMultipleFrames = false;
   private emfRange: EmfRange | null = null;
 
+  /** Symbol library. The symbol being edited is synced via `flushActiveTimeline`. */
+  private symbols = new Map<string, SymbolDefinition>();
+  private symbolIdCounter = 1;
+  /**
+   * Edit-symbol stack. `saved` is the timeline that was live before entering
+   * `ref.symbolId` (stack[0].saved is the scene).
+   */
+  private contextStack: Array<{ ref: EditContextRef; saved: TimelineSnapshot }> = [];
+  /** contentId → symbol ids referenced by instances in that content. */
+  private symbolRefCache = new Map<string, string[]>();
+  readonly symbolResolver: SymbolResolver = {
+    getSymbol: (id) => {
+      this.flushActiveTimeline();
+      return this.symbols.get(id) ?? null;
+    },
+    getContent: (id) => this.content.get(id) ?? "",
+  };
+
   /** contentId currently loaded into each Paper layer. */
   private loadedContent = new Map<string, string>();
   private contentIdCounter = 1;
 
   constructor(renderer: PaperRenderer) {
     this.renderer = renderer;
+    this.renderer.setSymbolResolver(this.symbolResolver);
     // Ghosts follow layer selection / visibility / lock; those can change
     // without a document publish(), so refresh here too.
     let lastActive = layerStore.get().activeLayerId;
@@ -567,11 +644,19 @@ export class DocumentManager {
    */
   gcContent(referenced: Set<string>): void {
     referenced.add(EMPTY_CONTENT_ID);
-    for (const track of this.tracks) {
+    for (const track of this.allTracks()) {
       for (const kf of track.keyframes) referenced.add(kf.contentId);
     }
+    for (const entry of this.contextStack) {
+      for (const track of entry.saved.tracks) {
+        for (const kf of track.keyframes) referenced.add(kf.contentId);
+      }
+    }
     for (const id of [...this.content.keys()]) {
-      if (!referenced.has(id)) this.content.delete(id);
+      if (!referenced.has(id)) {
+        this.content.delete(id);
+        this.symbolRefCache.delete(id);
+      }
     }
   }
 
@@ -597,12 +682,7 @@ export class DocumentManager {
 
   /** Last keyframe with frameIndex <= frame, or null when none exists. */
   private previousKeyframe(track: LayerTrack, frame: number): Keyframe | null {
-    let previous: Keyframe | null = null;
-    for (const kf of track.keyframes) {
-      if (kf.frameIndex > frame) break;
-      previous = kf;
-    }
-    return previous;
+    return previousKeyframeOf(track, frame);
   }
 
   /**
@@ -611,8 +691,7 @@ export class DocumentManager {
    * span ended).
    */
   private coveringKeyframe(track: LayerTrack, frame: number): Keyframe | null {
-    const kf = this.previousKeyframe(track, frame);
-    return kf && kf.holdUntil >= frame ? kf : null;
+    return coveringKeyframeOf(track, frame);
   }
 
   /**
@@ -628,7 +707,409 @@ export class DocumentManager {
 
   /** Content visible at a frame (empty when no keyframe span covers it). */
   private contentIdAt(track: LayerTrack, frame: number): string {
-    return this.coveringKeyframe(track, frame)?.contentId ?? EMPTY_CONTENT_ID;
+    return contentIdAtFrame(track, frame);
+  }
+
+  // ------------------------------------------------------------
+  // Symbols — library, edit context, usage
+  // ------------------------------------------------------------
+
+  private newSymbolId(): string {
+    return `sym${Date.now().toString(36)}-${this.symbolIdCounter++}`;
+  }
+
+  private nextDefaultSymbolName(): string {
+    let n = 1;
+    const used = new Set([...this.symbols.values()].map((s) => s.name));
+    while (used.has(`Symbol ${n}`)) n++;
+    return `Symbol ${n}`;
+  }
+
+  /** Symbol currently being edited (innermost context), or null at the scene. */
+  getEditingSymbolId(): string | null {
+    return this.contextStack[this.contextStack.length - 1]?.ref.symbolId ?? null;
+  }
+
+  isEditingSymbol(): boolean {
+    return this.contextStack.length > 0;
+  }
+
+  getEditContext(): EditContextRef[] {
+    return this.contextStack.map((e) => ({ ...e.ref }));
+  }
+
+  /**
+   * Write the live timeline (tracks/duration/tags) back into the symbol
+   * record being edited. Cheap; called before every read of the library so
+   * hydration, history, and saves always see live edits.
+   */
+  private flushActiveTimeline(): void {
+    const top = this.contextStack[this.contextStack.length - 1];
+    if (!top) return;
+    const sym = this.symbols.get(top.ref.symbolId);
+    if (!sym) return;
+    sym.tracks = this.tracks as SymbolDefinition["tracks"];
+    sym.duration = this.duration;
+    sym.tags = this.tags;
+  }
+
+  /** Scene timeline (live when at the root, else the saved root snapshot). */
+  private rootTimeline(): TimelineSnapshot {
+    const root = this.contextStack[0]?.saved;
+    return root ?? {
+      tracks: this.tracks,
+      duration: this.duration,
+      tags: this.tags,
+      currentFrame: this.currentFrame,
+    };
+  }
+
+  /** Every track in the document: scene + all symbols (after flush). */
+  private allTracks(): LayerTrack[] {
+    this.flushActiveTimeline();
+    const out: LayerTrack[] = [...this.rootTimeline().tracks];
+    // Intermediate contexts (depth ≥ 2) are flushed on enter, so the symbol
+    // map already has them; only the innermost needed a flush above.
+    for (const sym of this.symbols.values()) out.push(...(sym.tracks as LayerTrack[]));
+    return out;
+  }
+
+  getSymbol(id: string): SymbolDefinition | null {
+    this.flushActiveTimeline();
+    const sym = this.symbols.get(id);
+    return sym ? cloneSymbol(sym) : null;
+  }
+
+  listSymbols(): SymbolDefinition[] {
+    this.flushActiveTimeline();
+    return [...this.symbols.values()].map(cloneSymbol);
+  }
+
+  /**
+   * Register a new symbol whose content ids already exist in the content
+   * store. Returns the stored definition (name auto-assigned when omitted).
+   */
+  createSymbol(
+    def: Omit<SymbolDefinition, "id" | "name"> & { name?: string },
+  ): SymbolDefinition {
+    const symbol: SymbolDefinition = {
+      id: this.newSymbolId(),
+      name: (def.name?.trim() || this.nextDefaultSymbolName()).slice(0, 64),
+      duration: Math.max(1, Math.round(def.duration)),
+      tracks: def.tracks.map((t) => ({
+        ...t,
+        kind: "vector",
+        keyframes: t.keyframes.map((k) => ({ ...k })),
+      })),
+      tags: def.tags.map((t) => ({ ...t })),
+    };
+    this.symbols.set(symbol.id, symbol);
+    this.publish();
+    return cloneSymbol(symbol);
+  }
+
+  /** Store a content blob for symbol artwork; returns its id. */
+  addContent(json: string): string {
+    if (!json) return EMPTY_CONTENT_ID;
+    const id = this.newContentId();
+    this.content.set(id, json);
+    return id;
+  }
+
+  renameSymbol(id: string, name: string): boolean {
+    const sym = this.symbols.get(id);
+    if (!sym) return false;
+    const next = name.trim().slice(0, 64);
+    if (!next || next === sym.name) return false;
+    sym.name = next;
+    this.publish();
+    return true;
+  }
+
+  /** Deep-copy a symbol (shared content ids; artwork is copy-on-write). */
+  duplicateSymbol(id: string): SymbolDefinition | null {
+    this.flushActiveTimeline();
+    const src = this.symbols.get(id);
+    if (!src) return null;
+    const copy = cloneSymbol(src);
+    copy.id = this.newSymbolId();
+    let base = src.name.replace(/\s+\d+$/, "");
+    if (!base) base = "Symbol";
+    let n = 2;
+    const used = new Set([...this.symbols.values()].map((s) => s.name));
+    while (used.has(`${base} ${n}`)) n++;
+    copy.name = `${base} ${n}`;
+    for (const t of copy.tracks) t.id = generateLayerId();
+    this.symbols.set(copy.id, copy);
+    this.publish();
+    return cloneSymbol(copy);
+  }
+
+  /** Remove an unused symbol. Returns false when missing or still placed. */
+  deleteSymbol(id: string): boolean {
+    if (!this.symbols.has(id)) return false;
+    if (this.symbolUsageCounts().get(id)) return false;
+    if (this.contextStack.some((e) => e.ref.symbolId === id)) return false;
+    this.symbols.delete(id);
+    this.publish();
+    return true;
+  }
+
+  private symbolRefsIn(contentId: string): string[] {
+    if (contentId === EMPTY_CONTENT_ID) return [];
+    const cached = this.symbolRefCache.get(contentId);
+    if (cached) return cached;
+    const refs = scanInstanceSymbolIds(this.content.get(contentId) ?? "");
+    this.symbolRefCache.set(contentId, refs);
+    return refs;
+  }
+
+  /** Keyframes (scene + symbols) referencing each symbol. */
+  private symbolUsageCounts(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const track of this.allTracks()) {
+      for (const kf of track.keyframes) {
+        for (const id of this.symbolRefsIn(kf.contentId)) {
+          counts.set(id, (counts.get(id) ?? 0) + 1);
+        }
+      }
+    }
+    return counts;
+  }
+
+  /** Symbol ids an instance of `symbolId` may NOT contain (itself + ancestors). */
+  symbolWouldCycle(containerSymbolId: string, placedSymbolId: string): boolean {
+    if (containerSymbolId === placedSymbolId) return true;
+    this.flushActiveTimeline();
+    const visited = new Set<string>();
+    const stack = [placedSymbolId];
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const sym = this.symbols.get(id);
+      if (!sym) continue;
+      for (const t of sym.tracks) {
+        for (const kf of t.keyframes) {
+          for (const ref of this.symbolRefsIn(kf.contentId)) {
+            if (ref === containerSymbolId) return true;
+            stack.push(ref);
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  private publishSymbolLibrary(): void {
+    this.flushActiveTimeline();
+    const counts = this.symbolUsageCounts();
+    const editing = this.getEditingSymbolId();
+    symbolLibraryStore.set({
+      symbols: [...this.symbols.values()].map((s) => ({
+        id: s.id,
+        name: s.name,
+        duration: s.duration,
+        usageCount: counts.get(s.id) ?? 0,
+        thumbnail: symbolThumbnailUrl(s, this.symbolResolver),
+        placeable: !editing || !this.symbolWouldCycle(editing, s.id),
+      })),
+    });
+    const path = this.contextStack.map((e) => ({
+      symbolId: e.ref.symbolId,
+      name: this.symbols.get(e.ref.symbolId)?.name ?? "Symbol",
+    }));
+    const prev = editContextStore.get();
+    const inPlace = this.contextStack[this.contextStack.length - 1]?.ref.instanceIid != null;
+    if (
+      prev.inPlace !== inPlace ||
+      prev.path.length !== path.length ||
+      prev.path.some((p, i) => p.symbolId !== path[i].symbolId || p.name !== path[i].name)
+    ) {
+      editContextStore.set({ path, inPlace });
+    }
+  }
+
+  /** Fired after the edit-symbol context changes (enter / exit / history). */
+  onContextChanged: (() => void) | null = null;
+
+  /** Replace the live timeline fields from a snapshot (clones tracks/tags). */
+  private loadTimeline(snap: TimelineSnapshot): void {
+    this.tracks = cloneTracks(snap.tracks);
+    for (const track of this.tracks) track.locked = !!track.locked;
+    this.duration = Math.max(1, Math.round(snap.duration));
+    this.tags = cloneTags(snap.tags ?? []);
+    this.clampTagsToDuration();
+    this.currentFrame = Math.max(0, Math.min(this.duration - 1, snap.currentFrame));
+    this.loadedContent.clear();
+  }
+
+  /** Save the live timeline and load `ref.symbolId` for editing. */
+  private pushContext(ref: EditContextRef): void {
+    const sym = this.symbols.get(ref.symbolId);
+    if (!sym) return;
+    this.flushActiveTimeline();
+    this.contextStack.push({
+      ref,
+      saved: {
+        tracks: this.tracks,
+        duration: this.duration,
+        tags: this.tags,
+        currentFrame: this.currentFrame,
+      },
+    });
+    this.loadTimeline({
+      tracks: sym.tracks as LayerTrack[],
+      duration: sym.duration,
+      tags: sym.tags,
+      currentFrame: 0,
+    });
+  }
+
+  /** Flush the symbol being edited and restore the parent timeline. */
+  private popContext(): EditContextRef | null {
+    const top = this.contextStack.pop();
+    if (!top) return null;
+    // Flush into the symbol *before* swapping the live timeline out.
+    const sym = this.symbols.get(top.ref.symbolId);
+    if (sym) {
+      sym.tracks = this.tracks as SymbolDefinition["tracks"];
+      sym.duration = this.duration;
+      sym.tags = this.tags;
+    }
+    this.tracks = top.saved.tracks;
+    this.duration = top.saved.duration;
+    this.tags = top.saved.tags;
+    this.currentFrame = Math.max(0, Math.min(this.duration - 1, top.saved.currentFrame));
+    this.loadedContent.clear();
+    return top.ref;
+  }
+
+  /**
+   * Enter a symbol for editing. `via` (layer + instance iid + elapsed child
+   * frame + world matrix) makes it an in-place edit; omitted = isolated edit
+   * from the Library. Caller commits live edits first and snapshots history
+   * afterwards only if it wants the entry (entering is not an edit).
+   */
+  enterSymbol(
+    symbolId: string,
+    via?: {
+      layerId: string;
+      instanceIid: string;
+      childFrame: number;
+      worldMatrix: [number, number, number, number, number, number];
+    },
+  ): boolean {
+    if (!this.symbols.has(symbolId)) return false;
+    if (this.contextStack.some((e) => e.ref.symbolId === symbolId)) return false;
+    if (this.playing) this.setPlaying(false);
+    if (this.editMultipleFrames) {
+      this.commitEditMultipleFrames();
+      this.clearEditMultipleFramesState();
+    } else {
+      this.commitDirtyLayerContent();
+    }
+    this.pushContext({
+      symbolId,
+      instanceIid: via?.instanceIid ?? null,
+      layerId: via?.layerId ?? null,
+      parentFrame: this.currentFrame,
+      worldMatrix: via?.worldMatrix ?? null,
+    });
+    if (via) {
+      this.currentFrame = Math.max(0, Math.min(this.duration - 1, Math.round(via.childFrame)));
+    }
+    const top = this.tracks[this.tracks.length - 1]?.id ?? STAGE_LAYER_ID;
+    this.updateLayerStoreFromTracks(top);
+    this.reloadCurrentFrame();
+    this.syncContextBackdrop();
+    this.onContextChanged?.();
+    this.publish();
+    return true;
+  }
+
+  /** Leave the innermost symbol. Returns the context left, or null at root. */
+  exitSymbol(): EditContextRef | null {
+    if (this.contextStack.length === 0) return null;
+    if (this.playing) this.setPlaying(false);
+    if (this.editMultipleFrames) {
+      this.commitEditMultipleFrames();
+      this.clearEditMultipleFramesState();
+    } else {
+      this.commitDirtyLayerContent();
+    }
+    const ref = this.popContext();
+    const active = ref?.layerId ?? this.tracks[this.tracks.length - 1]?.id ?? STAGE_LAYER_ID;
+    this.updateLayerStoreFromTracks(active);
+    this.reloadCurrentFrame();
+    this.syncContextBackdrop();
+    this.onContextChanged?.();
+    this.publish();
+    return ref;
+  }
+
+  /** Pop contexts until `depth` levels remain (0 = scene). */
+  exitSymbolTo(depth: number): void {
+    while (this.contextStack.length > Math.max(0, depth)) {
+      if (!this.exitSymbol()) break;
+    }
+  }
+
+  /**
+   * Parent-context data for the in-place backdrop: the saved timeline one
+   * level up plus the context ref. Null when editing the scene.
+   */
+  getBackdropSource(): {
+    ref: EditContextRef;
+    timeline: TimelineSnapshot;
+  } | null {
+    const top = this.contextStack[this.contextStack.length - 1];
+    if (!top) return null;
+    return { ref: top.ref, timeline: top.saved };
+  }
+
+  /** Rebuild (or clear) the renderer's in-place backdrop from the context stack. */
+  private syncContextBackdrop(): void {
+    if (this.contextStack.length === 0) {
+      this.renderer.clearContextBackdrop();
+      return;
+    }
+    this.renderer.setContextBackdrop(
+      this.contextStack.map((e) => ({
+        tracks: e.saved.tracks,
+        frame: e.ref.parentFrame,
+        instanceIid: e.ref.instanceIid,
+        layerId: e.ref.layerId,
+        matrix: e.ref.worldMatrix,
+      })),
+    );
+  }
+
+  /**
+   * Camera compensation for edit-in-place: the sum of the entered instances'
+   * translations (each in the space that was current when it was entered).
+   * The camera subtracts this so a symbol's local origin stays on screen
+   * where the instance's origin was. Isolated levels contribute nothing.
+   */
+  getContextOriginOffset(): { x: number; y: number } {
+    let x = 0;
+    let y = 0;
+    for (const e of this.contextStack) {
+      if (!e.ref.worldMatrix) continue;
+      x += e.ref.worldMatrix[4];
+      y += e.ref.worldMatrix[5];
+    }
+    return { x, y };
+  }
+
+  /** Elapsed frames into each layer's covering keyframe at the playhead. */
+  private layerElapsedMap(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const track of this.tracks) {
+      const kf = this.coveringKeyframe(track, this.currentFrame);
+      out.set(track.id, kf ? this.currentFrame - kf.frameIndex : 0);
+    }
+    return out;
   }
 
   // ------------------------------------------------------------
@@ -1449,6 +1930,128 @@ export class DocumentManager {
    * are clipped to the range, and a hold covering `start` is materialized
    * as a keyframe at `start`.
    */
+  /**
+   * Move frames `start..end` on `layerIds` into a new looping symbol and
+   * replace the range on `anchorLayerId` with one instance. Instances
+   * already in the range become nested symbols. Refuses a cycle with the
+   * symbol currently being edited. Returns the new symbol id, or null.
+   */
+  convertFrameRangeToSymbol(
+    layerIds: string[],
+    start: number,
+    end: number,
+    anchorLayerId: string,
+  ): string | null {
+    if (this.playing) this.setPlaying(false);
+    if (this.editMultipleFrames) {
+      this.commitEditMultipleFrames();
+      this.clearEditMultipleFramesState();
+    } else {
+      this.commitDirtyLayerContent();
+    }
+
+    [start, end] = this.normalizeRange(start, end);
+    const duration = end - start + 1;
+    const tracks: SymbolDefinition["tracks"] = [];
+    const seen = new Map<string, string>();
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let anyBounds = false;
+
+    for (const layerId of layerIds) {
+      const track = this.requireKeyframeTrack(layerId);
+      if (!track || !isVectorTrack(track)) continue;
+      const segment = this.extractFrameRange(track, start, end);
+      const usable = segment.filter((k) => k.contentId !== EMPTY_CONTENT_ID);
+      if (usable.length === 0) continue;
+      const editing = this.getEditingSymbolId();
+      for (const kf of usable) {
+        if (editing) {
+          for (const ref of this.symbolRefsIn(kf.contentId)) {
+            if (this.symbolWouldCycle(editing, ref)) return null;
+          }
+        }
+        if (seen.has(kf.contentId)) continue;
+        const json = this.content.get(kf.contentId) ?? "";
+        const bounds = json ? this.renderer.measureLayerJsonBounds(json) : null;
+        seen.set(kf.contentId, json);
+        if (!bounds) continue;
+        minX = Math.min(minX, bounds.x);
+        minY = Math.min(minY, bounds.y);
+        maxX = Math.max(maxX, bounds.x + bounds.width);
+        maxY = Math.max(maxY, bounds.y + bounds.height);
+        anyBounds = true;
+      }
+      tracks.push({
+        id: generateLayerId(),
+        name: track.name,
+        visible: true,
+        locked: false,
+        kind: "vector",
+        keyframes: usable.map((k) => ({
+          frameIndex: k.frameIndex - start,
+          contentId: k.contentId,
+          holdUntil: k.holdUntil - start,
+        })),
+      });
+    }
+    if (tracks.length === 0) return null;
+
+    const origin = anyBounds
+      ? { x: (minX + maxX) / 2, y: (minY + maxY) / 2 }
+      : { x: 0, y: 0 };
+    const remapped = new Map<string, string>();
+    for (const [oldId, json] of seen) {
+      if (!json) {
+        remapped.set(oldId, EMPTY_CONTENT_ID);
+        continue;
+      }
+      const shifted = this.renderer.translateLayerJson(json, {
+        x: -origin.x,
+        y: -origin.y,
+      });
+      remapped.set(oldId, this.addContent(shifted));
+    }
+    for (const track of tracks) {
+      for (const kf of track.keyframes) {
+        kf.contentId = remapped.get(kf.contentId) ?? EMPTY_CONTENT_ID;
+      }
+    }
+
+    const tags = this.tags
+      .filter((t) => t.start >= start && t.end <= end)
+      .map((t) => ({
+        ...t,
+        id: this.newTagId(),
+        start: t.start - start,
+        end: t.end - start,
+      }));
+
+    const symbol = this.createSymbol({ tracks, duration, tags });
+
+    for (const layerId of layerIds) {
+      const track = this.requireKeyframeTrack(layerId);
+      if (track) this.cutFrameRange(track, start, end);
+    }
+
+    const anchor = this.requireKeyframeTrack(anchorLayerId);
+    if (anchor && isVectorTrack(anchor)) {
+      const json = this.renderer.exportInstanceLayerJSON(
+        { symbol: symbol.id, iid: newInstanceId(), mode: "loop", firstFrame: 0 },
+        origin,
+        anchor.name,
+      );
+      this.writeLayerContentAtFrame(anchor.id, start, json, { publish: false });
+      this.extendKeyframeHoldThrough(anchor.id, start, end, { publish: false });
+    }
+
+    this.reloadCurrentFrame();
+    this.publish();
+    return symbol.id;
+  }
+
   private extractFrameRange(track: LayerTrack, start: number, end: number): Keyframe[] {
     const segment: Keyframe[] = [];
     for (const kf of track.keyframes) {
@@ -1704,17 +2307,7 @@ export class DocumentManager {
   }
 
   private retimeTags(ratio: number, newDuration: number): void {
-    const last = newDuration - 1;
-    this.tags = this.tags
-      .map((t) => {
-        const start = Math.max(0, Math.min(last, Math.round(t.start * ratio)));
-        const end = Math.max(
-          start,
-          Math.min(last, Math.round((t.end + 1) * ratio) - 1),
-        );
-        return { ...t, start, end };
-      })
-      .filter((t) => t.start <= t.end);
+    this.tags = retimeTagList(this.tags, ratio, newDuration);
   }
 
   /**
@@ -1745,6 +2338,8 @@ export class DocumentManager {
         0,
         Math.min(newDuration - 1, Math.round(this.currentFrame * ratio)),
       );
+      this.retimeOtherTimelines(ratio);
+      this.loadedContent.clear();
       this.reloadCurrentFrame();
       this.publish();
       return true;
@@ -1760,8 +2355,12 @@ export class DocumentManager {
    * size. When shrinking, keyframes that land on the same frame collapse
    * and the later one wins.
    */
-  private retimeTracks(ratio: number, newDuration: number): void {
-    for (const track of this.tracks) {
+  private retimeTracks(
+    ratio: number,
+    newDuration: number,
+    tracks: LayerTrack[] = this.tracks,
+  ): void {
+    for (const track of tracks) {
       const remapped: Keyframe[] = [];
       for (const kf of track.keyframes) {
         const start = Math.max(
@@ -1794,6 +2393,31 @@ export class DocumentManager {
       }
       track.keyframes = remapped;
     }
+  }
+
+  /** Real-time lock: symbols and saved parent timelines keep wall-clock timing too. */
+  private retimeOtherTimelines(ratio: number): void {
+    const scaled = (d: number) => Math.max(1, Math.min(9999, Math.round(d * ratio)));
+    const editing = this.getEditingSymbolId();
+    for (const sym of this.symbols.values()) {
+      if (sym.id === editing) continue; // live timeline already retimed
+      const d = scaled(sym.duration);
+      this.retimeTracks(ratio, d, sym.tracks as LayerTrack[]);
+      sym.tags = retimeTagList(sym.tags, ratio, d);
+      sym.duration = d;
+    }
+    for (const entry of this.contextStack) {
+      const d = scaled(entry.saved.duration);
+      this.retimeTracks(ratio, d, entry.saved.tracks);
+      entry.saved.tags = retimeTagList(entry.saved.tags, ratio, d);
+      entry.saved.duration = d;
+      entry.saved.currentFrame = Math.max(
+        0,
+        Math.min(d - 1, Math.round(entry.saved.currentFrame * ratio)),
+      );
+      entry.ref.parentFrame = entry.saved.currentFrame;
+    }
+    this.flushActiveTimeline();
   }
 
   isRealTimeLockEnabled(): boolean {
@@ -2082,6 +2706,11 @@ export class DocumentManager {
       this.renderer.getActiveLayerId() ?? this.tracks[this.tracks.length - 1]?.id;
     if (this.tracks.length === 0) return;
 
+    // Symbol instances resolve their frame from how far the playhead is into
+    // the covering keyframe. Must be set before any (re)import below.
+    this.renderer.setLayerElapsed(this.layerElapsedMap());
+    const changedIds = new Set<string>();
+
     // EMF overlay is keyed by the selected range, not the playhead. Moving the
     // playhead only retargets where new strokes go — keep the composite (and
     // any live selection) intact.
@@ -2121,7 +2750,10 @@ export class DocumentManager {
           }
           const contentId = this.contentIdAt(track, this.currentFrame);
           const changed = this.loadedContent.get(track.id) !== contentId;
-          if (changed) this.loadedContent.set(track.id, contentId);
+          if (changed) {
+            this.loadedContent.set(track.id, contentId);
+            changedIds.add(track.id);
+          }
           return withEffective(
             track,
             changed ? this.content.get(contentId) ?? "" : undefined,
@@ -2129,6 +2761,7 @@ export class DocumentManager {
         }),
         activeLayerId ?? STAGE_LAYER_ID,
       );
+      this.rehydrateHeldInstances(changedIds, emfSet);
       const { start, end } = this.emfRange;
       this.renderer.setEmfPlayheadFrame(
         this.currentFrame >= start && this.currentFrame <= end
@@ -2142,7 +2775,10 @@ export class DocumentManager {
       this.tracks.map((track) => {
         const contentId = this.contentIdAt(track, this.currentFrame);
         const changed = this.loadedContent.get(track.id) !== contentId;
-        if (changed) this.loadedContent.set(track.id, contentId);
+        if (changed) {
+          this.loadedContent.set(track.id, contentId);
+          changedIds.add(track.id);
+        }
         return withEffective(
           track,
           changed ? this.content.get(contentId) ?? "" : undefined,
@@ -2150,6 +2786,28 @@ export class DocumentManager {
       }),
       activeLayerId ?? STAGE_LAYER_ID,
     );
+    this.rehydrateHeldInstances(changedIds);
+  }
+
+  /**
+   * Layers whose content id didn't change (holds) but which carry looping /
+   * play-once instances still need their instances re-resolved for the new
+   * playhead. Layers that were just reimported are already hydrated.
+   */
+  private rehydrateHeldInstances(
+    reimported: Set<string>,
+    skip: Set<string> = new Set(),
+  ): void {
+    for (const id of this.renderer.getAnimatedInstanceLayerIds()) {
+      if (reimported.has(id) || skip.has(id)) continue;
+      this.renderer.rehydrateLayerInstances(id);
+    }
+  }
+
+  /** Symbol artwork changed (edit / swap): re-resolve every placed instance. */
+  rehydrateInstances(): void {
+    this.renderer.setLayerElapsed(this.layerElapsedMap());
+    this.renderer.rehydrateAllInstances();
   }
 
   // ------------------------------------------------------------
@@ -2158,19 +2816,26 @@ export class DocumentManager {
 
   /** Deep-copied state for a history entry (content strings shared by ref). */
   captureState(): DocumentState {
+    this.flushActiveTimeline();
+    const root = this.rootTimeline();
     return {
-      tracks: cloneTracks(this.tracks),
-      currentFrame: this.currentFrame,
-      duration: this.duration,
+      root: {
+        tracks: cloneTracks(root.tracks),
+        duration: root.duration,
+        tags: cloneTags(root.tags),
+        currentFrame: root.currentFrame,
+      },
+      symbols: cloneSymbols(this.symbols),
+      context: this.contextStack.map((e) => ({ ...e.ref })),
+      activeFrame: this.currentFrame,
       frameRate: this.frameRate,
-      tags: cloneTags(this.tags),
     };
   }
 
   /**
-   * Restore a history entry: replaces tracks/frame/duration, updates
-   * layerStore to match, and reloads Paper. `activeLayerId` may be the
-   * stage id (stage row selected at snapshot time).
+   * Restore a history entry: replaces tracks/frame/duration, symbols and the
+   * edit-symbol context, updates layerStore to match, and reloads Paper.
+   * `activeLayerId` may be the stage id (stage row selected at snapshot time).
    */
   applyState(
     state: DocumentState,
@@ -2178,23 +2843,30 @@ export class DocumentManager {
     soloLayerId: string | null = null,
   ): void {
     this.clearEditMultipleFramesState();
-    this.tracks = cloneTracks(state.tracks);
-    for (const track of this.tracks) track.locked = !!track.locked;
-    this.duration = state.duration;
     this.frameRate = state.frameRate;
-    this.tags = cloneTags(state.tags ?? []);
-    this.clampTagsToDuration();
-    this.currentFrame = Math.max(
-      0,
-      Math.min(state.duration - 1, state.currentFrame),
+    this.symbols = new Map(
+      Object.values(cloneSymbols(state.symbols ?? {})).map((s) => [s.id, s]),
     );
+    this.contextStack = [];
+    this.loadTimeline(state.root);
 
+    // Re-enter the symbol chain the entry was taken in.
+    for (const ref of state.context ?? []) {
+      const sym = this.symbols.get(ref.symbolId);
+      if (!sym) break;
+      this.pushContext({ ...ref });
+    }
+    if (this.contextStack.length > 0) {
+      this.currentFrame = Math.max(0, Math.min(this.duration - 1, state.activeFrame));
+    }
     this.updateLayerStoreFromTracks(activeLayerId, soloLayerId);
 
     // Reload Paper. Compare against loadedContent so unchanged layers skip
     // the reimport; structure changes (added/removed layers) are handled by
     // restoreLayersSnapshot itself.
     this.reloadCurrentFrame();
+    this.syncContextBackdrop();
+    this.onContextChanged?.();
     this.publish();
   }
 
@@ -2273,8 +2945,10 @@ export class DocumentManager {
   // ------------------------------------------------------------
 
   serialize(stage: { width: number; height: number; color: string }): SerializedDocument {
+    this.flushActiveTimeline();
+    const root = this.rootTimeline();
     const content: Record<string, string> = {};
-    for (const track of this.tracks) {
+    for (const track of this.allTracks()) {
       for (const kf of track.keyframes) {
         content[kf.contentId] = this.content.get(kf.contentId) ?? "";
       }
@@ -2284,15 +2958,17 @@ export class DocumentManager {
       const meta = this.assets.get(id);
       if (meta) assets[id] = { ...meta };
     }
+    const symbols = cloneSymbols(this.symbols);
     return {
-      version: 2,
+      version: 3,
       stage: { ...stage },
       frameRate: this.frameRate,
-      duration: this.duration,
-      tracks: cloneTracks(this.tracks),
+      duration: root.duration,
+      tracks: cloneTracks(root.tracks),
       content,
-      tags: cloneTags(this.tags),
+      tags: cloneTags(root.tags),
       ...(Object.keys(assets).length > 0 ? { assets } : {}),
+      ...(Object.keys(symbols).length > 0 ? { symbols } : {}),
     };
   }
 
@@ -2303,6 +2979,15 @@ export class DocumentManager {
   loadSerialized(doc: SerializedDocument): void {
     this.content = new Map(Object.entries(doc.content));
     this.content.set(EMPTY_CONTENT_ID, "");
+    this.symbolRefCache.clear();
+    clearSymbolTemplateCache();
+    clearSymbolThumbnailCache();
+    this.contextStack = [];
+    this.symbols = new Map();
+    for (const [key, raw] of Object.entries(doc.symbols ?? {})) {
+      const sym = normalizeSymbol(raw, key);
+      if (sym) this.symbols.set(sym.id, sym);
+    }
     this.assets = new Map(
       Object.entries(doc.assets ?? {}).filter(
         (entry): entry is [string, AssetMeta] =>
@@ -2353,6 +3038,8 @@ export class DocumentManager {
     const topLayerId = this.tracks[this.tracks.length - 1]?.id ?? STAGE_LAYER_ID;
     this.updateLayerStoreFromTracks(topLayerId);
     this.reloadCurrentFrame();
+    this.syncContextBackdrop();
+    this.onContextChanged?.();
     this.publish();
   }
 
@@ -2383,7 +3070,7 @@ export class DocumentManager {
       this.commitDirtyLayerContent();
       const originals = new Map<string, string>();
       const seen = new Set<string>();
-      for (const track of this.tracks) {
+      for (const track of this.allTracks()) {
         if (!isVectorTrack(track)) continue;
         for (const kf of track.keyframes) {
           const id = kf.contentId;
@@ -2408,6 +3095,9 @@ export class DocumentManager {
     }
     if (!changed) return false;
 
+    // Symbol content may have changed: drop parsed templates.
+    clearSymbolTemplateCache();
+    clearSymbolThumbnailCache();
     this.loadedContent.clear();
     this.reloadCurrentFrame();
     this.publish();
@@ -2424,7 +3114,7 @@ export class DocumentManager {
   // ------------------------------------------------------------
 
   private refreshDocumentColors(): void {
-    documentColorsStore.set(collectDocumentColors(this.tracks, this.content));
+    documentColorsStore.set(collectDocumentColors(this.allTracks(), this.content));
   }
 
   /** Snapshot tracks/flags into the store (content may have changed). */
@@ -2508,6 +3198,7 @@ export class DocumentManager {
     // track the latest content, visibility, playhead, and playback state.
     this.updateOnionSkin();
     this.refreshDocumentColors();
+    this.publishSymbolLibrary();
     timelineStore.set(this.timelineSnapshot());
   }
 }

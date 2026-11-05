@@ -89,11 +89,9 @@ export class FloatingPanel extends Block {
     @keyframes flipcel-panel-show {
       0% {
         transform: scale(0.88);
-        opacity: 0;
       }
       100% {
         transform: scale(1);
-        opacity: 1;
       }
     }
 
@@ -670,8 +668,7 @@ export class FloatingPanel extends Block {
   protected onDragCommitted() {
     if (!this.pinned) {
       // Pulling away from the dock — hide the dock toggle until closed or re-docked.
-      // Don't replay the show animation: the panel is already visible, and the
-      // entrance keyframes start at opacity: 0 (brief flash).
+      // Don't replay the show animation: the panel is already visible.
       this.pinned = true;
       this.dispatchPanelDockState({ visible: true, detached: true });
       return;

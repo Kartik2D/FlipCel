@@ -15,6 +15,8 @@ export class OnionSkin {
   private layers: paper.Layer[] = [];
   /** When true, ghosts are stroked outlines above artwork; when false, filled under the active layer. */
   private outline = true;
+  /** Resolves symbol instances (empty groups in stored JSON) into artwork. */
+  hydrate: ((layer: paper.Layer) => void) | null = null;
 
   /** Read-only view of ghost layers (z-order / export / flatten skips). */
   getLayers(): readonly paper.Layer[] {
@@ -62,6 +64,7 @@ export class OnionSkin {
         // scratch layer so multiple document layers combine into one ghost.
         const scratch = new paper.Layer();
         scratch.importJSON(json);
+        this.hydrate?.(scratch);
         ghostLayer.addChildren([...scratch.children]);
         scratch.remove();
       }
