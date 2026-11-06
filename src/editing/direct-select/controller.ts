@@ -62,6 +62,15 @@ import {
 } from "../../state/index";
 import paper from "paper";
 import { pixelToViewport } from "../../geometry/coords";
+import {
+  cubicsToAnchors,
+  findSharpCornerIndicesFromPoints,
+  simplifyCubics,
+  simplifyPolyline,
+  turnDegreesAt,
+  type CubicSpan,
+  type FittedAnchor,
+} from "../../geometry/curve-fit";
 import { LassoQuickShapeSession } from "../../geometry/quick-shape";
 import { MarqueeTracker } from "../marquee";
 import {
@@ -206,6 +215,10 @@ export class DirectSelectController {
 
   private lastSelectionViewport: Point | null = null;
   private selectionChangeCallback?: (hasSelection: boolean) => void;
+
+  /** Consecutive Simplify clicks on the same shapes. Each click loosens the fit. */
+  private simplifyPasses = 0;
+  private simplifyItemKey = "";
 
   /** Live simplify/smooth/round drag from the functions panel; geometry restored each move. */
   private pathEditDragSession: {
@@ -388,9 +401,33 @@ export class DirectSelectController {
     };
   }
 
-  /** One-shot keep-shape simplify of picked verts (max outline deviation). */
-  simplifyPickedVertices(tolerance = 2.5): boolean {
-    return this.applyPickedPathEdit("simplify", tolerance);
+  /**
+   * One simplify step. Another click on the same shapes allows more deviation,
+   * so repeated clicks keep simplifying. Switching shapes starts over.
+   */
+  simplifyPickedVertices(): boolean {
+    if (this.pickedAnchors.size === 0) return false;
+    const key = this.pickedItemIdsKey();
+    if (key !== this.simplifyItemKey) {
+      this.simplifyItemKey = key;
+      this.simplifyPasses = 0;
+    }
+    this.simplifyPasses += 1;
+
+    let size = 1;
+    for (const target of this.collectPickedPathTargets()) {
+      size = Math.max(size, target.path.bounds.width, target.path.bounds.height);
+    }
+    const tolerance = Math.max(1.25, size * 0.02) * this.simplifyPasses;
+    const applied = this.applyPickedPathEdit("simplify", tolerance);
+    if (!applied) this.simplifyPasses = Math.max(0, this.simplifyPasses - 1);
+    return applied;
+  }
+
+  private pickedItemIdsKey(): string {
+    const ids = new Set<number>();
+    for (const key of this.pickedAnchors) ids.add(parseAnchorKey(key).itemId);
+    return [...ids].sort((a, b) => a - b).join(",");
   }
 
   /** One-shot Paper smooth of picked verts (geometric factor default 0.4). */
@@ -453,13 +490,45 @@ export class DirectSelectController {
 
   private applyPickedPathEdit(kind: PathEditKind, amount: number): boolean {
     if (this.pickedAnchors.size === 0) return false;
+    if (kind !== "simplify") {
+      this.simplifyPasses = 0;
+      this.simplifyItemKey = "";
+    }
     this.onLiveEditStart?.();
     const targets = this.collectPickedPathTargets();
     if (targets.length === 0) return false;
+    const reselect: typeof targets = [];
     for (const target of targets) {
+      const wasFull = target.selectedIndices.length >= target.path.segments.length;
       applyPathEditToSelected(kind, target.path, target.selectedIndices, amount);
+      if (kind === "simplify" && wasFull) reselect.push(target);
     }
-    return this.finishPickedPathEdit(targets.map((t) => t.item));
+    const applied = this.finishPickedPathEdit(targets.map((t) => t.item));
+    this.reselectSimplifiedPaths(reselect);
+    return applied;
+  }
+
+  /** A fully selected path stays fully selected after its anchor count changes. */
+  private reselectSimplifiedPaths(
+    targets: Array<{ item: paper.PathItem; path: paper.Path }>,
+  ): void {
+    if (targets.length === 0) return;
+    let added = false;
+    for (const target of targets) {
+      if (!target.path.parent) continue;
+      const childIndex = this.paperRenderer.getChildPaths(target.item).indexOf(target.path);
+      if (childIndex < 0) continue;
+      for (let si = 0; si < target.path.segments.length; si++) {
+        const key = anchorKey(target.item.id, childIndex, si);
+        if (this.pickedAnchors.has(key)) continue;
+        this.pickedAnchors.add(key);
+        added = true;
+      }
+    }
+    if (!added) return;
+    this.rebuildAnchorHandles();
+    this.publishPickedItems();
+    this.drawUI();
   }
 
   private collectPickedPathTargets(): Array<{
@@ -2118,9 +2187,8 @@ function filletCornerAt(path: paper.Path, index: number, radius: number): boolea
 }
 
 /**
- * Flash-style keep-shape simplify: drop verts whose removal stays within
- * `tolerance` of the outline (RDP), then continuous-smooth for curves.
- * Avoids Paper path.simplify curve-fitting, which self-intersects on dense shapes.
+ * Fit cubics to the outline. Tolerance is the max deviation in world units.
+ * Unselected anchors stay put; a smooth one keeps its tangent.
  */
 function applySimplifyToSelected(
   path: paper.Path,
@@ -2130,351 +2198,135 @@ function applySimplifyToSelected(
   const n = path.segments.length;
   if (n < 2 || selectedIndices.length === 0) return;
 
-  const selected = selectedIndices.filter((i) => i >= 0 && i < n).sort((a, b) => a - b);
+  const selected = [...new Set(selectedIndices.filter((i) => i >= 0 && i < n))].sort(
+    (a, b) => a - b,
+  );
   if (selected.length === 0) return;
 
   const epsilon = Math.max(0.05, tolerance);
+  const closed = path.closed;
 
   if (selected.length >= n) {
-    simplifyWholePathKeepShape(path, epsilon);
+    writeAnchors(path, simplifyPolyline(flattenPath(path), { tolerance: epsilon, closed }));
     return;
   }
 
   const selectedSet = new Set(selected);
-  const mustKeep = new Set<number>();
+  const breaks: number[] = [];
   for (let i = 0; i < n; i++) {
-    if (!selectedSet.has(i)) mustKeep.add(i);
+    if (!selectedSet.has(i)) breaks.push(i);
   }
-  if (!path.closed) {
-    mustKeep.add(0);
-    mustKeep.add(n - 1);
+  if (!closed) {
+    if (breaks.length === 0 || breaks[0] !== 0) breaks.unshift(0);
+    if (breaks[breaks.length - 1] !== n - 1) breaks.push(n - 1);
   }
-
-  const points = path.segments.map((seg) => ({ x: seg.point.x, y: seg.point.y }));
-  // Keep sharp corners even when they're in the selection.
-  for (const i of findSharpCornerIndicesFromPoints(points, path.closed, 35)) {
-    mustKeep.add(i);
-  }
-  const keep = rdpIndicesWithMustKeep(points, epsilon, mustKeep, path.closed);
-  if (keep.length >= n) return;
-
-  rebuildPathFromPoints(path, keep.map((i) => points[i]), path.closed);
-  refitSimplifiedPath(path);
-}
-
-/** Full-path: densify curves → RDP within shape error → corner-aware refit. */
-function simplifyWholePathKeepShape(path: paper.Path, epsilon: number): void {
-  const closed = path.closed;
-  const flat = path.clone({ insert: false }) as paper.Path;
-  flat.flatten(Math.max(0.5, epsilon * 0.25));
-  const points = flat.segments.map((seg) => ({ x: seg.point.x, y: seg.point.y }));
-  flat.remove();
-
-  const minPts = closed ? 3 : 2;
-  if (points.length < minPts) return;
-
-  // Force-keep sharp corners so aggressive epsilon can't collapse rects to a line.
-  const cornerKeep = findSharpCornerIndicesFromPoints(points, closed, 35);
-  const keep = rdpIndicesWithMustKeep(points, epsilon, cornerKeep, closed);
-  if (keep.length < minPts) return;
-
-  rebuildPathFromPoints(
-    path,
-    keep.map((i) => points[i]),
-    closed,
-  );
-  refitSimplifiedPath(path);
-}
-
-/**
- * Re-curve gentle spans; keep sharp corners (rects/polygons) as zero-handle verts.
- * Turn ≥ ~35° from straight counts as a corner — dense circles stay fully smooth.
- */
-function refitSimplifiedPath(path: paper.Path): void {
-  const n = path.segments.length;
-  if (n < 2) return;
-
-  const corners = findSharpCornerIndices(path, 35);
-  // Fully angular (square, rect, hard polygon): leave the polyline alone.
-  if (corners.size > 0 && corners.size >= (path.closed ? n : Math.max(0, n - 2))) {
+  if (breaks.length === 0) {
+    writeAnchors(path, simplifyPolyline(flattenPath(path), { tolerance: epsilon, closed }));
     return;
   }
 
-  path.smooth({ type: "continuous" });
-  for (const i of corners) {
-    const seg = path.segments[i];
-    if (!seg) continue;
-    seg.handleIn = new paper.Point(0, 0);
-    seg.handleOut = new paper.Point(0, 0);
-  }
-}
+  const firstIn = closed
+    ? null
+    : { x: path.segments[0].handleIn.x, y: path.segments[0].handleIn.y };
+  const lastOut = closed
+    ? null
+    : { x: path.segments[n - 1].handleOut.x, y: path.segments[n - 1].handleOut.y };
 
-function findSharpCornerIndices(path: paper.Path, minTurnDeg: number): Set<number> {
-  const points = path.segments.map((seg) => ({ x: seg.point.x, y: seg.point.y }));
-  return findSharpCornerIndicesFromPoints(points, path.closed, minTurnDeg);
-}
-
-/**
- * Detect sharp corners even when the turn is spread across many dense verts.
- * Uses adjacent turns (clean rects) plus a distance-window turn (hand-drawn
- * corners), then keeps local maxima so a dense bend yields one apex.
- */
-function findSharpCornerIndicesFromPoints(
-  points: PolyPt[],
-  closed: boolean,
-  minTurnDeg: number,
-): Set<number> {
-  const n = points.length;
-  const corners = new Set<number>();
-  if (n < 3) return corners;
-
-  let perimeter = 0;
-  for (let i = 1; i < n; i++) {
-    perimeter += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
-  }
-  if (closed) {
-    perimeter += Math.hypot(
-      points[0].x - points[n - 1].x,
-      points[0].y - points[n - 1].y,
-    );
-  }
-  if (perimeter < 1e-9) return corners;
-
-  const avgEdge = perimeter / n;
-  // Span past micro-steps, but don't jump to the far side of small polygons.
-  const windowDist = Math.min(
-    Math.max(perimeter * 0.02, avgEdge * 2),
-    perimeter * 0.08,
-  );
-
-  const turns = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    if (!closed && (i === 0 || i === n - 1)) continue;
-    const adjacent = turnDegreesAt(
-      points[(i - 1 + n) % n],
-      points[i],
-      points[(i + 1) % n],
-    );
-    const prev = points[vertexAtArcWalk(points, closed, i, -windowDist)];
-    const next = points[vertexAtArcWalk(points, closed, i, windowDist)];
-    const windowed = turnDegreesAt(prev, points[i], next);
-    turns[i] = Math.max(adjacent, windowed);
+  const cubics: CubicSpan[] = [];
+  const spanCount = closed ? breaks.length : breaks.length - 1;
+  for (let s = 0; s < spanCount; s++) {
+    const i0 = breaks[s];
+    const i1 = closed ? breaks[(s + 1) % breaks.length] : breaks[s + 1];
+    cubics.push(...cubicsBetween(path, i0, i1, epsilon, selectedSet));
   }
 
-  const neighborDist = Math.max(windowDist * 0.5, avgEdge);
-  for (let i = 0; i < n; i++) {
-    if (turns[i] < minTurnDeg) continue;
-    let isMax = true;
-    for (let j = 0; j < n; j++) {
-      if (j === i) continue;
-      if (arcSeparation(points, closed, i, j) > neighborDist) continue;
-      if (turns[j] > turns[i] + 1e-6) {
-        isMax = false;
-        break;
-      }
-    }
-    if (isMax) corners.add(i);
+  const anchors = cubicsToAnchors(cubics, closed);
+  if (!closed && anchors.length > 0) {
+    if (firstIn) anchors[0].handleIn = firstIn;
+    if (lastOut) anchors[anchors.length - 1].handleOut = lastOut;
   }
-  return corners;
+  writeAnchors(path, anchors);
 }
 
-function turnDegreesAt(prev: PolyPt, curr: PolyPt, next: PolyPt): number {
-  const ax = curr.x - prev.x;
-  const ay = curr.y - prev.y;
-  const bx = next.x - curr.x;
-  const by = next.y - curr.y;
-  const al = Math.hypot(ax, ay);
-  const bl = Math.hypot(bx, by);
-  if (al < 1e-9 || bl < 1e-9) return 0;
-  const dot = (ax / al) * (bx / bl) + (ay / al) * (by / bl);
-  const cross = (ax / al) * (by / bl) - (ay / al) * (bx / bl);
-  return Math.abs(Math.atan2(cross, dot) * (180 / Math.PI));
+function flattenPath(path: paper.Path): Array<{ x: number; y: number }> {
+  const flat = path.clone({ insert: false }) as paper.Path;
+  flat.flatten(0.5);
+  const raw = flat.segments.map((seg) => ({ x: seg.point.x, y: seg.point.y }));
+  flat.remove();
+  return raw;
 }
 
-/** Walk along verts until ~|signedDist| of arc length is covered; return index. */
-function vertexAtArcWalk(
-  points: PolyPt[],
-  closed: boolean,
-  fromIdx: number,
-  signedDist: number,
-): number {
-  const n = points.length;
-  if (n === 0) return fromIdx;
-  const dir = signedDist >= 0 ? 1 : -1;
-  let budget = Math.abs(signedDist);
-  let i = fromIdx;
-  for (let step = 0; step < n; step++) {
-    const j = closed ? (i + dir + n) % n : i + dir;
-    if (!closed && (j < 0 || j >= n)) return i;
-    const d = Math.hypot(points[j].x - points[i].x, points[j].y - points[i].y);
-    if (d >= budget - 1e-12) return j;
-    budget -= d;
-    i = j;
-    if (!closed && (i === 0 || i === n - 1)) return i;
-  }
-  return i;
-}
-
-function arcSeparation(
-  points: PolyPt[],
-  closed: boolean,
-  a: number,
-  b: number,
-): number {
-  if (a === b) return 0;
-  const n = points.length;
-  const distWalk = (from: number, to: number, dir: 1 | -1): number => {
-    let d = 0;
-    let i = from;
-    for (let step = 0; step < n; step++) {
-      const j = closed ? (i + dir + n) % n : i + dir;
-      if (!closed && (j < 0 || j >= n)) return Infinity;
-      d += Math.hypot(points[j].x - points[i].x, points[j].y - points[i].y);
-      i = j;
-      if (i === to) return d;
-    }
-    return Infinity;
-  };
-  if (!closed) return Math.min(distWalk(a, b, 1), distWalk(a, b, -1));
-  return Math.min(distWalk(a, b, 1), distWalk(a, b, -1));
-}
-
-function rebuildPathFromPoints(
-  path: paper.Path,
-  points: Array<{ x: number; y: number }>,
-  closed: boolean,
-): void {
+function writeAnchors(path: paper.Path, anchors: FittedAnchor[]): void {
+  const min = path.closed ? 3 : 2;
+  if (anchors.length < min) return;
+  const closed = path.closed;
   path.removeSegments();
-  for (const p of points) {
-    path.add(new paper.Point(p.x, p.y));
+  for (const a of anchors) {
+    path.add(
+      new paper.Segment(
+        new paper.Point(a.x, a.y),
+        new paper.Point(a.handleIn.x, a.handleIn.y),
+        new paper.Point(a.handleOut.x, a.handleOut.y),
+      ),
+    );
   }
   path.closed = closed;
 }
 
-type PolyPt = { x: number; y: number };
-
-function rdpOpenIndices(points: PolyPt[], epsilon: number): number[] {
-  const n = points.length;
-  if (n <= 2) return [...Array(n).keys()];
-  const keep = new Set<number>([0, n - 1]);
-  const stack: Array<[number, number]> = [[0, n - 1]];
-  while (stack.length > 0) {
-    const [i0, i1] = stack.pop()!;
-    if (i1 <= i0 + 1) continue;
-    let maxD = -1;
-    let maxI = -1;
-    const a = points[i0];
-    const b = points[i1];
-    for (let i = i0 + 1; i < i1; i++) {
-      const d = pointToSegmentDistance(points[i], a, b);
-      if (d > maxD) {
-        maxD = d;
-        maxI = i;
-      }
-    }
-    if (maxI >= 0 && maxD > epsilon) {
-      keep.add(maxI);
-      stack.push([i0, maxI], [maxI, i1]);
-    }
+/** Indices from `start` to `end`, wrapping when `end` is behind `start`. */
+function indicesFromTo(start: number, end: number, n: number): number[] {
+  const out: number[] = [start];
+  let i = start;
+  for (let guard = 0; guard < n; guard++) {
+    i = (i + 1) % n;
+    out.push(i);
+    if (i === end) break;
   }
-  return [...keep].sort((a, b) => a - b);
+  return out;
 }
 
-function rdpClosedIndices(points: PolyPt[], epsilon: number): number[] {
-  const n = points.length;
-  if (n <= 3) return [...Array(n).keys()];
-
-  let split = 1;
-  let maxD = -1;
-  for (let i = 1; i < n; i++) {
-    const d = Math.hypot(points[i].x - points[0].x, points[i].y - points[0].y);
-    if (d > maxD) {
-      maxD = d;
-      split = i;
-    }
-  }
-
-  const keep = new Set<number>([0, split]);
-  for (const i of rdpOpenIndices(points.slice(0, split + 1), epsilon)) keep.add(i);
-
-  const half: PolyPt[] = [];
-  const map: number[] = [];
-  for (let i = split; i < n; i++) {
-    half.push(points[i]);
-    map.push(i);
-  }
-  half.push(points[0]);
-  map.push(0);
-  for (const j of rdpOpenIndices(half, epsilon)) keep.add(map[j]);
-
-  return [...keep].sort((a, b) => a - b);
-}
-
-/** RDP that never drops `mustKeep` indices (unselected verts / open endpoints). */
-function rdpIndicesWithMustKeep(
-  points: PolyPt[],
+function cubicsBetween(
+  path: paper.Path,
+  i0: number,
+  i1: number,
   epsilon: number,
-  mustKeep: Set<number>,
-  closed: boolean,
-): number[] {
-  const n = points.length;
-  if (mustKeep.size === 0) {
-    return closed ? rdpClosedIndices(points, epsilon) : rdpOpenIndices(points, epsilon);
+  selected: Set<number>,
+): CubicSpan[] {
+  const indices = indicesFromTo(i0, i1, path.segments.length);
+  if (indices.length < 2) return [];
+
+  if (indices.length === 2) {
+    const a = path.segments[i0];
+    const b = path.segments[i1];
+    return [{
+      p0: { x: a.point.x, y: a.point.y },
+      handleOut: { x: a.handleOut.x, y: a.handleOut.y },
+      handleIn: { x: b.handleIn.x, y: b.handleIn.y },
+      p3: { x: b.point.x, y: b.point.y },
+    }];
   }
 
-  const keep = new Set<number>();
-  for (const i of mustKeep) {
-    if (i >= 0 && i < n) keep.add(i);
+  const sub = new paper.Path({ insert: false });
+  for (const idx of indices) {
+    const seg = path.segments[idx];
+    sub.add(new paper.Segment(seg.point.clone(), seg.handleIn.clone(), seg.handleOut.clone()));
   }
-  if (!closed) {
-    keep.add(0);
-    keep.add(n - 1);
-  }
+  const raw = flattenPath(sub);
+  sub.remove();
 
-  const anchors = [...keep].sort((a, b) => a - b);
-  if (anchors.length === 0) {
-    return closed ? rdpClosedIndices(points, epsilon) : rdpOpenIndices(points, epsilon);
-  }
-
-  for (let a = 0; a < anchors.length - 1; a++) {
-    const i0 = anchors[a];
-    const i1 = anchors[a + 1];
-    if (i1 <= i0 + 1) continue;
-    const slice = points.slice(i0, i1 + 1);
-    for (const j of rdpOpenIndices(slice, epsilon)) keep.add(i0 + j);
-  }
-
-  if (closed && anchors.length >= 1) {
-    const i0 = anchors[anchors.length - 1];
-    const i1 = anchors[0];
-    if (i0 !== i1) {
-      const slice: PolyPt[] = [];
-      const map: number[] = [];
-      for (let i = i0; i < n; i++) {
-        slice.push(points[i]);
-        map.push(i);
-      }
-      for (let i = 0; i <= i1; i++) {
-        slice.push(points[i]);
-        map.push(i);
-      }
-      if (slice.length >= 2) {
-        for (const j of rdpOpenIndices(slice, epsilon)) keep.add(map[j]);
-      }
-    }
-  }
-
-  return [...keep].sort((a, b) => a - b);
-}
-
-function pointToSegmentDistance(p: PolyPt, a: PolyPt, b: PolyPt): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len2 = dx * dx + dy * dy;
-  if (len2 < 1e-12) return Math.hypot(p.x - a.x, p.y - a.y);
-  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
-  t = Math.max(0, Math.min(1, t));
-  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+  const startH = path.segments[i0].handleOut;
+  const endH = path.segments[i1].handleIn;
+  const startSelected = selected.has(i0);
+  const endSelected = selected.has(i1);
+  return simplifyCubics(raw, {
+    tolerance: epsilon,
+    closed: false,
+    sharpStart: !startSelected && startH.length <= 1e-3,
+    sharpEnd: !endSelected && endH.length <= 1e-3,
+    tangentStart:
+      !startSelected && startH.length > 1e-3 ? { x: startH.x, y: startH.y } : null,
+    tangentEnd: !endSelected && endH.length > 1e-3 ? { x: endH.x, y: endH.y } : null,
+  });
 }
 
 /** Paper path.smooth on full path or contiguous selected runs. */

@@ -121,7 +121,6 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "simplify",
     name: "Simplify",
-    draggable: true,
     isAvailable: (context) =>
       context.tool === "direct-select"
       && context.items.length > 0

@@ -2197,7 +2197,7 @@ class App {
   }
 
   private onFunctionDragStart(functionId: string) {
-    if (functionId === "simplify" || functionId === "round-corners") {
+    if (functionId === "round-corners") {
       if (!this.directSelectController.beginPathEditDrag(functionId)) return;
       this.functionsPanel.close("hidden");
       // Seed preview from the threshold distance that armed the drag.
@@ -2220,14 +2220,11 @@ class App {
   }
 
   private onFunctionDragMove(functionId: string, dx: number, dy: number) {
-    if (functionId === "simplify" || functionId === "round-corners") {
+    if (functionId === "round-corners") {
       if (!this.directSelectController.isPathEditDragActive()) return;
       const world = this.camera.screenDeltaToWorld(dx, dy);
       // Distance only — X and Y are not separate controls.
-      const amount =
-        functionId === "round-corners"
-          ? Math.max(0.05, Math.hypot(world.x, world.y))
-          : Math.max(0.05, Math.hypot(world.x, world.y) * 0.25);
+      const amount = Math.max(0.05, Math.hypot(world.x, world.y));
       this.directSelectController.updatePathEditDrag(amount);
       return;
     }
@@ -2249,7 +2246,7 @@ class App {
   }
 
   private onFunctionDragEnd(functionId: string, dx: number, dy: number) {
-    if (functionId === "simplify" || functionId === "round-corners") {
+    if (functionId === "round-corners") {
       if (!this.directSelectController.isPathEditDragActive()) return;
       this.onFunctionDragMove(functionId, dx, dy);
       this.directSelectController.endPathEditDrag();

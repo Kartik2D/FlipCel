@@ -271,7 +271,7 @@ export class FlipCelFunctionsPanel extends LitElement {
                 type="button"
                 class="fn-btn ${fn.negative ? "negative" : ""} ${fn.draggable ? "draggable" : ""}"
                 title=${fn.draggable
-                  ? fn.id === "simplify" || fn.id === "round-corners"
+                  ? fn.id === "round-corners"
                     ? `${fn.name} (drag for intensity)`
                     : `${fn.name} (drag to place)`
                   : fn.name}
@@ -285,7 +285,7 @@ export class FlipCelFunctionsPanel extends LitElement {
                 <span>${fn.name}</span>
                 ${fn.draggable
                   ? html`<span class="fn-drag-hint" aria-hidden="true">${
-                      fn.id === "simplify" || fn.id === "round-corners" ? "↔" : "↔↕"
+                      fn.id === "round-corners" ? "↔" : "↔↕"
                     }</span>`
                   : nothing}
               </button>
