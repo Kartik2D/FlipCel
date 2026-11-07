@@ -58,6 +58,86 @@ fn check(map: &Map) {
     let c = components(map) as i64;
     assert_eq!(v - e + f, 1 + c, "Euler characteristic broken (V={v} E={e} F={f} C={c})");
     assert_eq!(map.faces()[0].fill, EMPTY);
+    assert_planar(map);
+}
+
+/// No two edges cross except at a shared vertex.
+fn assert_planar(map: &Map) {
+    let verts = map.vertices();
+    let edges: Vec<(P, P, Option<P>)> = map
+        .half_edges()
+        .chunks(2)
+        .map(|pair| (verts[pair[0].origin as usize], verts[pair[1].origin as usize], pair[0].ctrl))
+        .collect();
+    for i in 0..edges.len() {
+        for j in i + 1..edges.len() {
+            if let Some(at) = open_crossing(edges[i], edges[j]) {
+                panic!("edges cross at {at:?}: {:?} x {:?}", edges[i], edges[j]);
+            }
+        }
+    }
+}
+
+fn open_crossing(a: (P, P, Option<P>), b: (P, P, Option<P>)) -> Option<(f64, f64)> {
+    let mut hit = None;
+    let mut consider = |p: (f64, f64), q: (f64, f64), r: (f64, f64), s: (f64, f64)| {
+        let Some((_, _, at)) = seg_cross(p, q, r, s) else { return };
+        let near = |v: P| {
+            let dx = at.0 - v.0 as f64;
+            let dy = at.1 - v.1 as f64;
+            dx * dx + dy * dy <= 4.0
+        };
+        if near(a.0) || near(a.1) || near(b.0) || near(b.1) {
+            return;
+        }
+        hit = Some(at);
+    };
+    visit_chords(a, &mut |p, q| visit_chords(b, &mut |r, s| consider(p, q, r, s)));
+    hit
+}
+
+fn visit_chords(edge: (P, P, Option<P>), f: &mut impl FnMut((f64, f64), (f64, f64))) {
+    let (a, b, ctrl) = edge;
+    let af = (a.0 as f64, a.1 as f64);
+    let bf = (b.0 as f64, b.1 as f64);
+    let Some(c) = ctrl else {
+        f(af, bf);
+        return;
+    };
+    let cf = (c.0 as f64, c.1 as f64);
+    flatten(af, cf, bf, 0, f);
+}
+
+fn flatten(a: (f64, f64), c: (f64, f64), b: (f64, f64), depth: u32, f: &mut impl FnMut((f64, f64), (f64, f64))) {
+    let span = (a.0 - b.0).abs().max((a.1 - b.1).abs()).max((c.0 - a.0).abs()).max((c.1 - a.1).abs());
+    if span < 8.0 || depth > 12 {
+        f(a, b);
+        return;
+    }
+    let m01 = ((a.0 + c.0) * 0.5, (a.1 + c.1) * 0.5);
+    let m12 = ((c.0 + b.0) * 0.5, (c.1 + b.1) * 0.5);
+    let mid = ((m01.0 + m12.0) * 0.5, (m01.1 + m12.1) * 0.5);
+    flatten(a, m01, mid, depth + 1, f);
+    flatten(mid, m12, b, depth + 1, f);
+}
+
+fn seg_cross(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> Option<(f64, f64, (f64, f64))> {
+    let rx = b.0 - a.0;
+    let ry = b.1 - a.1;
+    let sx = d.0 - c.0;
+    let sy = d.1 - c.1;
+    let den = rx * sy - ry * sx;
+    if den.abs() < 1e-9 {
+        return None;
+    }
+    let qx = c.0 - a.0;
+    let qy = c.1 - a.1;
+    let t = (qx * sy - qy * sx) / den;
+    let u = (qx * ry - qy * rx) / den;
+    if !(0.02..0.98).contains(&t) || !(0.02..0.98).contains(&u) {
+        return None;
+    }
+    Some((t, u, (a.0 + t * rx, a.1 + t * ry)))
 }
 
 fn components(map: &Map) -> usize {
@@ -254,12 +334,44 @@ fn erasing_inside_a_shape_punches_a_hole() {
 }
 
 #[test]
-fn nested_rings_alternate_even_odd() {
+fn a_cw_hole_stays_a_hole() {
+    let outer = sq(0, 0, 100, 100);
+    let hole = polygon(&[(40, 40), (40, 60), (60, 60), (60, 40)]);
+    let mut map = Map::new();
+    map.paint(&[outer, hole], 1, Mode::Over);
+    check(&map);
+    assert_eq!(at(&map, 10, 10), 1);
+    assert_eq!(at(&map, 50, 50), EMPTY);
+}
+
+#[test]
+fn opposite_rings_cancel_where_they_overlap() {
+    let ccw = sq(0, 0, 100, 100);
+    let cw = polygon(&[(150, 50), (50, 50), (50, 150), (150, 150)]);
+    let mut map = Map::new();
+    map.paint(&[ccw, cw], 1, Mode::Over);
+    check(&map);
+    assert_eq!(at(&map, 25, 25), 1);
+    assert_eq!(at(&map, 125, 125), 1, "the reversed ring is still inside itself");
+    assert_eq!(at(&map, 75, 75), EMPTY, "opposite windings cancel");
+}
+
+#[test]
+fn a_doubled_outline_stays_filled() {
+    let twice = polygon(&[(0, 0), (100, 0), (100, 100), (0, 100), (0, 0), (100, 0), (100, 100), (0, 100)]);
+    let mut map = Map::new();
+    paint(&mut map, twice, 1);
+    check(&map);
+    assert_eq!(at(&map, 50, 50), 1);
+}
+
+#[test]
+fn nested_same_direction_rings_stay_filled() {
     let mut map = Map::new();
     map.paint(&[sq(0, 0, 100, 100), sq(20, 20, 80, 80), sq(40, 40, 60, 60)], 1, Mode::Over);
     check(&map);
     assert_eq!(at(&map, 10, 10), 1);
-    assert_eq!(at(&map, 30, 30), EMPTY);
+    assert_eq!(at(&map, 30, 30), 1);
     assert_eq!(at(&map, 50, 50), 1);
 }
 
@@ -456,6 +568,28 @@ fn bytes_round_trip() {
 }
 
 // ----- curves -----
+
+#[test]
+fn a_graze_shares_a_vertex_and_keeps_fills() {
+    let mut map = Map::new();
+    paint(&mut map, sq(0, 0, 400, 400), 1);
+    // Apex is half a twip outside the top edge, so the curves never strictly cross.
+    // Apex sits half a twip outside the top edge. The control is far enough
+    // from the chord that the edge stays a curve.
+    let graze = Ring {
+        start: (50, -40),
+        segs: vec![Seg::Quad((200, 39), (350, -40)), Seg::Line((50, -40))],
+    };
+    paint(&mut map, graze, 2);
+    check(&map);
+    assert!(
+        map.vertices().iter().any(|v| (v.0 - 200).abs() <= 1 && v.1.abs() <= 1),
+        "graze did not share a vertex: {:?}",
+        map.vertices()
+    );
+    assert_eq!(at(&map, 200, 20), 1, "inside the square");
+    assert_eq!(at(&map, 200, -60), EMPTY, "outside both shapes");
+}
 
 #[test]
 fn curves_that_miss_stay_one_edge() {

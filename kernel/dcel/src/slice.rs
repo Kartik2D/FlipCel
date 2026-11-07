@@ -10,42 +10,71 @@ use std::collections::HashMap;
 use crate::Piece;
 use crate::geom::*;
 
-pub(crate) fn slice(pieces: Vec<Piece>) -> Vec<Piece> {
-    let mut segs: Vec<Seg> = pieces
-        .into_iter()
-        .filter(|piece| piece.a != piece.b)
-        .map(|piece| Seg {
-            bounds: seg_bounds(piece.a, piece.b, piece.ctrl),
-            piece,
-            splits: Vec::new(),
-        })
-        .collect();
-    let any_fresh = segs.iter().any(|seg| seg.piece.fresh);
-    if any_fresh {
-        let mut order: Vec<usize> = (0..segs.len()).collect();
-        order.sort_by_key(|&i| segs[i].bounds.0);
-        for (oi, &i) in order.iter().enumerate() {
-            let bi = segs[i].bounds;
-            for &j in &order[oi + 1..] {
-                let bj = segs[j].bounds;
-                if bj.0 > bi.2 {
-                    break;
-                }
-                if !(segs[i].piece.fresh || segs[j].piece.fresh) {
-                    continue;
-                }
-                if bj.1 > bi.3 || bi.1 > bj.3 {
-                    continue;
-                }
-                split_pair(&mut segs, i, j);
+pub(crate) fn slice(mut pieces: Vec<Piece>) -> Vec<Piece> {
+    pieces.retain(|piece| piece.a != piece.b);
+    // Snap-rounding: a cut snapped to a twip can cross an edge the original
+    // curve did not. Split pieces stay fresh and the sweep repeats until a
+    // pass adds nothing, or four passes have run.
+    for pass in 0..4 {
+        if !pieces.iter().any(|piece| piece.fresh) {
+            break;
+        }
+        let mut segs: Vec<Seg> = pieces
+            .into_iter()
+            .map(|piece| Seg {
+                bounds: seg_bounds(piece.a, piece.b, piece.ctrl),
+                piece,
+                splits: Vec::new(),
+            })
+            .collect();
+        // A graze is one shared vertex. Later passes only cut crossings the
+        // snap created; grazing again would walk along a near-parallel pair
+        // and stack both windings onto one edge.
+        sweep(&mut segs, pass == 0);
+        let split = segs.iter().any(|seg| !seg.splits.is_empty());
+        pieces = emit_all(&segs);
+        if !split {
+            break;
+        }
+    }
+    dedupe(pieces)
+}
+
+fn sweep(segs: &mut [Seg], graze: bool) {
+    let mut order: Vec<usize> = (0..segs.len()).collect();
+    order.sort_by_key(|&i| segs[i].bounds.0);
+    for (oi, &i) in order.iter().enumerate() {
+        let bi = segs[i].bounds;
+        for &j in &order[oi + 1..] {
+            let bj = segs[j].bounds;
+            // +1 keeps a pair that only comes within a twip, so a graze is seen.
+            if bj.0 > bi.2 + 1 {
+                break;
+            }
+            if !(segs[i].piece.fresh || segs[j].piece.fresh) {
+                continue;
+            }
+            if bj.1 > bi.3 + 1 || bi.1 > bj.3 + 1 {
+                continue;
+            }
+            split_pair(segs, i, j, graze);
+        }
+    }
+}
+
+/// Children of a split are fresh, so the next pass tests the snapped pieces.
+fn emit_all(segs: &[Seg]) -> Vec<Piece> {
+    let mut out = Vec::new();
+    for seg in segs {
+        let start = out.len();
+        emit(seg, &mut out);
+        if !seg.splits.is_empty() {
+            for piece in &mut out[start..] {
+                piece.fresh = true;
             }
         }
     }
-    let mut out = Vec::new();
-    for seg in &segs {
-        emit(seg, &mut out);
-    }
-    dedupe(out)
+    out
 }
 
 struct Seg {
@@ -61,25 +90,25 @@ struct Split {
     at: P,
 }
 
-fn split_pair(segs: &mut [Seg], i: usize, j: usize) {
+fn split_pair(segs: &mut [Seg], i: usize, j: usize, graze: bool) {
     let left = segs[i].piece;
     let right = segs[j].piece;
     match (left.ctrl, right.ctrl) {
         (None, None) => split_lines(segs, i, j),
         (None, Some(ctrl)) => {
-            for (u, t, at) in line_quad(left.a, left.b, right.a, ctrl, right.b) {
+            for (u, t, at) in line_quad(left.a, left.b, right.a, ctrl, right.b, graze) {
                 push_split(&mut segs[i], u, at);
                 push_split(&mut segs[j], t, at);
             }
         }
         (Some(ctrl), None) => {
-            for (u, t, at) in line_quad(right.a, right.b, left.a, ctrl, left.b) {
+            for (u, t, at) in line_quad(right.a, right.b, left.a, ctrl, left.b, graze) {
                 push_split(&mut segs[i], t, at);
                 push_split(&mut segs[j], u, at);
             }
         }
         (Some(ca), Some(cb)) => {
-            for (ta, tb, at) in quad_quad(left.a, ca, left.b, right.a, cb, right.b) {
+            for (ta, tb, at) in quad_quad(left.a, ca, left.b, right.a, cb, right.b, graze) {
                 push_split(&mut segs[i], ta, at);
                 push_split(&mut segs[j], tb, at);
             }
@@ -250,9 +279,9 @@ fn cmp_frac(a: (i128, i128), b: (i128, i128)) -> Ordering {
     (an * bd).cmp(&(bn * ad))
 }
 
-/// Coincident pieces become one. Labels prefer whichever side has them, ring
-/// masks cancel (two coincident boundaries of one even-odd region are no
-/// boundary), strokes and freshness survive.
+/// Coincident pieces become one. Labels prefer whichever side has them,
+/// windings add (opposite coincident boundaries cancel), strokes and
+/// freshness survive.
 fn dedupe(parts: Vec<Piece>) -> Vec<Piece> {
     let mut map: HashMap<(P, P, Option<P>), Piece> = HashMap::new();
     for mut piece in parts {
@@ -260,9 +289,7 @@ fn dedupe(parts: Vec<Piece>) -> Vec<Piece> {
             continue;
         }
         if piece.b < piece.a {
-            std::mem::swap(&mut piece.a, &mut piece.b);
-            piece.under = piece.under.map(|(l, r)| (r, l));
-            piece.top = piece.top.map(|(l, r)| (r, l));
+            piece.flip();
         }
         // A curve and the chord between the same vertices are different edges.
         map.entry((piece.a, piece.b, piece.ctrl))
@@ -286,14 +313,17 @@ fn merge(keep: Piece, add: Piece) -> Piece {
         ctrl: keep.ctrl,
         under: keep.under.or(add.under),
         top: keep.top.or(add.top),
-        mask: keep.mask ^ add.mask,
+        wind: [
+            keep.wind[0].saturating_add(add.wind[0]),
+            keep.wind[1].saturating_add(add.wind[1]),
+        ],
         stroke: keep.stroke.or(add.stroke),
         fresh: keep.fresh || add.fresh,
     }
 }
 
 /// `(t_line, t_quad, snapped point)`.
-fn line_quad(a: P, b: P, p0: P, ctrl: P, p2: P) -> Vec<(f64, f64, P)> {
+fn line_quad(a: P, b: P, p0: P, ctrl: P, p2: P, graze: bool) -> Vec<(f64, f64, P)> {
     let dx = (b.0 - a.0) as f64;
     let dy = (b.1 - a.1) as f64;
     let vx = 2.0 * (ctrl.0 - p0.0) as f64;
@@ -325,7 +355,75 @@ fn line_quad(a: P, b: P, p0: P, ctrl: P, p2: P) -> Vec<(f64, f64, P)> {
         let at = (x.round() as i32, y.round() as i32);
         hits.push((u, t, at));
     }
+    if graze
+        && hits.is_empty()
+        && let Some(hit) = line_quad_graze(a, b, p0, ctrl, p2)
+    {
+        hits.push(hit);
+    }
     hits
+}
+
+/// One shared vertex where a line and a quadratic pass within a twip without
+/// strictly crossing. Subdivision stops once both spans are under a twip.
+fn line_quad_graze(a: P, b: P, p0: P, ctrl: P, p2: P) -> Option<(f64, f64, P)> {
+    let mut best: Option<Approach> = None;
+    line_quad_near(
+        (a.0 as f64, a.1 as f64),
+        (b.0 as f64, b.1 as f64),
+        0.0,
+        1.0,
+        Bez::from_i(p0, ctrl, p2),
+        0.0,
+        1.0,
+        0,
+        &mut best,
+    );
+    best.filter(|hit| hit.dist2 <= 1.0).map(|hit| (hit.u, hit.t, hit.at))
+}
+
+fn line_quad_near(
+    a: (f64, f64),
+    b: (f64, f64),
+    u0: f64,
+    u1: f64,
+    quad: Bez,
+    t0: f64,
+    t1: f64,
+    depth: u32,
+    best: &mut Option<Approach>,
+) {
+    if !quad.near_seg(a, b, 1.0) {
+        return;
+    }
+    let line_span = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+    if (quad.span() >= 1.0 || line_span >= 1.0) && depth < 80 {
+        if quad.span() >= line_span {
+            let (left, right) = quad.split();
+            let mid = (t0 + t1) * 0.5;
+            line_quad_near(a, b, u0, u1, left, t0, mid, depth + 1, best);
+            line_quad_near(a, b, u0, u1, right, mid, t1, depth + 1, best);
+        } else {
+            let mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
+            let um = (u0 + u1) * 0.5;
+            line_quad_near(a, mid, u0, um, quad, t0, t1, depth + 1, best);
+            line_quad_near(mid, b, um, u1, quad, t0, t1, depth + 1, best);
+        }
+        return;
+    }
+    let (u, t, dist2) = seg_closest(a, b, quad.p0, quad.p2);
+    let ua = u0 + u * (u1 - u0);
+    let ta = t0 + t * (t1 - t0);
+    if dist2 > 1.0 || !(1e-3..1.0 - 1e-3).contains(&ua) || !(1e-3..1.0 - 1e-3).contains(&ta) {
+        return;
+    }
+    let at = snap_between(
+        (a.0 + u * (b.0 - a.0), a.1 + u * (b.1 - a.1)),
+        (quad.p0.0 + t * (quad.p2.0 - quad.p0.0), quad.p0.1 + t * (quad.p2.1 - quad.p0.1)),
+    );
+    if best.as_ref().is_none_or(|hit| dist2 < hit.dist2) {
+        *best = Some(Approach { dist2, u: ua, t: ta, at });
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -335,12 +433,108 @@ struct Bez {
     p2: (f64, f64),
 }
 
-fn quad_quad(a0: P, ac: P, a1: P, b0: P, bc: P, b1: P) -> Vec<(f64, f64, P)> {
+fn quad_quad(a0: P, ac: P, a1: P, b0: P, bc: P, b1: P, graze: bool) -> Vec<(f64, f64, P)> {
     let a = Bez::from_i(a0, ac, a1);
     let b = Bez::from_i(b0, bc, b1);
     let mut hits = Vec::new();
     bez_hit(a, 0.0, 1.0, b, 0.0, 1.0, 0, &mut hits);
+    if graze
+        && hits.is_empty()
+        && let Some(hit) = quad_graze(a, b)
+    {
+        hits.push(hit);
+    }
     hits
+}
+
+/// Closest approach of two curves that never strictly cross, if it is within a twip.
+fn quad_graze(a: Bez, b: Bez) -> Option<(f64, f64, P)> {
+    let mut best: Option<Approach> = None;
+    quad_near(a, 0.0, 1.0, b, 0.0, 1.0, 0, &mut best);
+    best.filter(|hit| hit.dist2 <= 1.0).map(|hit| (hit.t, hit.u, hit.at))
+}
+
+fn quad_near(
+    a: Bez,
+    ta0: f64,
+    ta1: f64,
+    b: Bez,
+    tb0: f64,
+    tb1: f64,
+    depth: u32,
+    best: &mut Option<Approach>,
+) {
+    if !a.near(b, 1.0) {
+        return;
+    }
+    if a.span() < 1.0 && b.span() < 1.0 {
+        let (t, u, dist2) = seg_closest(a.p0, a.p2, b.p0, b.p2);
+        let ta = ta0 + t * (ta1 - ta0);
+        let tb = tb0 + u * (tb1 - tb0);
+        if dist2 > 1.0 || !(1e-3..1.0 - 1e-3).contains(&ta) || !(1e-3..1.0 - 1e-3).contains(&tb) {
+            return;
+        }
+        let at = snap_between(
+            (a.p0.0 + t * (a.p2.0 - a.p0.0), a.p0.1 + t * (a.p2.1 - a.p0.1)),
+            (b.p0.0 + u * (b.p2.0 - b.p0.0), b.p0.1 + u * (b.p2.1 - b.p0.1)),
+        );
+        if best.as_ref().is_none_or(|hit| dist2 < hit.dist2) {
+            *best = Some(Approach { dist2, u: tb, t: ta, at });
+        }
+        return;
+    }
+    if depth > 80 {
+        return;
+    }
+    if a.span() >= b.span() {
+        let (left, right) = a.split();
+        let mid = (ta0 + ta1) * 0.5;
+        quad_near(left, ta0, mid, b, tb0, tb1, depth + 1, best);
+        quad_near(right, mid, ta1, b, tb0, tb1, depth + 1, best);
+    } else {
+        let (left, right) = b.split();
+        let mid = (tb0 + tb1) * 0.5;
+        quad_near(a, ta0, ta1, left, tb0, mid, depth + 1, best);
+        quad_near(a, ta0, ta1, right, mid, tb1, depth + 1, best);
+    }
+}
+
+struct Approach {
+    dist2: f64,
+    /// Parameter on the first curve (the line, for a line/quad graze).
+    u: f64,
+    /// Parameter on the second curve.
+    t: f64,
+    at: P,
+}
+
+fn snap_between(p: (f64, f64), q: (f64, f64)) -> P {
+    (((p.0 + q.0) * 0.5).round() as i32, ((p.1 + q.1) * 0.5).round() as i32)
+}
+
+/// `(t on first, t on second, squared distance)` of the closest points of two segments.
+fn seg_closest(a0: (f64, f64), a1: (f64, f64), b0: (f64, f64), b1: (f64, f64)) -> (f64, f64, f64) {
+    let d1 = (a1.0 - a0.0, a1.1 - a0.1);
+    let d2 = (b1.0 - b0.0, b1.1 - b0.1);
+    let r = (a0.0 - b0.0, a0.1 - b0.1);
+    let aa = d1.0 * d1.0 + d1.1 * d1.1;
+    let e = d2.0 * d2.0 + d2.1 * d2.1;
+    let f = d2.0 * r.0 + d2.1 * r.1;
+    let c = d1.0 * r.0 + d1.1 * r.1;
+    let b = d1.0 * d2.0 + d1.1 * d2.1;
+    let denom = aa * e - b * b;
+    let mut s = if denom.abs() > 1e-12 { ((b * f - c * e) / denom).clamp(0.0, 1.0) } else { 0.0 };
+    let mut t = if e > 1e-18 { (b * s + f) / e } else { 0.0 };
+    if t < 0.0 {
+        t = 0.0;
+        s = if aa > 1e-18 { (-c / aa).clamp(0.0, 1.0) } else { 0.0 };
+    } else if t > 1.0 {
+        t = 1.0;
+        s = if aa > 1e-18 { ((b - c) / aa).clamp(0.0, 1.0) } else { 0.0 };
+    }
+    let dx = a0.0 + s * d1.0 - (b0.0 + t * d2.0);
+    let dy = a0.1 + s * d1.1 - (b0.1 + t * d2.1);
+    (s, t, dx * dx + dy * dy)
 }
 
 impl Bez {
@@ -358,9 +552,22 @@ impl Bez {
     }
 
     fn overlaps(self, other: Self) -> bool {
+        self.near(other, 0.0)
+    }
+
+    fn near(self, other: Self, pad: f64) -> bool {
         let (ax0, ay0, ax1, ay1) = self.bounds();
         let (bx0, by0, bx1, by1) = other.bounds();
-        ax0 <= bx1 && bx0 <= ax1 && ay0 <= by1 && by0 <= ay1
+        ax0 - pad <= bx1 && bx0 - pad <= ax1 && ay0 - pad <= by1 && by0 - pad <= ay1
+    }
+
+    fn near_seg(self, a: (f64, f64), b: (f64, f64), pad: f64) -> bool {
+        let (x0, y0, x1, y1) = self.bounds();
+        let minx = a.0.min(b.0) - pad;
+        let maxx = a.0.max(b.0) + pad;
+        let miny = a.1.min(b.1) - pad;
+        let maxy = a.1.max(b.1) + pad;
+        x0 <= maxx && minx <= x1 && y0 <= maxy && miny <= y1
     }
 
     fn bounds(self) -> (f64, f64, f64, f64) {

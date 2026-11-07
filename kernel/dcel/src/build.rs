@@ -3,8 +3,8 @@
 //! `build` interns vertices, links half-edges around each vertex, walks the
 //! `next` cycles, and attaches every non-positive cycle to the face that
 //! contains it by casting a ray to the left from the cycle's leftmost point.
-//! `label` floods fills from the unbounded face across edges; `dissolve`
-//! drops edges with the same fill on both sides.
+//! `label` floods fills and winding from the unbounded face across edges;
+//! `dissolve` drops edges with the same fill on both sides.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -25,14 +25,14 @@ pub(crate) struct Built {
 pub(crate) struct Labeled {
     pub built: Built,
     pub fills: Vec<u32>,
-    pub masks: Vec<u32>,
+    pub winds: Vec<[i8; 2]>,
 }
 
 pub(crate) fn overlay(pieces: Vec<Piece>, ov: Overlay) -> Labeled {
     let pieces = slice(pieces);
     let built = build(pieces);
-    let (fills, masks) = label(&built, ov);
-    Labeled { built, fills, masks }
+    let (fills, winds) = label(&built, ov);
+    Labeled { built, fills, winds }
 }
 
 pub(crate) fn finish(labeled: &Labeled) -> Map {
@@ -58,7 +58,7 @@ pub(crate) fn partition(labeled: &Labeled, inside: &[bool]) -> (Map, Map) {
         let (ia, ib) = (inside[fa], inside[fb]);
         let lift = (if ia { la } else { EMPTY }, if ib { lb } else { EMPTY });
         let stay = (if ia { EMPTY } else { la }, if ib { EMPTY } else { lb });
-        let plain = Piece { top: None, mask: 0, fresh: false, ..*piece };
+        let plain = Piece { top: None, wind: [0, 0], fresh: false, ..*piece };
         if lift != (EMPTY, EMPTY) || (piece.stroke.is_some() && ia && ib) {
             lifted.push(Piece { under: Some(lift), ..plain });
         }
@@ -139,7 +139,7 @@ fn dissolve(built: &Built, fills: &[u32]) -> Vec<Piece> {
             if l == r && piece.stroke.is_none() {
                 return None;
             }
-            Some(Piece { under: Some((l, r)), top: None, mask: 0, fresh: false, ..*piece })
+            Some(Piece { under: Some((l, r)), top: None, wind: [0, 0], fresh: false, ..*piece })
         })
         .collect()
 }
@@ -437,20 +437,17 @@ pub(crate) fn ray_left(verts: &[P], halfs: &[HalfEdge], start: (f64, f64), skip:
     best.map(|(_, _, half)| half)
 }
 
-fn label(built: &Built, ov: Overlay) -> (Vec<u32>, Vec<u32>) {
+fn label(built: &Built, ov: Overlay) -> (Vec<u32>, Vec<[i8; 2]>) {
     let n = built.faces.len();
     let mut under = vec![EMPTY; n];
     let mut top = vec![EMPTY; n];
-    let mut mask = vec![0u32; n];
+    let mut wind = vec![[0i8; 2]; n];
     let mut seen = vec![false; n];
     seen[0] = true;
     let mut queue = VecDeque::from([0usize]);
     while let Some(face) = queue.pop_front() {
         for &h in &built.face_halves[face] {
             let other = built.halfs[(h ^ 1) as usize].face as usize;
-            if seen[other] {
-                continue;
-            }
             let piece = &built.pairs[(h / 2) as usize];
             let to_right = h % 2 == 0;
             let pick = |labels: Option<(u32, u32)>, current: u32| match labels {
@@ -463,22 +460,36 @@ fn label(built: &Built, ov: Overlay) -> (Vec<u32>, Vec<u32>) {
                 }
                 None => current,
             };
+            // Crossing from the left of a→b to the right adds the piece's winding.
+            let s = if to_right { 1i8 } else { -1 };
+            let implied = [
+                wind[face][0].saturating_add(piece.wind[0].saturating_mul(s)),
+                wind[face][1].saturating_add(piece.wind[1].saturating_mul(s)),
+            ];
+            if seen[other] {
+                debug_assert!(
+                    wind[other] == implied,
+                    "winding disagrees across an edge: {face} -> {other}, stored {:?}, implied {:?}",
+                    wind[other], implied
+                );
+                continue;
+            }
             under[other] = pick(piece.under, under[face]);
             top[other] = pick(piece.top, top[face]);
-            mask[other] = mask[face] ^ piece.mask;
+            wind[other] = implied;
             seen[other] = true;
             queue.push_back(other);
         }
     }
-    let fills = (0..n).map(|f| final_fill(ov, under[f], top[f], mask[f])).collect();
-    (fills, mask)
+    let fills = (0..n).map(|f| final_fill(ov, under[f], top[f], wind[f])).collect();
+    (fills, wind)
 }
 
-fn final_fill(ov: Overlay, under: u32, top: u32, mask: u32) -> u32 {
+fn final_fill(ov: Overlay, under: u32, top: u32, wind: [i8; 2]) -> u32 {
     match ov {
         Overlay::None => under,
         Overlay::Paint(fill, mode) => {
-            let inside = mask & 1 != 0;
+            let inside = wind[0] != 0;
             match mode {
                 Mode::Over => {
                     if inside {
@@ -518,8 +529,8 @@ fn final_fill(ov: Overlay, under: u32, top: u32, mask: u32) -> u32 {
             }
         }
         Overlay::Region(op) => {
-            let a = mask & 1 != 0;
-            let b = mask & 2 != 0;
+            let a = wind[0] != 0;
+            let b = wind[1] != 0;
             let keep = match op {
                 BoolOp::Union => a || b,
                 BoolOp::Intersect => a && b,

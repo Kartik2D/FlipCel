@@ -109,11 +109,21 @@ pub(crate) struct Piece {
     under: Option<(u32, u32)>,
     /// Fills of a stamped map, which override `under` where present.
     top: Option<(u32, u32)>,
-    /// Even-odd region bits toggled when crossing this edge.
-    mask: u32,
+    /// Nonzero winding contribution of this directed edge `a → b` for the
+    /// paint ring (slot 0) and the second region of a boolean (slot 1).
+    wind: [i8; 2],
     stroke: Option<u32>,
     /// Needs intersection tests against its neighbours.
     fresh: bool,
+}
+
+impl Piece {
+    pub(crate) fn flip(&mut self) {
+        std::mem::swap(&mut self.a, &mut self.b);
+        self.under = self.under.map(|(l, r)| (r, l));
+        self.top = self.top.map(|(l, r)| (r, l));
+        self.wind = [-self.wind[0], -self.wind[1]];
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -148,12 +158,12 @@ impl Map {
 
     // ----- editing -----
 
-    /// Overlay an even-odd region. Straight polygon input: see `paint_polygon`.
+    /// Overlay a nonzero-winding region. Straight polygon input: see `paint_polygon`.
     pub fn paint(&mut self, rings: &[Ring], fill: u32, mode: Mode) {
         let mut pieces = self.to_pieces();
         let before = pieces.len();
         for ring in rings {
-            ring_pieces(ring, 1, None, &mut pieces);
+            ring_pieces(ring, 0, None, &mut pieces);
         }
         if pieces.len() == before {
             return;
@@ -169,7 +179,7 @@ impl Map {
         let mut pieces = self.to_pieces();
         let before = pieces.len();
         let ring = polygon(pts);
-        ring_pieces(&ring, 1, None, &mut pieces);
+        ring_pieces(&ring, 0, None, &mut pieces);
         for piece in &mut pieces[before..] {
             piece.stroke = stroke;
         }
@@ -306,7 +316,7 @@ impl Map {
         }
         let mut fresh = Vec::new();
         let end = walk_segs(first, segs, |a, b, ctrl| {
-            fresh.push(Piece { a, b, ctrl, under, top: None, mask: 0, stroke, fresh: true });
+            fresh.push(Piece { a, b, ctrl, under, top: None, wind: [0, 0], stroke, fresh: true });
         });
         if end != last {
             return false;
@@ -357,14 +367,14 @@ impl Map {
         out
     }
 
-    /// Lift everything inside an even-odd region into a new map; the rest stays.
+    /// Lift everything inside a nonzero-winding region into a new map; the rest stays.
     pub fn split_off(&mut self, rings: &[Ring]) -> Map {
         let mut pieces = self.to_pieces();
         for ring in rings {
-            ring_pieces(ring, 1, None, &mut pieces);
+            ring_pieces(ring, 0, None, &mut pieces);
         }
         let labeled = overlay(pieces, Overlay::None);
-        let inside: Vec<bool> = labeled.masks.iter().map(|mask| mask & 1 != 0).collect();
+        let inside: Vec<bool> = labeled.winds.iter().map(|w| w[0] != 0).collect();
         self.take_partition(labeled, &inside)
     }
 
@@ -598,7 +608,7 @@ impl Map {
                     ctrl: pair[0].ctrl.or(pair[1].ctrl),
                     under: Some((pair[0].fill, pair[1].fill)),
                     top: None,
-                    mask: 0,
+                    wind: [0, 0],
                     stroke: pair[0].stroke.or(pair[1].stroke),
                     fresh: false,
                 })
@@ -607,15 +617,15 @@ impl Map {
     }
 }
 
-/// Boolean operation on two even-odd regions; the result is a list of rings
-/// (outer boundaries and holes) suitable for `paint`.
+/// Boolean operation on two nonzero-winding regions; the result is a list of
+/// rings (outer boundaries and holes) suitable for `paint`.
 pub fn region_op(a: &[Ring], b: &[Ring], op: BoolOp) -> Vec<Ring> {
     let mut pieces = Vec::new();
     for ring in a {
-        ring_pieces(ring, 1, None, &mut pieces);
+        ring_pieces(ring, 0, None, &mut pieces);
     }
     for ring in b {
-        ring_pieces(ring, 2, None, &mut pieces);
+        ring_pieces(ring, 1, None, &mut pieces);
     }
     let map = assemble(pieces, Overlay::Region(op));
     map.regions().into_iter().flat_map(|(_, rings)| rings).collect()
@@ -695,9 +705,11 @@ fn walk_segs(start: P, segs: &[Seg], mut emit: impl FnMut(P, P, Option<P>)) -> P
     cur
 }
 
-fn ring_pieces(ring: &Ring, mask: u32, top: Option<(u32, u32)>, out: &mut Vec<Piece>) {
+fn ring_pieces(ring: &Ring, slot: usize, top: Option<(u32, u32)>, out: &mut Vec<Piece>) {
+    let mut wind = [0i8; 2];
+    wind[slot] = 1;
     let mut emit = |a: P, b: P, ctrl: Option<P>| {
-        out.push(Piece { a, b, ctrl, under: None, top, mask, stroke: None, fresh: true });
+        out.push(Piece { a, b, ctrl, under: None, top, wind, stroke: None, fresh: true });
     };
     let cur = walk_segs(ring.start, &ring.segs, &mut emit);
     if cur != ring.start {

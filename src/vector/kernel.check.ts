@@ -115,12 +115,18 @@ function check(name: string, ok: boolean, detail = ""): void {
 
 // 4. SVG path data (potrace-style) and shapes.
 {
-  const rings = parsePathData("M 0 0 L 100 0 L 100 100 L 0 100 Z M 25 25 L 75 25 L 75 75 L 25 75 Z");
+  const rings = parsePathData("M 0 0 L 100 0 L 100 100 L 0 100 Z M 25 25 L 25 75 L 75 75 L 75 25 Z");
   check("two rings parsed", rings.length === 2);
   const layer = new VectorLayer();
   layer.paint(rings, 1);
-  check("even-odd hole from path data", layer.faceAt({ x: 50, y: 50 }) === 0 && layer.faceAt({ x: 10, y: 10 }) === 1);
+  check("opposite inner ring is a hole", layer.faceAt({ x: 50, y: 50 }) === 0 && layer.faceAt({ x: 10, y: 10 }) === 1);
   layer.free();
+
+  const eight = parsePathData("M0 0 L 100 100 L 0 100 L 100 0 Z");
+  const l8 = new VectorLayer();
+  l8.paint(eight, 1);
+  check("figure-eight fills both lobes", l8.faceAt({ x: 50, y: 20 }) === 1 && l8.faceAt({ x: 50, y: 80 }) === 1);
+  l8.free();
 
   const curved = parsePathData("M0 0 C 0 55 100 55 100 0 Z");
   check("cubic parsed", curved.length === 1 && curved[0].segs[0].kind === "C");

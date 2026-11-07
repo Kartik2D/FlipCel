@@ -36,18 +36,19 @@ function pickAll(layer: VectorLayer): Map<string, Px> {
   return new Map(layer.vertices().map((v) => [vertexKey(v), v]));
 }
 
-/** A 48-gon ring 80px wide (like a traced brush loop): outer + inner polygon. */
+/** A 48-gon ring 80px wide (like a traced brush loop): outer + opposite hole. */
 function tracedLoop(): VectorLayer {
   const l = new VectorLayer();
-  const poly = (r: number) => {
+  const poly = (r: number, hole = false) => {
     const pts: Px[] = [];
     for (let i = 0; i < 48; i++) {
       const a = (i / 48) * Math.PI * 2;
       pts.push({ x: 200 + r * Math.cos(a), y: 200 + r * Math.sin(a) });
     }
+    if (hole) pts.reverse();
     return { start: pts[0], segs: pts.slice(1).map((p) => ({ kind: "L" as const, to: p })) };
   };
-  l.paint([poly(120), poly(80)], 1);
+  l.paint([poly(120), poly(80, true)], 1);
   return l;
 }
 
