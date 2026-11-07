@@ -14,6 +14,11 @@
  *   - Marquee (rect / lasso) picks vertices inside.
  *   - Click empty space → clear.
  *
+ * Vertices are only shown for "shapes" (connected components of the map)
+ * that have been revealed: clicking a vertex, edge or filled face reveals
+ * its shape, picked vertices always keep their shape revealed, and a tap on
+ * empty space (or on another shape, without the add modifier) hides it.
+ *
  * Vertex / corner operations on the picked set:
  *   - delete     : collapse each picked vertex onto a neighbour (removes it).
  *   - simplify   : refit each picked run with as few cubics as fit within a
@@ -102,6 +107,11 @@ interface LayerGeometry {
   keys: string[];
   /** Whether each vertex is picked, parallel to `vertices`. */
   pickedMask: boolean[];
+  /** Connected component ("shape") of each vertex, parallel to `vertices`. */
+  comp: Int32Array;
+  /** Component of each edge, parallel to `edges`. */
+  edgeComp: Int32Array;
+  compByKey: Map<string, number>;
 }
 
 /** A vertex drag in flight: the kernel is untouched until release. */
@@ -135,6 +145,18 @@ export class DirectSelectController {
   /** Picked vertices, keyed by position. */
   private picked = new Map<string, Px>();
   private layerId: string | null = null;
+
+  /**
+   * Shapes (connected components) whose vertices are shown. Component ids
+   * are only meaningful for `shownDigest`; after a kernel edit the set is
+   * re-seeded from whichever of `shownKeys` survived (see `geometry()`).
+   * Shapes of picked vertices are always shown.
+   */
+  private shownComps = new Set<number>();
+  private shownKeys: string[] = [];
+  private shownDigest: bigint | null = null;
+  /** Bumped whenever the shown set changes (outline cache key). */
+  private shownVersion = 0;
 
   private isDragging = false;
   private dragStartWorld: Point | null = null;
@@ -251,6 +273,7 @@ export class DirectSelectController {
 
   clearSelection(): void {
     this.picked.clear();
+    this.hideShapes();
     this.layerId = null;
     this.edgeDrag = null;
     this.vertexDrag = null;
@@ -282,6 +305,64 @@ export class DirectSelectController {
         ? { count: 1, hasShapes: true, instances: [], layerIds: this.layerId ? [this.layerId] : [] }
         : EMPTY_SELECTION,
     );
+  }
+
+  // ------------------------------------------------------------
+  // Shown shapes
+  // ------------------------------------------------------------
+
+  private hideShapes(): void {
+    if (this.shownComps.size === 0 && this.shownKeys.length === 0) return;
+    this.shownComps.clear();
+    this.shownKeys = [];
+    this.shownVersion++;
+  }
+
+  /** Show the shape containing vertex `k` (replacing the shown set unless `add`). */
+  private revealShapeOf(geo: LayerGeometry, k: string, add: boolean): void {
+    const c = geo.compByKey.get(k);
+    if (!add) this.hideShapes();
+    if (c === undefined || this.shownComps.has(c)) return;
+    this.shownComps.add(c);
+    this.refreshShownKeys(geo);
+  }
+
+  /** Show the shape whose boundary is nearest `world` (a click on a filled face). */
+  private revealShapeAt(art: VectorLayer, world: Px, add: boolean): void {
+    const e = art.nearestEdge(world, 1e6);
+    if (!e) return;
+    this.revealShapeOf(this.geometry(art), key(e.a), add);
+  }
+
+  private refreshShownKeys(geo: LayerGeometry): void {
+    this.shownKeys = geo.keys.filter((_, i) => this.shownComps.has(geo.comp[i]));
+    this.shownDigest = geo.digest;
+    this.shownVersion++;
+  }
+
+  /**
+   * Bring the shown set up to date with `geo`: re-seed component ids after a
+   * kernel edit, then make sure every picked vertex's shape is shown.
+   */
+  private syncShown(geo: LayerGeometry): void {
+    let changed = false;
+    if (this.shownDigest !== geo.digest) {
+      const next = new Set<number>();
+      for (const k of this.shownKeys) {
+        const c = geo.compByKey.get(k);
+        if (c !== undefined) next.add(c);
+      }
+      this.shownComps = next;
+      changed = true;
+    }
+    for (const k of this.picked.keys()) {
+      const c = geo.compByKey.get(k);
+      if (c !== undefined && !this.shownComps.has(c)) {
+        this.shownComps.add(c);
+        changed = true;
+      }
+    }
+    if (changed) this.refreshShownKeys(geo);
   }
 
   /** Drop picks that no longer exist in the map (after kernel edits). */
@@ -323,6 +404,7 @@ export class DirectSelectController {
         if (!this.picked.has(k)) {
           if (!add) this.picked.clear();
           this.picked.set(k, v);
+          this.revealShapeOf(this.geometry(art), k, add);
         } else if (add) {
           this.picked.delete(k);
           this.publish();
@@ -358,6 +440,7 @@ export class DirectSelectController {
           return;
         }
         if (!add) this.picked.clear();
+        this.revealShapeOf(this.geometry(art), key(e.a), add);
         this.layerId = this.renderer.getActiveLayerId();
         this.edgeDrag = { edge: e, ctrl: e.ctrl, handle: false };
         this.beginDrag(vp, world);
@@ -533,25 +616,33 @@ export class DirectSelectController {
         this.drawUI();
         return;
       }
-      if (!add) this.picked.clear();
-      if (active) {
-        const art = this.art();
+      if (!add) {
+        this.picked.clear();
+        this.hideShapes();
+      }
+      const art = this.art();
+      if (!active) {
+        // Tap: on a filled face, show that shape's vertices; elsewhere just hide.
         if (art) {
-          const toWorld = (p: Point) => this.camera.screenToWorld(p.x, p.y);
-          const poly =
-            this.selectionShape === "lasso"
-              ? lasso.map(toWorld)
-              : [toWorld(start), toWorld({ x: cur.x, y: start.y }), toWorld(cur), toWorld({ x: start.x, y: cur.y })];
-          if (poly.length >= 3) {
-            for (const v of art.vertices()) {
-              if (pointInPolygon(v, poly)) this.picked.set(key(v), v);
-            }
-          }
-          if (this.picked.size > 0) {
-            this.layerId = this.renderer.getActiveLayerId();
-            if (this.layerId) this.onActivateLayer?.(this.layerId);
+          const world = this.camera.screenToWorld(cur.x, cur.y);
+          if (art.faceAt(world) !== 0) this.revealShapeAt(art, world, add);
+        }
+      } else if (art) {
+        const toWorld = (p: Point) => this.camera.screenToWorld(p.x, p.y);
+        const poly =
+          this.selectionShape === "lasso"
+            ? lasso.map(toWorld)
+            : [toWorld(start), toWorld({ x: cur.x, y: start.y }), toWorld(cur), toWorld({ x: start.x, y: cur.y })];
+        if (poly.length >= 3) {
+          for (const v of art.vertices()) {
+            if (pointInPolygon(v, poly)) this.picked.set(key(v), v);
           }
         }
+        if (this.picked.size > 0) {
+          this.layerId = this.renderer.getActiveLayerId();
+          if (this.layerId) this.onActivateLayer?.(this.layerId);
+        }
+        // Marquee-picked vertices reveal their shapes via syncShown() on paint.
       }
       this.publish();
       this.drawUI();
@@ -716,6 +807,7 @@ export class DirectSelectController {
     const art = this.art();
     if (art && !art.isEmpty()) {
       const geo = this.geometry(art);
+      if (this.shownComps.size === 0) return;
       this.drawOutline(ctx, geo);
       const drag = this.vertexDrag;
       const shift = (p: Px): Px =>
@@ -760,6 +852,7 @@ export class DirectSelectController {
       const pickedPath = new Path2D();
       const freePath = new Path2D();
       for (let i = 0; i < geo.vertices.length; i++) {
+        if (!this.shownComps.has(geo.comp[i])) continue;
         const v = shift(geo.vertices[i]);
         const s = this.camera.worldToScreen(v.x, v.y);
         const into = geo.pickedMask[i] ? pickedPath : freePath;
@@ -788,10 +881,34 @@ export class DirectSelectController {
     let g = this.geoCache;
     if (!g || g.art !== art || g.digest !== digest) {
       const vertices = art.vertices();
-      g = { art, digest, edges: art.edges(), vertices, keys: vertices.map(key), pickedMask: [] };
+      const edges = art.edges();
+      const keys = vertices.map(key);
+      // Union-find over edges: a "shape" is a connected component of the map.
+      const index = new Map(keys.map((k, i) => [k, i] as const));
+      const parent = Int32Array.from(vertices, (_, i) => i);
+      const find = (i: number): number => {
+        while (parent[i] !== i) {
+          parent[i] = parent[parent[i]];
+          i = parent[i];
+        }
+        return i;
+      };
+      for (const e of edges) {
+        const ia = index.get(key(e.a));
+        const ib = index.get(key(e.b));
+        if (ia !== undefined && ib !== undefined) parent[find(ia)] = find(ib);
+      }
+      const comp = Int32Array.from(vertices, (_, i) => find(i));
+      const edgeComp = Int32Array.from(edges, (e) => {
+        const ia = index.get(key(e.a));
+        return ia === undefined ? -1 : comp[ia];
+      });
+      const compByKey = new Map(keys.map((k, i) => [k, comp[i]] as const));
+      g = { art, digest, edges, vertices, keys, pickedMask: [], comp, edgeComp, compByKey };
       this.geoCache = g;
     }
     g.pickedMask = g.keys.map((k) => this.picked.has(k));
+    this.syncShown(g);
     return g;
   }
 
@@ -813,7 +930,7 @@ export class DirectSelectController {
   }
 
   /**
-   * Dashed outline of every edge on the active layer, at its pending
+   * Dashed outline of every edge of the shown shapes, at its pending
    * position while a drag is in flight (so the preview is the outline).
    */
   private drawOutline(ctx: CanvasRenderingContext2D, geo: LayerGeometry): void {
@@ -835,7 +952,7 @@ export class DirectSelectController {
   }
 
   /**
-   * Screen-space outline of every edge, at pending positions while a drag is
+   * Screen-space outline of the shown shapes' edges, at pending positions while a drag is
    * in flight. Rebuilt only when the geometry, camera or drag state changes;
    * otherwise the three dashed passes stroke the same prebuilt `Path2D`.
    */
@@ -846,13 +963,15 @@ export class DirectSelectController {
       this.camera.getTransformMatrix().join(","),
       d ? `${d.offset.x},${d.offset.y},${d.starts.length}` : "",
       e?.ctrl ? `${e.ctrl.x},${e.ctrl.y}` : "",
+      this.shownVersion,
     ].join("|");
     const c = this.outlineCache;
     if (c && c.digest === geo.digest && c.art === geo.art && c.key === key) return c.path;
 
     const path = new Path2D();
-    for (const e0 of geo.edges) {
-      const edge = this.pendingEdge(e0);
+    for (let i = 0; i < geo.edges.length; i++) {
+      if (!this.shownComps.has(geo.edgeComp[i])) continue;
+      const edge = this.pendingEdge(geo.edges[i]);
       const a = this.camera.worldToScreen(edge.a.x, edge.a.y);
       const b = this.camera.worldToScreen(edge.b.x, edge.b.y);
       path.moveTo(a.x, a.y);
