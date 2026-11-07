@@ -28,6 +28,7 @@ import type { Point, CanvasConfig } from "../../geometry/types";
 import type { StageRenderer } from "../../render/stage-renderer";
 import type { Camera } from "../../render/camera";
 import type { ChromeLayer } from "../../render/chrome-layer";
+import { scheduler, Surface } from "../../render/frame-scheduler";
 import {
   configStore,
   toolSettingsStore,
@@ -91,6 +92,18 @@ interface EdgeDrag {
   handle: boolean;
 }
 
+/** Edge/vertex readback of one kernel state (see `geometry()`). */
+interface LayerGeometry {
+  art: VectorLayer;
+  digest: bigint;
+  edges: KernelEdge[];
+  vertices: Px[];
+  /** `vertexKey` of each vertex, parallel to `vertices`. */
+  keys: string[];
+  /** Whether each vertex is picked, parallel to `vertices`. */
+  pickedMask: boolean[];
+}
+
 /** A vertex drag in flight: the kernel is untouched until release. */
 interface VertexDrag {
   /** Picked positions when the drag began. */
@@ -138,6 +151,10 @@ export class DirectSelectController {
     picks: Px[];
     bytes: Uint8Array;
   } | null = null;
+
+  /** Paint caches (see `geometry()` / `outlinePath()`). */
+  private geoCache: LayerGeometry | null = null;
+  private outlineCache: { art: VectorLayer; digest: bigint; key: string; path: Path2D } | null = null;
 
   constructor(renderer: StageRenderer, camera: Camera, chromeLayer: ChromeLayer) {
     this.renderer = renderer;
@@ -368,7 +385,9 @@ export class DirectSelectController {
 
   /** Edges whose control handles are visible (curved, touching a picked vertex). */
   private handleEdges(art: VectorLayer): KernelEdge[] {
-    return art.edges().filter((e) => e.ctrl && (this.picked.has(key(e.a)) || this.picked.has(key(e.b))));
+    return this.geometry(art).edges.filter(
+      (e) => e.ctrl && (this.picked.has(key(e.a)) || this.picked.has(key(e.b))),
+    );
   }
 
   private controlHandleAt(art: VectorLayer, world: Px, tol: number): KernelEdge | null {
@@ -478,11 +497,12 @@ export class DirectSelectController {
       false,
     );
     this.snapGuides = snapped.guides;
+    setSnapGuides(this.snapGuides);
     if (snapped.dx !== drag.offset.x || snapped.dy !== drag.offset.y) {
       drag.offset = { x: snapped.dx, y: snapped.dy };
       this.noteEdit();
+      this.drawUI();
     }
-    this.drawUI();
   }
 
   /** Commit the in-flight drag to the kernel (once, on release). */
@@ -671,8 +691,16 @@ export class DirectSelectController {
   // Chrome
   // ------------------------------------------------------------
 
+  /** Mark the chrome surface dirty; `paintUI` runs once on the next frame. */
   drawUI(): void {
-    this.chromeLayer.clear();
+    scheduler.invalidate(Surface.CHROME);
+  }
+
+  /**
+   * Paint outline, handles and vertices onto the (already cleared) chrome
+   * canvas. Called by the frame scheduler's CHROME painter, never directly.
+   */
+  paintUI(): void {
     const ctx = this.chromeCtx;
 
     if (this.marquee.isTracking()) {
@@ -682,13 +710,13 @@ export class DirectSelectController {
         if (this.selectionShape === "lasso") this.chromeLayer.drawLassoPreview(this.marquee.getLassoPoints());
         else this.chromeLayer.drawMarqueeRect(start, cur);
       }
-      setSnapGuides([]);
       return;
     }
 
     const art = this.art();
     if (art && !art.isEmpty()) {
-      this.drawOutline(ctx, art);
+      const geo = this.geometry(art);
+      this.drawOutline(ctx, geo);
       const drag = this.vertexDrag;
       const shift = (p: Px): Px =>
         drag && drag.starts.some((s) => same(s, p)) ? { x: p.x + drag.offset.x, y: p.y + drag.offset.y } : p;
@@ -726,20 +754,45 @@ export class DirectSelectController {
         ctx.stroke();
       }
       // Vertices: black squares for picked, white for free, like select handles.
+      // One fill pass per colour so a tiger-sized layer costs two fills and two
+      // strokes, not four canvas calls per vertex.
       ctx.lineWidth = 2;
-      for (const v0 of art.vertices()) {
-        const v = shift(v0);
+      const pickedPath = new Path2D();
+      const freePath = new Path2D();
+      for (let i = 0; i < geo.vertices.length; i++) {
+        const v = shift(geo.vertices[i]);
         const s = this.camera.worldToScreen(v.x, v.y);
-        const isPicked = this.picked.has(key(v0));
-        ctx.fillStyle = isPicked ? controlFill : controlStroke;
-        ctx.strokeStyle = isPicked ? controlStroke : controlFill;
-        ctx.fillRect(s.x - ANCHOR_SIZE / 2, s.y - ANCHOR_SIZE / 2, ANCHOR_SIZE, ANCHOR_SIZE);
-        ctx.strokeRect(s.x - ANCHOR_SIZE / 2, s.y - ANCHOR_SIZE / 2, ANCHOR_SIZE, ANCHOR_SIZE);
+        const into = geo.pickedMask[i] ? pickedPath : freePath;
+        into.rect(s.x - ANCHOR_SIZE / 2, s.y - ANCHOR_SIZE / 2, ANCHOR_SIZE, ANCHOR_SIZE);
       }
+      ctx.fillStyle = controlStroke;
+      ctx.strokeStyle = controlFill;
+      ctx.fill(freePath);
+      ctx.stroke(freePath);
+      ctx.fillStyle = controlFill;
+      ctx.strokeStyle = controlStroke;
+      ctx.fill(pickedPath);
+      ctx.stroke(pickedPath);
       ctx.restore();
     }
+  }
 
-    setSnapGuides(this.snapGuides);
+  /**
+   * Edge/vertex readback for `art`, cached by kernel digest so idle repaints
+   * (camera moves, hover) do not cross into wasm or rebuild vertex keys. The
+   * picked mask is a Set lookup per vertex, recomputed on every paint since
+   * the pick set changes in many places.
+   */
+  private geometry(art: VectorLayer): LayerGeometry {
+    const digest = art.digest();
+    let g = this.geoCache;
+    if (!g || g.art !== art || g.digest !== digest) {
+      const vertices = art.vertices();
+      g = { art, digest, edges: art.edges(), vertices, keys: vertices.map(key), pickedMask: [] };
+      this.geoCache = g;
+    }
+    g.pickedMask = g.keys.map((k) => this.picked.has(k));
+    return g;
   }
 
   /**
@@ -763,21 +816,9 @@ export class DirectSelectController {
    * Dashed outline of every edge on the active layer, at its pending
    * position while a drag is in flight (so the preview is the outline).
    */
-  private drawOutline(ctx: CanvasRenderingContext2D, art: VectorLayer): void {
+  private drawOutline(ctx: CanvasRenderingContext2D, geo: LayerGeometry): void {
+    const path = this.outlinePath(geo);
     ctx.save();
-    ctx.beginPath();
-    for (const e0 of art.edges()) {
-      const e = this.pendingEdge(e0);
-      const a = this.camera.worldToScreen(e.a.x, e.a.y);
-      const b = this.camera.worldToScreen(e.b.x, e.b.y);
-      ctx.moveTo(a.x, a.y);
-      if (e.ctrl) {
-        const c = this.camera.worldToScreen(e.ctrl.x, e.ctrl.y);
-        ctx.quadraticCurveTo(c.x, c.y, b.x, b.y);
-      } else {
-        ctx.lineTo(b.x, b.y);
-      }
-    }
     // Same passes as the main select outline (StageRenderer.strokePartsOutline).
     ctx.lineJoin = "round";
     ctx.setLineDash([6, 5]);
@@ -788,9 +829,42 @@ export class DirectSelectController {
     ]) {
       ctx.strokeStyle = pass.style;
       ctx.lineWidth = pass.width;
-      ctx.stroke();
+      ctx.stroke(path);
     }
     ctx.restore();
+  }
+
+  /**
+   * Screen-space outline of every edge, at pending positions while a drag is
+   * in flight. Rebuilt only when the geometry, camera or drag state changes;
+   * otherwise the three dashed passes stroke the same prebuilt `Path2D`.
+   */
+  private outlinePath(geo: LayerGeometry): Path2D {
+    const d = this.vertexDrag;
+    const e = this.edgeDrag;
+    const key = [
+      this.camera.getTransformMatrix().join(","),
+      d ? `${d.offset.x},${d.offset.y},${d.starts.length}` : "",
+      e?.ctrl ? `${e.ctrl.x},${e.ctrl.y}` : "",
+    ].join("|");
+    const c = this.outlineCache;
+    if (c && c.digest === geo.digest && c.art === geo.art && c.key === key) return c.path;
+
+    const path = new Path2D();
+    for (const e0 of geo.edges) {
+      const edge = this.pendingEdge(e0);
+      const a = this.camera.worldToScreen(edge.a.x, edge.a.y);
+      const b = this.camera.worldToScreen(edge.b.x, edge.b.y);
+      path.moveTo(a.x, a.y);
+      if (edge.ctrl) {
+        const cp = this.camera.worldToScreen(edge.ctrl.x, edge.ctrl.y);
+        path.quadraticCurveTo(cp.x, cp.y, b.x, b.y);
+      } else {
+        path.lineTo(b.x, b.y);
+      }
+    }
+    this.outlineCache = { art: geo.art, digest: geo.digest, key, path };
+    return path;
   }
 }
 

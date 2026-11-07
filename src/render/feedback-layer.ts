@@ -1,12 +1,18 @@
 /**
  * UI Overlay - Visual Feedback Layer
  *
- * Draws UI elements and visual feedback on the top canvas layer.
+ * Draws UI elements and visual feedback on #ui-canvas.
  *
  * Key responsibilities:
  * - Optional brush-size ring (max brush diameter) while the brush tool is active
  * - Draws world-space grid at fixed spacing (pan/zoom/rotate with camera)
- * - Maps pixel coordinates back to viewport for display
+ * - Symmetry guides and live snap guides
+ *
+ * Nothing here paints directly: every setter marks the UI surface dirty on
+ * the frame scheduler and `paint()` runs once per frame. The grid and
+ * symmetry guides depend only on the camera and preferences, so they are
+ * rendered into an offscreen bitmap that is re-rasterized only when one of
+ * those inputs changes and blitted under the cursor ring otherwise.
  */
 import type { Point, CanvasConfig } from "../geometry/types";
 import type { Camera } from "./camera";
@@ -18,6 +24,7 @@ import {
 import { snapGuidesStore } from "../editing/snap";
 import type { ToolId } from "../tools/registry";
 import type { BrushTip } from "../tools/brush";
+import { scheduler, Surface } from "./frame-scheduler";
 
 export class FeedbackLayer {
   private ctx: CanvasRenderingContext2D;
@@ -40,6 +47,12 @@ export class FeedbackLayer {
   private brushTipAngle = 0;
   private magnetSize = 120; // Magnet brush diameter in viewport/screen pixels
 
+  /** Cached grid + symmetry guides at the current camera/prefs. */
+  private staticCanvas: HTMLCanvasElement | null = null;
+  private staticKey = "";
+  /** Whether the static bitmap has anything on it (skip the blit otherwise). */
+  private staticHasContent = false;
+
   constructor(
     _canvas: HTMLCanvasElement,
     ctx: CanvasRenderingContext2D,
@@ -48,7 +61,7 @@ export class FeedbackLayer {
     this.ctx = ctx;
     this.config = config;
     this.detectMobile();
-    snapGuidesStore.subscribe(() => this.draw());
+    snapGuidesStore.subscribe(() => this.invalidate());
   }
 
   private detectMobile() {
@@ -56,53 +69,59 @@ export class FeedbackLayer {
     this.isMobile = "ontouchstart" in window || navigator.maxTouchPoints > 0;
   }
 
+  private invalidate() {
+    scheduler.invalidate(Surface.UI);
+  }
+
   /**
    * Set the camera reference for world-to-screen transformations
    */
   setCamera(camera: Camera) {
     this.camera = camera;
+    this.invalidate();
   }
 
   setBrushSizeIndicatorEnabled(enabled: boolean) {
     this.brushSizeIndicatorEnabled = enabled;
-    this.draw();
+    this.invalidate();
   }
 
   setActiveTool(tool: ToolId) {
     this.activeTool = tool;
-    this.draw();
+    this.invalidate();
   }
 
   setDrawingState(isDrawing: boolean) {
+    if (this.isDrawing === isDrawing) return;
     this.isDrawing = isDrawing;
-    this.draw();
+    this.invalidate();
   }
 
   updateConfig(config: CanvasConfig) {
     this.config = config;
     this.syncCanvasResolution();
-    this.draw();
+    this.invalidate();
   }
 
   setMaxBrushSize(size: number) {
     this.maxBrushSize = size;
-    this.draw();
+    this.invalidate();
   }
 
   setBrushTip(tip: BrushTip) {
     this.brushTip = tip;
-    this.draw();
+    this.invalidate();
   }
 
   setBrushTipAngle(angleDeg: number) {
     this.brushTipAngle = angleDeg;
-    this.draw();
+    this.invalidate();
   }
 
   /** Set magnet brush diameter in viewport/screen pixels. */
   setMagnetSize(size: number) {
     this.magnetSize = size;
-    this.draw();
+    this.invalidate();
   }
 
   setViewOverlayPrefs(prefs: ViewOverlaySettings) {
@@ -111,35 +130,41 @@ export class FeedbackLayer {
     this.gridMajorEvery = prefs.gridMajorEvery;
     this.gridMinorOpacity = prefs.gridMinorOpacity;
     this.gridMajorOpacity = prefs.gridMajorOpacity;
-    this.draw();
+    this.invalidate();
   }
 
   setSymmetryPrefs(prefs: SymmetrySettings) {
     this.symmetry = prefs;
-    this.draw();
+    this.invalidate();
   }
 
   setPlaybackActive(playing: boolean) {
     if (this.playbackActive === playing) return;
     this.playbackActive = playing;
-    this.draw();
-  }
-
-  updateCursor(point: Point) {
-    this.currentCursor = point;
-    this.draw();
-  }
-
-  clearCursor() {
-    this.currentCursor = null;
-    this.draw();
+    this.invalidate();
   }
 
   /**
-   * Force a full overlay redraw (grid, brush ring).
+   * Track the pointer. Only tools that draw a ring under the cursor cost a
+   * repaint; for everything else this is a field write.
+   */
+  setCursor(point: Point) {
+    this.currentCursor = point;
+    if (this.showsCursorRing()) this.invalidate();
+  }
+
+  clearCursor() {
+    if (!this.currentCursor) return;
+    const hadRing = this.showsCursorRing();
+    this.currentCursor = null;
+    if (hadRing) this.invalidate();
+  }
+
+  /**
+   * Mark the overlay dirty (grid, brush ring). Camera motion goes through here.
    */
   redraw() {
-    this.draw();
+    this.invalidate();
   }
 
   /**
@@ -150,6 +175,10 @@ export class FeedbackLayer {
     this.ctx.canvas.width = Math.round(this.config.viewportWidth * dpr);
     this.ctx.canvas.height = Math.round(this.config.viewportHeight * dpr);
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  private showsCursorRing(): boolean {
+    return this.shouldShowBrushSizeRing() || this.shouldShowMagnetRing();
   }
 
   private shouldShowBrushSizeRing(): boolean {
@@ -180,13 +209,66 @@ export class FeedbackLayer {
     return this.camera.worldToScreen(worldX, worldY);
   }
 
+  // ------------------------------------------------------------
+  // Static bitmap: grid + symmetry guides
+  // ------------------------------------------------------------
+
+  private symmetryVisible(): boolean {
+    return !!this.symmetry?.enabled && !this.playbackActive;
+  }
+
+  private staticCacheKey(dpr: number): string {
+    const cam = this.camera ? this.camera.getTransformMatrix().join(",") : "";
+    const s = this.symmetry;
+    const sym = this.symmetryVisible() && s
+      ? `${s.mode}|${s.originX}|${s.originY}|${s.radialCount}`
+      : "";
+    return [
+      cam,
+      dpr,
+      this.config.viewportWidth,
+      this.config.viewportHeight,
+      this.gridEnabled ? 1 : 0,
+      this.gridSpacing,
+      this.gridMajorEvery,
+      this.gridMinorOpacity,
+      this.gridMajorOpacity,
+      sym,
+    ].join("|");
+  }
+
+  /** Re-rasterize the grid + symmetry bitmap if any of its inputs changed. */
+  private ensureStatic(dpr: number): void {
+    const key = this.staticCacheKey(dpr);
+    if (key === this.staticKey && this.staticCanvas) return;
+    this.staticKey = key;
+
+    const w = this.ctx.canvas.width;
+    const h = this.ctx.canvas.height;
+    const show = (this.gridEnabled || this.symmetryVisible()) && !!this.camera;
+    this.staticHasContent = show;
+    if (!show) return;
+
+    if (!this.staticCanvas) this.staticCanvas = document.createElement("canvas");
+    const off = this.staticCanvas;
+    if (off.width !== w || off.height !== h) {
+      off.width = w;
+      off.height = h;
+    }
+    const octx = off.getContext("2d")!;
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+    octx.clearRect(0, 0, w, h);
+    octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.drawGrid(octx);
+    this.drawSymmetryGuide(octx);
+  }
+
   /**
    * Fixed-spacing grid in world units (lines stay on the same world coordinates when zooming).
    */
-  private drawGrid() {
+  private drawGrid(ctx: CanvasRenderingContext2D) {
     if (!this.gridEnabled || !this.camera) return;
 
-    const ctx = this.ctx;
     const bounds = this.camera.getWorldBounds();
     const step = this.gridSpacing;
     const majorEvery = this.gridMajorEvery;
@@ -240,10 +322,9 @@ export class FeedbackLayer {
     ctx.restore();
   }
 
-  private drawSymmetryGuide() {
-    if (!this.symmetry?.enabled || !this.camera || this.playbackActive) return;
+  private drawSymmetryGuide(ctx: CanvasRenderingContext2D) {
+    if (!this.symmetry || !this.symmetryVisible() || !this.camera) return;
 
-    const ctx = this.ctx;
     const { originX, originY, mode, radialCount } = this.symmetry;
     const bounds = this.camera.getWorldBounds();
     const pad = Math.max(bounds.width, bounds.height);
@@ -252,11 +333,11 @@ export class FeedbackLayer {
     if (mode === "vertical") {
       const p0 = this.worldToScreen(originX, bounds.y - pad);
       const p1 = this.worldToScreen(originX, bounds.y + bounds.height + pad);
-      this.strokeGuideLine(p0.x, p0.y, p1.x, p1.y);
+      this.strokeGuideLine(ctx, p0.x, p0.y, p1.x, p1.y);
     } else if (mode === "horizontal") {
       const p0 = this.worldToScreen(bounds.x - pad, originY);
       const p1 = this.worldToScreen(bounds.x + bounds.width + pad, originY);
-      this.strokeGuideLine(p0.x, p0.y, p1.x, p1.y);
+      this.strokeGuideLine(ctx, p0.x, p0.y, p1.x, p1.y);
     } else {
       const count = Math.max(2, radialCount);
       const reach = pad * 2;
@@ -266,7 +347,7 @@ export class FeedbackLayer {
           originX + Math.cos(angle) * reach,
           originY + Math.sin(angle) * reach,
         );
-        this.strokeGuideLine(center.x, center.y, p1.x, p1.y);
+        this.strokeGuideLine(ctx, center.x, center.y, p1.x, p1.y);
       }
     }
 
@@ -286,13 +367,13 @@ export class FeedbackLayer {
   }
 
   private strokeGuideLine(
+    ctx: CanvasRenderingContext2D,
     x0: number,
     y0: number,
     x1: number,
     y1: number,
     dashed = true,
   ) {
-    const ctx = this.ctx;
     ctx.beginPath();
     ctx.moveTo(x0, y0);
     ctx.lineTo(x1, y1);
@@ -308,6 +389,10 @@ export class FeedbackLayer {
     ctx.stroke();
     ctx.setLineDash([]);
   }
+
+  // ------------------------------------------------------------
+  // Dynamic: snap guides + cursor ring
+  // ------------------------------------------------------------
 
   private strokeSnapMark(x: number, y: number) {
     const ctx = this.ctx;
@@ -325,6 +410,7 @@ export class FeedbackLayer {
     const guides = snapGuidesStore.get();
     if (guides.length === 0 || !this.camera) return;
 
+    const ctx = this.ctx;
     const vw = this.config.viewportWidth;
     const vh = this.config.viewportHeight;
     const reach = Math.hypot(vw, vh) * 2;
@@ -343,6 +429,7 @@ export class FeedbackLayer {
       const dy = p1.y - p0.y;
       const len = Math.hypot(dx, dy) || 1;
       this.strokeGuideLine(
+        ctx,
         p0.x - (dx / len) * reach,
         p0.y - (dy / len) * reach,
         p0.x + (dx / len) * reach,
@@ -358,7 +445,7 @@ export class FeedbackLayer {
           g.axis === "x"
             ? this.worldToScreen(g.world, g.hi)
             : this.worldToScreen(g.hi, g.world);
-        this.strokeGuideLine(a.x, a.y, b.x, b.y, false);
+        this.strokeGuideLine(ctx, a.x, a.y, b.x, b.y, false);
       }
 
       if (g.at) {
@@ -418,17 +505,21 @@ export class FeedbackLayer {
     this.ctx.stroke();
   }
 
-  private draw() {
-    // Clear overlay
-    this.ctx.clearRect(
-      0,
-      0,
-      this.config.viewportWidth,
-      this.config.viewportHeight,
-    );
+  /** Synchronous repaint — the scheduler's UI painter. */
+  paint() {
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = this.ctx;
 
-    this.drawGrid();
-    this.drawSymmetryGuide();
+    ctx.clearRect(0, 0, this.config.viewportWidth, this.config.viewportHeight);
+
+    this.ensureStatic(dpr);
+    if (this.staticHasContent && this.staticCanvas) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(this.staticCanvas, 0, 0);
+      ctx.restore();
+    }
+
     this.drawSnapGuides();
 
     // Brush tip outline (brush tool only; crosshair is the CSS cursor)
@@ -463,20 +554,20 @@ export class FeedbackLayer {
 
       const radius = this.magnetSize / 2;
 
-      this.ctx.save();
-      this.ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-      this.ctx.lineWidth = 1.5;
-      this.ctx.beginPath();
-      this.ctx.arc(viewportX, viewportY, radius, 0, Math.PI * 2);
-      this.ctx.stroke();
-      this.ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
-      this.ctx.lineWidth = 1;
-      this.ctx.setLineDash([4, 3]);
-      this.ctx.beginPath();
-      this.ctx.arc(viewportX, viewportY, radius, 0, Math.PI * 2);
-      this.ctx.stroke();
-      this.ctx.setLineDash([]);
-      this.ctx.restore();
+      ctx.save();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(viewportX, viewportY, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.arc(viewportX, viewportY, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
     }
   }
 }

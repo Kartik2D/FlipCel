@@ -58,6 +58,48 @@ function pathFromPoints(points: Point[]): paper.Path {
   return path;
 }
 
+interface ParseMemo {
+  strokes: readonly Point[][];
+  steps: number;
+  result: GraphParseResult;
+}
+const PARSE_MEMO_SIZE = 8;
+const parseMemo: ParseMemo[] = [];
+
+/**
+ * `parseTimingChart` over a controller's stroke list, memoized by stroke
+ * identity. Strokes are appended as whole arrays and never mutated after,
+ * so comparing each inner array by reference is exact. Lets the chrome
+ * painter and `canApply()` re-ask every frame without re-running the
+ * paper.js fit.
+ */
+export function parseTimingChartMemo(strokes: readonly Point[][], steps: number): GraphParseResult {
+  for (let i = 0; i < parseMemo.length; i++) {
+    const m = parseMemo[i];
+    if (m.steps !== steps || m.strokes.length !== strokes.length) continue;
+    let same = true;
+    for (let j = 0; j < strokes.length; j++) {
+      if (m.strokes[j] !== strokes[j]) {
+        same = false;
+        break;
+      }
+    }
+    if (!same) continue;
+    if (i !== 0) {
+      parseMemo.splice(i, 1);
+      parseMemo.unshift(m);
+    }
+    return m.result;
+  }
+  const result = parseTimingChart(
+    strokes.map((points) => ({ points })),
+    steps,
+  );
+  parseMemo.unshift({ strokes: [...strokes], steps, result });
+  if (parseMemo.length > PARSE_MEMO_SIZE) parseMemo.pop();
+  return result;
+}
+
 /**
  * Build dense path samples from chart strokes.
  *

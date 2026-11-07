@@ -16,6 +16,7 @@ import type {
 } from "../render/stage-renderer";
 import type { Camera } from "../render/camera";
 import type { ChromeLayer } from "../render/chrome-layer";
+import { scheduler, Surface } from "../render/frame-scheduler";
 import {
   configStore,
   toolSettingsStore,
@@ -388,10 +389,8 @@ export class SelectionController {
 
     if (!this.isDragging || !this.hasSelection() || !this.dragStartPoint) return;
 
-    if (!this.pastDragThreshold(viewportPoint)) {
-      this.drawUI();
-      return;
-    }
+    // Nothing changes until the pointer leaves the drag threshold.
+    if (!this.pastDragThreshold(viewportPoint)) return;
 
     if (this.pivotDragging) {
       const snapped = snapScreenPoint(viewportPoint, this.camera, this.renderer, undefined, [], false);
@@ -413,6 +412,7 @@ export class SelectionController {
       this.handleTranslateMove(viewportPoint);
     }
 
+    setSnapGuides(this.snapGuides);
     this.drawUI();
   }
 
@@ -507,9 +507,16 @@ export class SelectionController {
     this.drawUI();
   }
 
+  /** Mark the chrome surface dirty; `paintUI` runs once on the next frame. */
   drawUI(): void {
-    this.chromeLayer.clear();
+    scheduler.invalidate(Surface.CHROME);
+  }
 
+  /**
+   * Paint the selection chrome onto the (already cleared) chrome canvas.
+   * Called by the frame scheduler's CHROME painter, never directly.
+   */
+  paintUI(): void {
     if (this.hasSelection() && !this.marquee.isTracking()) {
       const hideChrome =
         this.hideGizmoWhileMoving &&
@@ -536,11 +543,7 @@ export class SelectionController {
       } else {
         this.chromeLayer.drawMarqueeRect(start, current);
       }
-      setSnapGuides([]);
-      return;
     }
-
-    setSnapGuides(this.snapGuides);
   }
 
   // ------------------------------------------------------------

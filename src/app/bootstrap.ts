@@ -26,6 +26,7 @@ import { setThumbnailRenderer } from "../render/symbol-thumbnail";
 import { FeedbackLayer } from "../render/feedback-layer";
 import { StageLayer } from "../render/stage-layer";
 import { ChromeLayer } from "../render/chrome-layer";
+import { scheduler, Surface } from "../render/frame-scheduler";
 import { Camera } from "../render/camera";
 import { SelectionController } from "../editing/object-select";
 import { DirectSelectController } from "../editing/direct-select";
@@ -226,15 +227,11 @@ class App {
   private generateImagePopup: FlipCelGenerateImagePopup;
   private svgImportPopup: FlipCelSvgImportPopup;
   private camera: Camera;
-  private isInitialized = false;
   private toolSession!: ToolSession;
   private timelineSession!: TimelineSession;
 
   private rotationSnapRaf: number | null = null;
 
-  private cameraLoopLastMs = performance.now();
-  /** One-shot flag: forces the next camera-loop frame to repaint even when the camera is settled. */
-  private redrawRequested = true;
   private functionsPanelDismissed = false;
   private lastFunctionsPanelKey = "";
   private colorPopupSession: "stage" | "onion-prev" | "onion-next" | null = null;
@@ -357,6 +354,13 @@ class App {
     );
     this.documentManager = new DocumentManager(this.renderer);
     this.historyManager = new HistoryManager(this.documentManager);
+
+    // One painter per canvas. Everything else only marks surfaces dirty.
+    scheduler.setPainter(Surface.STAGE, () => this.stageLayer.paint());
+    scheduler.setPainter(Surface.PAPER, () => this.renderer.render());
+    scheduler.setPainter(Surface.UI, () => this.feedbackLayer.paint());
+    scheduler.setPainter(Surface.CHROME, () => this.paintChrome());
+
     assetCache.onChange = (id) => {
       const decoded = assetCache.getAudio(id);
       if (decoded) {
@@ -837,18 +841,20 @@ class App {
     // Set internal resolution
     this.pixelCanvas.width = this.config.pixelWidth;
     this.pixelCanvas.height = this.config.pixelHeight;
-    this.feedbackLayer.updateConfig(this.config);
-    this.stageLayer.updateConfig(this.config);
+    // The chrome canvas has no store subscription; every other surface picks
+    // the new config up from `configStore` (see setupStoreSubscriptions).
     this.chromeLayer.updateConfig(this.config);
 
     // Configure pixel canvas context
     this.pixelCanvas2D.imageSmoothingEnabled = false;
+  }
 
-    // Update stage renderer view size
-    if (this.isInitialized) {
-      this.renderer.updateConfig(this.config);
-      this.renderer.applyCamera();
-    }
+  /** Viewport geometry changed: resize every canvas and repaint everything once. */
+  private applyViewportConfig() {
+    this.camera.updateViewport(this.config.viewportWidth, this.config.viewportHeight);
+    this.resizeCanvases();
+    configStore.set(this.config); // Propagates to all subscribers
+    scheduler.invalidate(Surface.ALL);
   }
 
   async init() {
@@ -857,7 +863,6 @@ class App {
 
     // Initialize the DCEL kernel (wasm) before any vector work.
     await initKernel();
-    this.isInitialized = true;
 
     // Initialize the default layer
     const initialLayerState = layerStore.get();
@@ -865,29 +870,17 @@ class App {
       initialLayerState.layers.find((l) => l.kind !== "stage") ?? initialLayerState.layers[0];
     this.renderer.initializeDefaultLayer(defaultLayer.id, defaultLayer.name);
 
-    // Resize canvases
-    this.resizeCanvases();
-
-    // Apply initial camera transformation
-    this.renderer.applyCamera();
-
-    // Set up store subscriptions
+    // Set up store subscriptions, then push the initial config through them
+    // (sizes every canvas and queues the first paint of each surface).
     this.setupStoreSubscriptions();
+    this.applyViewportConfig();
 
-    // Initialize stores with current values
-    configStore.set(this.config);
-    
     // Apply initial brush color to pixel canvas from color store
     this.pixelCanvasManager.setBrushColor(colorStore.get());
 
-    // Handle window resize - now uses configStore for propagation
     window.addEventListener("resize", () => {
       this.config = this.calculateConfig();
-      this.camera.updateViewport(this.config.viewportWidth, this.config.viewportHeight);
-      this.resizeCanvases();
-      configStore.set(this.config); // Propagates to all subscribers
-      this.redrawActiveSelectionUI();
-      this.requestRedraw();
+      this.applyViewportConfig();
     });
 
     // Always start on a blank document; startup can restore autosave from before launch.
@@ -898,9 +891,12 @@ class App {
     // Take initial history snapshot (baseline for undo)
     this.historyManager.snapshot();
 
-    this.startCameraFrameLoop();
+    this.startFrameLoop();
     this.setupStartupPanel();
     this.startupPanel.show();
+
+    // Paint counters for profiling: `__scheduler.paints` / `__scheduler.resetStats()` in the console.
+    (window as unknown as { __scheduler: typeof scheduler }).__scheduler = scheduler;
 
     console.log("App initialized with Lit UI components and stores");
   }
@@ -925,43 +921,34 @@ class App {
   }
 
   /**
-   * Request a full repaint (Paper view matrix, overlays, selection chrome)
-   * on the next camera-loop frame. Cheap to call repeatedly.
+   * Document content or selection changed: repaint the vector scene and the
+   * selection chrome on the next frame. Grid/stage surfaces have their own
+   * triggers (camera, config, stage store) and are left alone.
    */
   requestRedraw(): void {
-    this.redrawRequested = true;
+    scheduler.invalidate(Surface.PAPER | Surface.CHROME);
   }
 
   /**
-   * Camera: targets update on input; present pose eases toward target each frame for Paper + UI.
-   *
-   * The loop itself runs forever, but all redraw work is gated: when the
-   * camera pose is settled and nothing requested a repaint, a frame is a
-   * no-op. Event-driven paths (tool handlers, store subscriptions, Paper
-   * mutations) repaint their own surfaces directly, so idle frames cost
-   * nothing — previously this loop repainted the entire document at 60fps
-   * even when nothing changed.
+   * The camera's present pose, or the viewport, changed: every surface draws
+   * in camera space, so all four repaint.
    */
-  private startCameraFrameLoop() {
-    const step = (now: number) => {
-      const dt = Math.min(0.05, (now - this.cameraLoopLastMs) / 1000);
-      this.cameraLoopLastMs = now;
+  private cameraChanged(): void {
+    scheduler.invalidate(Surface.ALL);
+  }
+
+  /**
+   * Per-frame work that is not a paint: camera easing and playback stepping.
+   * Registered with the scheduler, which only ticks while this returns true
+   * or something is dirty — an idle app runs no frames at all.
+   */
+  private startFrameLoop() {
+    scheduler.onFrame((dt) => {
       this.stepPlayback(dt * 1000);
       const cameraMoved = this.camera.stepLerp(dt);
-      if (cameraMoved || this.redrawRequested) {
-        this.redrawRequested = false;
-        this.renderer.applyCamera();
-        // Grid + brush ring live on #ui-canvas; stage fill on #stage-canvas.
-        this.feedbackLayer.redraw();
-        this.stageLayer.redraw();
-        // Selection chrome lives on a separate canvas; repaint independently.
-        this.redrawActiveSelectionUI();
-        this.syncFunctionsPanelPosition();
-      }
-      requestAnimationFrame(step);
-    };
-    this.cameraLoopLastMs = performance.now();
-    requestAnimationFrame(step);
+      if (cameraMoved) this.cameraChanged();
+      return cameraMoved || this.documentManager.isPlaying();
+    });
   }
 
   private setupStoreSubscriptions() {
@@ -1029,49 +1016,43 @@ class App {
     const { colorScheme } = THEMES[mode];
     document.documentElement.dataset.theme = mode;
     document.documentElement.style.colorScheme = colorScheme;
-    this.feedbackLayer.redraw();
-    this.redrawActiveSelectionUI();
-    this.requestRedraw();
+    scheduler.invalidate(Surface.ALL);
+  }
+
+  /** Mark the selection chrome dirty; `paintChrome` runs once next frame. */
+  private redrawActiveSelectionUI() {
+    scheduler.invalidate(Surface.CHROME);
   }
 
   /**
-   * Paint the chrome layer for the currently active selection tool.
-   *
-   * Chrome canvas is independent from the ui-overlay layer, so the two layers
-   * never fight over the same pixels. The active controller owns clearing the
-   * chrome canvas at the top of its drawUI() so stale shapes never persist.
+   * The scheduler's CHROME painter: the only place #chrome-canvas is cleared
+   * and painted. The active tool's controller paints its complete chrome;
+   * tools without transient UI leave the canvas empty.
    */
-  private redrawActiveSelectionUI() {
-    const currentTool = toolStore.get();
-    if (currentTool === "direct-select") {
-      // Direct-select still calls drawUI() unconditionally so the chrome
-      // canvas is cleared every frame. The controller decides what (if
-      // anything) to paint — nothing is drawn until at least one anchor
-      // is picked.
-      this.directSelectController.drawUI();
-      return;
-    }
-    if (currentTool === "create-points") {
-      this.createPointsController.drawUI();
-      return;
-    }
-    if (currentTool === "artistic-text") {
-      this.artisticTextController.drawUI();
-      return;
-    }
-    if (currentTool === "select" && this.selectionController.hasTransientUI()) {
-      this.selectionController.drawUI();
-      return;
-    }
-    if (currentTool === "magic-move" && this.magicMoveController.hasTransientUI()) {
-      this.magicMoveController.drawUI();
-      return;
-    }
-    if (currentTool === "magic-morph" && this.magicMorphController.hasTransientUI()) {
-      this.magicMorphController.drawUI();
-      return;
-    }
+  private paintChrome() {
     this.chromeLayer.clear();
+    switch (toolStore.get()) {
+      case "direct-select":
+        this.directSelectController.paintUI();
+        return;
+      case "create-points":
+        this.createPointsController.paintUI();
+        return;
+      case "artistic-text":
+        this.artisticTextController.paintUI();
+        return;
+      case "select":
+        if (this.selectionController.hasTransientUI()) this.selectionController.paintUI();
+        return;
+      case "magic-move":
+        if (this.magicMoveController.hasTransientUI()) this.magicMoveController.paintUI();
+        return;
+      case "magic-morph":
+        if (this.magicMorphController.hasTransientUI()) this.magicMorphController.paintUI();
+        return;
+      default:
+        return;
+    }
   }
 
   // ============================================================
@@ -1080,17 +1061,20 @@ class App {
 
   private onCameraPan(deltaX: number, deltaY: number) {
     this.camera.pan(deltaX, deltaY);
+    scheduler.wake(); // target moved; the frame loop eases and repaints
     this.dismissFunctionsPanelForCameraChange();
   }
 
   private onCameraZoom(factor: number, centerX: number, centerY: number) {
     this.camera.zoomAt(factor, centerX, centerY);
+    scheduler.wake();
     this.dismissFunctionsPanelForCameraChange();
   }
 
   private onCameraRotate(deltaRadians: number, centerX: number, centerY: number) {
     this.cancelRotationSnapAnimation();
     this.camera.rotateAt(deltaRadians, centerX, centerY);
+    scheduler.wake();
     this.dismissFunctionsPanelForCameraChange();
   }
 
@@ -1145,16 +1129,16 @@ class App {
 
       this.camera.rotateAt(step, cx, cy);
       this.camera.syncPresentPanRotationFromTarget();
-      // Present pose was mutated directly (bypassing stepLerp), so the gated
-      // camera loop won't detect motion on its own.
-      this.requestRedraw();
+      // Present pose was mutated directly (bypassing stepLerp), so the frame
+      // loop won't detect motion on its own.
+      this.cameraChanged();
 
       if (t < 1) {
         this.rotationSnapRaf = requestAnimationFrame(tick);
       } else {
         this.rotationSnapRaf = null;
         this.camera.syncPresentPanRotationFromTarget();
-        this.requestRedraw();
+        this.cameraChanged();
       }
     };
 
@@ -1174,6 +1158,9 @@ class App {
       { x: 0, y: 0, width: w, height: h },
       { padding: 0.06, viewportInsets: insets, immediate },
     );
+    // Immediate fits move the present pose directly; eased fits only need the
+    // loop awake. Invalidating covers both.
+    this.cameraChanged();
   }
 
   private onDockZoomReset() {
@@ -1191,6 +1178,8 @@ class App {
   }
 
   private onToolMove(point: Point, tool: ToolId) {
+    // Drawing moves no longer emit POINTER_MOVE; the cursor is tracked here.
+    this.feedbackLayer.setCursor(point);
     this.toolSession.onToolMove(point, tool);
   }
 
@@ -1229,24 +1218,15 @@ class App {
     }
   }
 
+  /**
+   * Idle hover. Selection chrome is not touched here: controllers invalidate
+   * it themselves when their state changes, so a mouse moving over an
+   * unchanged selection costs nothing.
+   */
   private onPointerMove(point: Point) {
-    this.feedbackLayer.updateCursor(point);
-
-    const currentTool = toolStore.get();
-    if (currentTool === "select" && this.selectionController.hasTransientUI()) {
-      this.redrawActiveSelectionUI();
-    }
-    if (currentTool === "direct-select") {
-      this.redrawActiveSelectionUI();
-    }
-    if (currentTool === "create-points" && this.createPointsController.hasDraft()) {
+    this.feedbackLayer.setCursor(point);
+    if (toolStore.get() === "create-points" && this.createPointsController.hasDraft()) {
       this.createPointsController.handleHover(point);
-    }
-    if (currentTool === "magic-move" && this.magicMoveController.hasTransientUI()) {
-      this.redrawActiveSelectionUI();
-    }
-    if (currentTool === "magic-morph" && this.magicMorphController.hasTransientUI()) {
-      this.redrawActiveSelectionUI();
     }
   }
 
@@ -1436,11 +1416,6 @@ class App {
     }
   }
 
-  private syncFunctionsPanelPosition() {
-    // Intentionally do nothing: the panel should open near the cursor,
-    // then stay put so the user can click its buttons.
-  }
-
   private applyOnionPopupColor(color: string): boolean {
     if (
       this.colorPopupSession !== "onion-prev" &&
@@ -1525,11 +1500,8 @@ class App {
 
   private onPixelResChange(_scale: number) {
     this.config = this.calculateConfig();
-    this.resizeCanvases();
+    this.applyViewportConfig();
     this.pixelCanvasManager.clear();
-    configStore.set(this.config); // Propagates to all subscribers
-    this.redrawActiveSelectionUI();
-    this.requestRedraw();
     // Resizing #ui-canvas (via resizeCanvases -> feedbackLayer.updateConfig) can
     // invalidate in-flight pointer captures on some mobile browsers. Clear
     // any stale input state so the next pointerdown starts a clean stroke.
@@ -2109,7 +2081,9 @@ class App {
     this.selectionController.discardSelection();
     this.directSelectController.clearSelection();
     this.functionsPanel.close("hidden");
-    this.requestRedraw();
+    // The camera state was set directly above (no easing), so every
+    // camera-space surface repaints.
+    this.cameraChanged();
   }
 
   /** Leave the innermost symbol (Esc / breadcrumb). */

@@ -450,7 +450,7 @@ export class ToolSession {
     if (tool === "magnet") {
       deps.magnetController.handleStart(point);
       deps.feedbackLayer.setDrawingState(true);
-      deps.feedbackLayer.updateCursor(point);
+      deps.feedbackLayer.setCursor(point);
       return;
     }
 
@@ -481,7 +481,7 @@ export class ToolSession {
     this.pixelGestureActive = true;
     deps.pixelCanvasManager.startTool(tool, startPoint, settings);
     deps.feedbackLayer.setDrawingState(true);
-    deps.feedbackLayer.updateCursor(point);
+    deps.feedbackLayer.setCursor(point);
     if (tool === "shape") this.paintShapeSnapGuides();
 
     if (tool === "brush" || tool === "lasso") {
@@ -510,7 +510,6 @@ export class ToolSession {
           originY: snapped.y,
         }),
       );
-      deps.feedbackLayer.updateCursor(point);
       return;
     }
 
@@ -546,7 +545,6 @@ export class ToolSession {
 
     if (tool === "magnet") {
       deps.magnetController.handleMove(point);
-      deps.feedbackLayer.updateCursor(point);
       return;
     }
 
@@ -575,7 +573,6 @@ export class ToolSession {
       this.pixelQuickShape.result = adjusted;
       this.applyPixelQuickShapePreview();
       this.lastPixelPoint = { ...point };
-      deps.feedbackLayer.updateCursor(point);
       return;
     }
 
@@ -583,7 +580,6 @@ export class ToolSession {
     const settings = toolSettingsStore.get();
     const movePoint = tool === "shape" ? this.snapShapePixel(point) : point;
     deps.pixelCanvasManager.moveTool(tool, movePoint, settings);
-    deps.feedbackLayer.updateCursor(point);
     if (tool === "shape") this.paintShapeSnapGuides();
 
     if (tool === "brush" || tool === "lasso") {

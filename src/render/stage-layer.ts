@@ -5,6 +5,7 @@
 import type { CanvasConfig } from "../geometry/types";
 import type { Camera } from "./camera";
 import { stageStore } from "../state/index";
+import { scheduler, Surface } from "./frame-scheduler";
 
 export class StageLayer {
   private canvas: HTMLCanvasElement;
@@ -47,7 +48,13 @@ export class StageLayer {
     this.redraw();
   }
 
+  /** Mark the stage surface dirty; `paint()` runs once on the next frame. */
   redraw() {
+    scheduler.invalidate(Surface.STAGE);
+  }
+
+  /** Synchronous repaint — the scheduler's STAGE painter. */
+  paint() {
     this.ctx.save();
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);

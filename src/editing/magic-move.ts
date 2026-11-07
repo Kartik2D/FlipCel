@@ -35,11 +35,11 @@ import { cloneInstance, encodeLayerContent, mergeContents, type PlacedInstance }
 import { pixelToViewport } from "../geometry/coords";
 import { MarqueeTracker } from "./marquee";
 import {
-  parseTimingChart,
+  parseTimingChartMemo,
   mapSamplesToFrames,
   scalesForSamples,
-  type ChartStroke,
 } from "./magic-move-graph";
+import { scheduler, Surface } from "../render/frame-scheduler";
 
 type Phase = "select" | "chart";
 
@@ -365,10 +365,7 @@ export class MagicMoveController {
 
   private groupChartOk(group: MagicMoveGroup, divisions: number): boolean {
     if (this.liveParts(group).length === 0) return false;
-    const strokes: ChartStroke[] = group.chartStrokesWorldPts.map((points) => ({
-      points,
-    }));
-    return parseTimingChart(strokes, divisions).ok;
+    return parseTimingChartMemo(group.chartStrokesWorldPts, divisions).ok;
   }
 
   canApply(): boolean {
@@ -659,7 +656,7 @@ export class MagicMoveController {
     this.resetGroups();
     this.marquee.reset();
     this.phase = "select";
-    this.chromeLayer.clear();
+    this.drawUI();
     this.publishUi();
   }
 
@@ -759,10 +756,7 @@ export class MagicMoveController {
     }
 
     const parts = this.liveParts(group);
-    const strokes: ChartStroke[] = group.chartStrokesWorldPts.map((points) => ({
-      points,
-    }));
-    const parsed = parseTimingChart(strokes, settings.divisions);
+    const parsed = parseTimingChartMemo(group.chartStrokesWorldPts, settings.divisions);
     if (!parsed.ok) return parsed;
 
     const { samples, tickCount, tickScales } = parsed;
@@ -940,8 +934,13 @@ export class MagicMoveController {
   // Drawing
   // ============================================================
 
+  /** Mark the chrome surface dirty; `paintUI` runs once on the next frame. */
   drawUI(): void {
-    this.chromeLayer.clear();
+    scheduler.invalidate(Surface.CHROME);
+  }
+
+  /** Paint groups, charts and lassos onto the (already cleared) chrome canvas. Scheduler only. */
+  paintUI(): void {
     const nextColor = groupColorAt(this.groups.length);
 
     for (const group of this.groups) {
@@ -996,10 +995,7 @@ export class MagicMoveController {
     const divisions = Math.max(1, Math.round(this.readSettings().divisions));
     if (divisions <= 1 || group.chartStrokesWorldPts.length < 2) return;
 
-    const strokes: ChartStroke[] = group.chartStrokesWorldPts.map((points) => ({
-      points,
-    }));
-    const parsed = parseTimingChart(strokes, divisions);
+    const parsed = parseTimingChartMemo(group.chartStrokesWorldPts, divisions);
     if (!parsed.ok) return;
 
     const marks: Array<{ x: number; y: number; tx: number; ty: number }> = [];

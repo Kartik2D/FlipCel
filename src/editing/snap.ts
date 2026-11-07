@@ -498,16 +498,40 @@ export function snapPoint(
   };
 }
 
+interface LiveTargets {
+  settings: SnapSettings;
+  targets: SnapTargets;
+}
+
+/** Last `collectLiveTargets` result; valid while the scene and inputs match. */
+let liveMemo: { settings: SnapSettings; key: string; value: LiveTargets } | null = null;
+
+/**
+ * Snap targets for the current scene. Collecting them walks every snap
+ * layer's edges and bounds, so the result is memoized on the renderer's
+ * scene key plus the inputs: a drag re-asks on every pointer move but only
+ * recollects when something actually changed.
+ */
 export function collectLiveTargets(
   renderer: StageRenderer,
   ignorePoints: Point[] = [],
   allowSelf = true,
-): { settings: SnapSettings; targets: SnapTargets } | null {
+): LiveTargets | null {
   const settings = snapStore.get();
   if (!settings.enabled) return null;
   const overlay = viewOverlayStore.get();
   const stage = stageStore.get();
-  return {
+  const key = [
+    renderer.snapSceneKey(),
+    overlay.gridSpacing,
+    stage.width,
+    stage.height,
+    allowSelf ? 1 : 0,
+    ignorePoints.map((p) => `${p.x},${p.y}`).join(";"),
+  ].join("#");
+  if (liveMemo && liveMemo.settings === settings && liveMemo.key === key) return liveMemo.value;
+
+  const value: LiveTargets = {
     settings,
     targets: collectTargets(
       renderer,
@@ -520,6 +544,8 @@ export function collectLiveTargets(
       ignorePoints,
     ),
   };
+  liveMemo = { settings, key, value };
+  return value;
 }
 
 export function offsetPoints(points: Point[], delta: Point): Point[] {

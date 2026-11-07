@@ -47,6 +47,7 @@ import {
 } from "../vector/content";
 import { Palette } from "../vector/palette";
 import { drawTransformChrome } from "./selection-chrome";
+import { scheduler, Surface } from "./frame-scheduler";
 import type { SelectionHandle } from "./selection-types";
 
 export type { SelectionHandle, SelectionHandleId } from "./selection-types";
@@ -130,6 +131,33 @@ export function composeContextToLocal(
   return acc;
 }
 
+/**
+ * Every face of `art` in one `Path2D`, cached by kernel digest. Outline passes
+ * stroke this once instead of once per face, which is what made a selected
+ * tiger-sized shape cost three strokes per face per frame.
+ */
+const outlinePaths = new WeakMap<VectorLayer, { digest: bigint; path: Path2D }>();
+function outlinePathOf(art: VectorLayer): Path2D {
+  const digest = art.digest();
+  const hit = outlinePaths.get(art);
+  if (hit && hit.digest === digest) return hit.path;
+  const path = new Path2D();
+  for (const f of art.faces()) path.addPath(f.path);
+  outlinePaths.set(art, { digest, path });
+  return path;
+}
+
+function sameGhosts(a: readonly OnionGhost[], b: readonly OnionGhost[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.color !== y.color || x.opacity !== y.opacity || x.jsons.length !== y.jsons.length) return false;
+    for (let j = 0; j < x.jsons.length; j++) if (x.jsons[j] !== y.jsons[j]) return false;
+  }
+  return true;
+}
+
 function boundsUnion(a: Bounds | null, b: Bounds | null): Bounds | null {
   if (!a) return b;
   if (!b) return a;
@@ -189,7 +217,8 @@ export class StageRenderer {
   private ghostOutlineWidth = 6;
   private backdrop: { below: Array<{ json: string; xf: Affine; elapsed: number }>; above: Array<{ json: string; xf: Affine; elapsed: number }> } | null = null;
   private aliasFix = true;
-  private renderQueued = false;
+  /** Bumped when symbol definitions change (instance bounds depend on them). */
+  private symbolEpoch = 0;
   private onAfterRender: (() => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement, config: CanvasConfig) {
@@ -266,6 +295,7 @@ export class StageRenderer {
   /** Symbol content changed: drop parsed templates. */
   invalidateContentCache(): void {
     contentCache.clear();
+    this.symbolEpoch++;
     this.requestRender();
   }
 
@@ -416,6 +446,21 @@ export class StageRenderer {
   }
 
   /** Current content string for a layer (selection is placed virtually). */
+  /**
+   * Fill ids used by a layer's live art, including floating selection parts
+   * lifted from it. Reads the kernel directly: no export, no re-decode.
+   */
+  layerFills(id: string): number[] {
+    const layer = this.layers.get(id);
+    if (!layer || layer.imageAsset) return [];
+    const out = new Set<number>();
+    for (const cell of layer.cells) for (const f of cell.art.fills()) out.add(f);
+    for (const p of this.selection) {
+      if (p.layerId === id) for (const f of p.base.fills()) out.add(f);
+    }
+    return [...out];
+  }
+
   exportLayerJSON(id: string): string {
     const layer = this.layers.get(id);
     if (!layer) return "";
@@ -448,27 +493,40 @@ export class StageRenderer {
     layers: Array<{ id: string; name: string; visible: boolean; json?: string }>,
     activeLayerId: string,
   ): void {
+    // Only something that changes pixels queues a paint: a pure hold frame
+    // (every `json` omitted, same visibility and order) is free.
+    let changed = false;
     const wanted = new Set(layers.map((l) => l.id));
     for (const id of [...this.layers.keys()]) {
-      if (!wanted.has(id)) this.deleteLayer(id);
+      if (!wanted.has(id) && this.deleteLayer(id)) changed = true;
     }
     for (const w of layers) {
       let layer = this.layers.get(w.id);
       if (!layer) {
         this.createLayer(w.id, w.name);
         layer = this.layers.get(w.id)!;
+        changed = true;
       }
       layer.name = w.name;
-      layer.visible = w.visible;
-      if (w.json !== undefined) this.loadLayerContent(layer, w.json);
+      if (layer.visible !== w.visible) {
+        layer.visible = w.visible;
+        changed = true;
+      }
+      if (w.json !== undefined) {
+        this.loadLayerContent(layer, w.json);
+        changed = true;
+      }
       layer.dirty = false;
     }
-    this.reorderLayers(layers.map((l) => l.id));
+    if (this.reorderLayers(layers.map((l) => l.id))) changed = true;
+    const prevActive = this.activeLayerId;
     if (this.layers.has(activeLayerId)) this.activeLayerId = activeLayerId;
     else if (!this.activeLayerId || !this.layers.has(this.activeLayerId)) {
       this.activeLayerId = this.order[this.order.length - 1] ?? null;
     }
-    this.requestRender();
+    // Filled onion ghosts are drawn under the active layer.
+    if (this.activeLayerId !== prevActive && this.ghosts.length > 0) changed = true;
+    if (changed) this.requestRender();
   }
 
   private loadLayerContent(layer: StageLayer, json: string): void {
@@ -1174,6 +1232,29 @@ export class StageRenderer {
       .reverse();
   }
 
+  /**
+   * Cheap identity of everything `snapLayerIds` / `getLayerBounds` /
+   * `snapEdges` read: layer set and order, each cell's kernel digest and
+   * instances, and the floating selection. Lets snap-target collection be
+   * memoized across pointer moves while the scene is unchanged.
+   */
+  snapSceneKey(): string {
+    let k = `${this.symbolEpoch}#`;
+    for (const layer of this.selectableLayersTopFirst("all", this.selectableFilter)) {
+      k += `${layer.id}:${layer.imageAsset ?? ""}`;
+      for (const cell of layer.cells) {
+        k += `,${cell.art.digest()}`;
+        for (const inst of cell.instances) k += `/${inst.symbol}${inst.matrix.join(",")}`;
+      }
+      k += ";";
+    }
+    for (const p of this.selection) {
+      k += `|${p.layerId}:${p.base.digest()}:${p.xf.join(",")}`;
+      for (const inst of p.instances) k += `/${inst.symbol}${inst.matrix.join(",")}`;
+    }
+    return k;
+  }
+
   /** Committed edges on a layer (world px), capped for snapping cost. */
   snapEdges(layerId: string, cap = 4096): KernelEdge[] {
     const layer = this.layers.get(layerId);
@@ -1198,6 +1279,15 @@ export class StageRenderer {
   // ------------------------------------------------------------
 
   setOnionSkin(ghosts: OnionGhost[], outline = true, outlineWidth = 6): void {
+    // Ghost content strings come straight from the document's content store,
+    // so an unchanged ghost set compares equal by reference (O(1) per json).
+    if (
+      outline === this.ghostOutline &&
+      outlineWidth === this.ghostOutlineWidth &&
+      sameGhosts(ghosts, this.ghosts)
+    ) {
+      return;
+    }
     this.ghosts = ghosts;
     this.ghostOutline = outline;
     this.ghostOutlineWidth = outlineWidth;
@@ -1266,16 +1356,12 @@ export class StageRenderer {
   // Rendering
   // ------------------------------------------------------------
 
+  /** Mark the paper surface dirty; the scheduler calls `render()` once next frame. */
   requestRender(): void {
-    if (this.renderQueued) return;
-    this.renderQueued = true;
-    requestAnimationFrame(() => {
-      this.renderQueued = false;
-      this.render();
-    });
+    scheduler.invalidate(Surface.PAPER);
   }
 
-  /** Synchronous draw (export / tests). */
+  /** Synchronous draw — the scheduler's PAPER painter (also export / tests). */
   render(): void {
     const ctx = this.ctx;
     const dpr = window.devicePixelRatio || 1;
@@ -1471,7 +1557,7 @@ export class StageRenderer {
         ctx.save();
         ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
         ctx.lineWidth = pass.width / zoom;
-        for (const f of p.base.faces()) ctx.stroke(f.path);
+        ctx.stroke(outlinePathOf(p.base));
         ctx.restore();
         for (const inst of p.instances) {
           const b = this.instanceBounds({ ...inst, matrix: mulAffine(p.xf, inst.matrix) }, 0);

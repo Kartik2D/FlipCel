@@ -11,8 +11,10 @@
  * This layer has no blend mode and does not receive input. Controllers paint here
  * without worrying about coordinating with the grid/origin/brush overlay below.
  *
- * Every draw begins by calling `clear()`; owners are responsible for painting a
- * complete frame of chrome on demand.
+ * The frame scheduler's CHROME painter (bootstrap `paintChrome`) is the only
+ * caller of `clear()`; it then asks the active controller's `paintUI()` for a
+ * complete frame. Controllers never paint directly — their `drawUI()` just
+ * marks the surface dirty.
  */
 import type { CanvasConfig, Point } from "../geometry/types";
 

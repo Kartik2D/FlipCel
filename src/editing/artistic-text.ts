@@ -11,6 +11,7 @@ import { parseSvgRings } from "../vector/rings";
 import { commitPaint, viewportToWorldAffine, worldRings } from "../vector/paint";
 import type { ChromeLayer } from "../render/chrome-layer";
 import type { Camera } from "../render/camera";
+import { scheduler, Surface } from "../render/frame-scheduler";
 import { setSnapGuides, snapScreenPoint, type SnapGuide } from "./snap";
 import {
   configStore,
@@ -187,17 +188,18 @@ export class ArtisticTextController {
     this.insideClip = undefined;
     this.input.value = "";
     this.snapGuides = [];
-    setSnapGuides([]);
-    this.chromeLayer.clear();
+    this.drawUI();
   }
 
+  /** Publish snap guides and mark the chrome surface dirty; `paintUI` runs next frame. */
   drawUI(): void {
-    this.chromeLayer.clear();
-    if (this.phase === "idle" || !this.baselineScreen) {
-      setSnapGuides([]);
-      return;
-    }
-    setSnapGuides(this.snapGuides);
+    setSnapGuides(this.phase === "idle" || !this.baselineScreen ? [] : this.snapGuides);
+    scheduler.invalidate(Surface.CHROME);
+  }
+
+  /** Paint the text draft onto the (already cleared) chrome canvas. Scheduler only. */
+  paintUI(): void {
+    if (this.phase === "idle" || !this.baselineScreen) return;
 
     const ctx = this.chromeLayer.getContext();
     const color = colorStore.get();
@@ -308,7 +310,7 @@ export class ArtisticTextController {
     this.text = "";
     this.input.value = "";
     this.insideClip = undefined;
-    this.chromeLayer.clear();
+    this.drawUI();
 
     try {
       const screenRings = await this.traceTextToPath(text, fontFamily, fontSize, baseline);

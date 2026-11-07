@@ -36,6 +36,7 @@ import {
 import { symbolLibraryStore, editContextStore } from "../state/document-ui";
 import { normalizeDocumentHex } from "./colors";
 import type { StageRenderer } from "../render/stage-renderer";
+import { scheduler } from "../render/frame-scheduler";
 import {
   contentCache,
   contentFills,
@@ -3028,8 +3029,7 @@ export class DocumentManager {
       }
     }
     for (const layerId of this.renderer.getLayerIds()) {
-      const json = this.renderer.exportLayerJSON(layerId);
-      if (json) for (const f of contentFills(json)) used.add(f);
+      for (const f of this.renderer.layerFills(layerId)) used.add(f);
     }
     const colors: string[] = [];
     const seenHex = new Set<string>();
@@ -3119,12 +3119,21 @@ export class DocumentManager {
     });
   }
 
+  /**
+   * Every document mutation funnels through here. The view-facing part
+   * (onion ghosts, timeline snapshot) runs now so the stage and timeline
+   * never lag the document. The document-wide scans (used colors, symbol
+   * library + thumbnails) are coalesced to one run per frame: a single
+   * gesture can publish several times and those scans walk every keyframe.
+   */
   private publish(): void {
-    // Every document mutation funnels through here, so the ghosts always
-    // track the latest content, visibility, playhead, and playback state.
     this.updateOnionSkin();
+    timelineStore.set(this.timelineSnapshot());
+    scheduler.defer("document-scan", this.runDocumentScan);
+  }
+
+  private readonly runDocumentScan = (): void => {
     this.refreshDocumentColors();
     this.publishSymbolLibrary();
-    timelineStore.set(this.timelineSnapshot());
-  }
+  };
 }

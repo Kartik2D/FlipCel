@@ -609,9 +609,10 @@ export class UnifiedInputManager {
     if (this.gestureState !== "drawing") return;
     if (e.pointerId !== this.primaryPointerId) return;
 
+    // One event per drawing move: TOOL_MOVE carries the point, and the app
+    // updates the cursor from it. POINTER_MOVE is for idle hover only.
     const point = this.normalizePoint(e.clientX, e.clientY, e.pressure);
     bus.emit(Events.TOOL_MOVE, { point, tool: this.currentTool });
-    bus.emit(Events.POINTER_MOVE, point);
   }
 
   private endDrawing() {

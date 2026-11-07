@@ -13,6 +13,7 @@ import { flattenRing } from "../vector/rings";
 import { commitPaint, viewportToWorldAffine, worldRings } from "../vector/paint";
 import type { ChromeLayer } from "../render/chrome-layer";
 import type { Camera } from "../render/camera";
+import { scheduler, Surface } from "../render/frame-scheduler";
 import {
   configStore,
   colorStore,
@@ -157,20 +158,23 @@ export class CreatePointsController {
     this.snapGuides = [];
     setSnapGuides([]);
     if (this.points.length === 0 && !this.hoverWorld) {
-      this.chromeLayer.clear();
+      this.drawUI();
       return;
     }
     this.points = [];
     this.hoverWorld = null;
-    this.chromeLayer.clear();
+    this.drawUI();
   }
 
+  /** Publish snap guides and mark the chrome surface dirty; `paintUI` runs next frame. */
   drawUI(): void {
-    this.chromeLayer.clear();
-    if (this.points.length === 0) {
-      setSnapGuides([]);
-      return;
-    }
+    setSnapGuides(this.points.length === 0 ? [] : this.snapGuides);
+    scheduler.invalidate(Surface.CHROME);
+  }
+
+  /** Paint the draft onto the (already cleared) chrome canvas. Scheduler only. */
+  paintUI(): void {
+    if (this.points.length === 0) return;
 
     const ctx = this.chromeLayer.getContext();
     const color = colorStore.get();
@@ -217,8 +221,6 @@ export class CreatePointsController {
         strokeColor: "#000000",
       });
     }
-
-    setSnapGuides(this.snapGuides);
 
     const r = 4;
     for (let i = 0; i < screenVerts.length; i++) {
@@ -362,8 +364,7 @@ export class CreatePointsController {
       this.hoverWorld = null;
       this.insideClip = undefined;
       this.snapGuides = [];
-      setSnapGuides([]);
-      this.chromeLayer.clear();
+      this.drawUI();
       this.onRasterStroke(pixelPoints, paint, clip);
       return;
     }
@@ -371,10 +372,9 @@ export class CreatePointsController {
     this.commitFillPath(screenVerts, paint);
     this.points = [];
     this.snapGuides = [];
-    setSnapGuides([]);
     this.hoverWorld = null;
     this.insideClip = undefined;
-    this.chromeLayer.clear();
+    this.drawUI();
   }
 
   private commitFillPath(screenVerts: DraftVertex[], paint: PaintMode): void {

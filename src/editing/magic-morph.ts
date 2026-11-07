@@ -18,11 +18,12 @@ import {
 } from "../state/index";
 import { pixelToViewport } from "../geometry/coords";
 import {
-  parseTimingChart,
+  parseTimingChartMemo,
   morphRatiosFromChart,
   evenFramesBetween,
   type ChartStroke,
 } from "./magic-move-graph";
+import { scheduler, Surface } from "../render/frame-scheduler";
 import { morphLayerJson, type MorphOptions } from "./magic-morph-blend";
 import { contentToPaperLayerJson, paperLayerJsonToContent } from "../vector/paper-adapter";
 import { isVectorContent } from "../vector/content";
@@ -168,7 +169,7 @@ export class MagicMorphController {
   deactivate(): void {
     this.chartStrokesWorldPts = [];
     this.liveChartStroke = null;
-    this.chromeLayer.clear();
+    this.drawUI();
     magicMorphUiStore.set({
       canApply: false,
       popupOpen: false,
@@ -364,8 +365,13 @@ export class MagicMorphController {
     return { ok: true };
   }
 
+  /** Mark the chrome surface dirty; `paintUI` runs once on the next frame. */
   drawUI(): void {
-    this.chromeLayer.clear();
+    scheduler.invalidate(Surface.CHROME);
+  }
+
+  /** Paint chart strokes onto the (already cleared) chrome canvas. Scheduler only. */
+  paintUI(): void {
     const color = accent();
     for (const stroke of this.chartStrokesWorldPts) {
       this.chromeLayer.drawChartStroke(this.toViewport(stroke), color);
@@ -436,7 +442,7 @@ export class MagicMorphController {
   private drawDivisionMarks(color: string): void {
     const divisions = Math.max(1, Math.round(this.readSettings().divisions));
     if (divisions <= 1 || this.chartStrokesWorldPts.length < 2) return;
-    const parsed = parseTimingChart(this.chartStrokes(), divisions);
+    const parsed = parseTimingChartMemo(this.chartStrokesWorldPts, divisions);
     if (!parsed.ok) return;
     const marks: Array<{ x: number; y: number; tx: number; ty: number }> = [];
     for (const sample of parsed.samples) {
