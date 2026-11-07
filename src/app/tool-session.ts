@@ -5,7 +5,7 @@
  */
 import type { Camera } from "../render/camera";
 import type { FeedbackLayer } from "../render/feedback-layer";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
 import type { PixelCanvas } from "../tools/pixel-canvas";
 import type { Tracer } from "../tracing/potrace-tracer";
 import type { SelectionController } from "../editing/object-select";
@@ -54,6 +54,8 @@ import { replaceLassoStroke } from "../tools/lasso";
 import { buildPrimitiveShape, isShapeKind } from "../tools/shape";
 import { clampStrokeWidth } from "../tools/paint-mode";
 import { fillAt } from "../editing/fill-region";
+import { commitPaint, tracedSvgToWorldRings, viewportToWorldAffine, worldRings } from "../vector/paint";
+import type { Px } from "../vector/kernel";
 
 interface PixelQuickShapeState {
   tool: "brush" | "lasso";
@@ -81,7 +83,7 @@ export interface ToolSessionDeps {
   magnetController: MagnetController;
   magicMoveController: MagicMoveController;
   magicMorphController: MagicMorphController;
-  paperRenderer: PaperRenderer;
+  renderer: StageRenderer;
   pixelCanvasManager: PixelCanvas;
   feedbackLayer: FeedbackLayer;
   tracer: Tracer;
@@ -96,8 +98,8 @@ export interface ToolSessionDeps {
 
 export class ToolSession {
   private readonly deps: ToolSessionDeps;
-  /** Inside mode only: clip to path under pointer, or null for full viewport ("paint behind"). */
-  private insideClipForStroke: paper.PathItem | null | undefined = undefined;
+  /** Inside mode only: world point of the face to clip to, or null for "paint behind". */
+  private insideClipForStroke: Px | null | undefined = undefined;
   /** True while dragging the symmetry-axis origin handle. */
   private symmetryHandleDragging = false;
   /** True between an accepted pixel-tool start and its end. */
@@ -125,7 +127,7 @@ export class ToolSession {
   private async commitCreatePointsStroke(
     pixelPoints: Point[],
     paint: "add" | "subtract" | "inside",
-    clip: paper.PathItem | null | undefined,
+    clip: Px | null | undefined,
   ): Promise<void> {
     const { deps } = this;
     if (pixelPoints.length < 2) return;
@@ -151,7 +153,7 @@ export class ToolSession {
 
   private async commitTracedPixelCanvas(
     effectiveMode: "add" | "subtract" | "inside",
-    clipForInside: paper.PathItem | null | undefined,
+    clipForInside: Px | null | undefined,
   ): Promise<void> {
     const { deps } = this;
     try {
@@ -160,23 +162,16 @@ export class ToolSession {
         deps.pixelCanvasManager.clear();
         return;
       }
-
-      if (effectiveMode === "add") {
-        await deps.paperRenderer.addPath(svg, colorStore.get());
-        deps.pixelCanvasManager.clear();
-        return;
-      }
-      if (effectiveMode === "subtract") {
-        await deps.paperRenderer.subtractPath(svg);
-      } else {
-        await deps.paperRenderer.addPathIntersectClip(
-          svg,
-          colorStore.get(),
-          clipForInside ?? null,
-        );
-      }
+      const rings = tracedSvgToWorldRings(svg, deps.getConfig(), deps.camera);
+      const changed = commitPaint(
+        deps.renderer,
+        rings,
+        effectiveMode,
+        colorStore.get(),
+        clipForInside ?? null,
+      );
       deps.pixelCanvasManager.clear();
-      deps.historyManager.snapshot();
+      if (changed) deps.historyManager.snapshot();
     } catch (error) {
       console.error("Tracing failed:", error);
       deps.pixelCanvasManager.clear();
@@ -187,13 +182,12 @@ export class ToolSession {
     if (this.fillBusy) return;
     this.fillBusy = true;
     try {
-      await this.deps.paperRenderer.mergeIdle();
       const fillSettings = toolSettingsStore.get().fill;
       const gapPx = Number(fillSettings.gap ?? 0);
       const scope = fillSettings.scope === "active" ? "active" : "all";
       const changed = await fillAt(
         {
-          paperRenderer: this.deps.paperRenderer,
+          renderer: this.deps.renderer,
           tracer: this.deps.tracer,
           camera: this.deps.camera,
           getConfig: this.deps.getConfig,
@@ -472,8 +466,8 @@ export class ToolSession {
 
     if (tool === "brush" || tool === "lasso" || tool === "shape") {
       if (getEffectiveMode(tool) === "inside") {
-        const hit = deps.paperRenderer.hitTest(viewportPoint);
-        this.insideClipForStroke = deps.paperRenderer.hitToClipPathItem(hit);
+        const hit = deps.renderer.hitTest(worldPoint, "active");
+        this.insideClipForStroke = hit && hit.kind === "face" ? worldPoint : null;
       } else {
         this.insideClipForStroke = undefined;
       }
@@ -507,12 +501,7 @@ export class ToolSession {
     if (this.symmetryHandleDragging) {
       const viewportPoint = pixelToViewport(point, deps.getConfig());
       const worldPoint = deps.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
-      const snapped = snapWorldPoint(
-        worldPoint,
-        deps.camera,
-        deps.paperRenderer,
-        new Set(),
-      );
+      const snapped = snapWorldPoint(worldPoint, deps.camera, deps.renderer);
       setSnapGuides(snapped.guides);
       symmetryStore.update((s) =>
         normalizeSymmetrySettings({
@@ -719,23 +708,16 @@ export class ToolSession {
           deps.pixelCanvasManager.clear();
           return;
         }
-
-        if (effectiveMode === "add") {
-          deps.paperRenderer.addShape(shapePath, colorStore.get());
-          deps.pixelCanvasManager.clear();
-          return;
-        }
-        if (effectiveMode === "subtract") {
-          await deps.paperRenderer.subtractShape(shapePath);
-        } else {
-          await deps.paperRenderer.addShapeIntersectClip(
-            shapePath,
-            colorStore.get(),
-            clipForInside ?? null,
-          );
-        }
+        const rings = worldRings(shapePath, viewportToWorldAffine(deps.camera));
+        const changed = commitPaint(
+          deps.renderer,
+          rings,
+          effectiveMode,
+          colorStore.get(),
+          clipForInside ?? null,
+        );
         deps.pixelCanvasManager.clear();
-        deps.historyManager.snapshot();
+        if (changed) deps.historyManager.snapshot();
         return;
       }
     }
@@ -814,7 +796,7 @@ export class ToolSession {
     const config = deps.getConfig();
     const vp = pixelToViewport(point, config);
     const world = deps.camera.screenToWorld(vp.x, vp.y);
-    const snapped = snapWorldPoint(world, deps.camera, deps.paperRenderer, new Set());
+    const snapped = snapWorldPoint(world, deps.camera, deps.renderer);
     this.shapeSnapGuides = snapped.guides;
     const screen = deps.camera.worldToScreen(snapped.x, snapped.y);
     return viewportToPixel({ x: screen.x, y: screen.y, pressure: point.pressure }, config);

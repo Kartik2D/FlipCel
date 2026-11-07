@@ -1,4 +1,4 @@
-import { hexToRgb, rgbToHex } from "../color/spaces";
+import { hexToRgb } from "../color/spaces";
 import { normalizeDocumentHex } from "../document/colors";
 
 export type VtracerClustering = "watershed";
@@ -200,10 +200,3 @@ export function nearestDocumentColor(hex: string, palette: string[]): string {
   return normalizeDocumentHex(best);
 }
 
-export function paperColorToHex(color: {
-  red: number;
-  green: number;
-  blue: number;
-}): string {
-  return normalizeDocumentHex(rgbToHex(color.red * 255, color.green * 255, color.blue * 255));
-}

@@ -1,9 +1,9 @@
 /**
  * Document Model — frame-by-frame animation + persistence
  *
- * This is the serializable source of truth for the artwork. Paper.js is a
- * renderer/editor for the *currently visible frame only*; everything else
- * lives here:
+ * This is the serializable source of truth for the artwork. The stage
+ * renderer (kernel maps) edits the *currently visible frame only*; everything
+ * else lives here:
  *
  * - Each regular layer is a `LayerTrack`: a sorted list of keyframes.
  * - A keyframe owns artwork via a `contentId` into the content store and an
@@ -15,7 +15,7 @@
  *   Fifty undo entries or fifty hold frames cost one copy of the artwork.
  *
  * The DocumentManager reconciles this model with the live editing surfaces:
- * `layerStore` (layer list UI), Paper.js layers (via PaperRenderer), and
+ * `layerStore` (layer list UI), stage layers (via StageRenderer), and
  * `timelineStore` (timeline panel UI).
  */
 import {
@@ -27,7 +27,6 @@ import {
   onionSkinStore,
   autoHoldStore,
   realTimeLockStore,
-  selectionStore,
   STAGE_LAYER_ID,
   generateLayerId,
   isLayerEffectivelyVisible,
@@ -35,13 +34,17 @@ import {
   type LayerState,
 } from "../state/index";
 import { symbolLibraryStore, editContextStore } from "../state/document-ui";
+import { normalizeDocumentHex } from "./colors";
+import type { StageRenderer } from "../render/stage-renderer";
 import {
-  collectDocumentColors,
-  colorsFromPaperJson,
-  normalizeDocumentHex,
-  replaceColorInPaperJson,
-} from "./colors";
-import type { PaperRenderer } from "../render/paper-renderer";
+  contentCache,
+  contentFills,
+  instanceContent,
+  mergeContents,
+  remapContentFills,
+  translateContent,
+} from "../vector/content";
+import { Palette } from "../vector/palette";
 import {
   EMPTY_CONTENT_ID,
   contentIdAtFrame,
@@ -58,11 +61,7 @@ import {
   type SymbolDefinition,
   type SymbolResolver,
 } from "./symbols";
-import { clearSymbolTemplateCache } from "../render/paper/symbol-instances";
-import {
-  clearSymbolThumbnailCache,
-  symbolThumbnailUrl,
-} from "../render/paper/symbol-thumbnail";
+import { clearSymbolThumbnailCache, symbolThumbnailUrl } from "../render/symbol-thumbnail";
 
 export { EMPTY_CONTENT_ID, type Keyframe } from "./keyframes";
 export type {
@@ -126,20 +125,8 @@ export function layerKindFromTrack(kind?: TrackKind): Layer["kind"] {
   return "regular";
 }
 
-/** Image keyframe payload in the content map. */
-export function imageContent(assetId: string): string {
-  return JSON.stringify({ asset: assetId });
-}
-
-export function parseImageContent(json: string): string | null {
-  if (!json || json[0] !== "{") return null;
-  try {
-    const parsed = JSON.parse(json) as { asset?: unknown };
-    return typeof parsed.asset === "string" && parsed.asset ? parsed.asset : null;
-  } catch {
-    return null;
-  }
-}
+import { imageContent, parseImageContent } from "./image-content";
+export { imageContent, parseImageContent } from "./image-content";
 
 /** Named frame range (Aseprite-style tag), document-level. */
 export type FrameTag = {
@@ -246,7 +233,7 @@ export type EmfRange = {
 
 /** Serialized document JSON (also the autosave payload). */
 export interface SerializedDocument {
-  version: 1 | 2 | 3;
+  version: 4;
   /** Display / download name. Optional on older saves. */
   name?: string;
   stage: { width: number; height: number; color: string };
@@ -254,8 +241,10 @@ export interface SerializedDocument {
   duration: number;
   /** Bottom → top. */
   tracks: LayerTrack[];
-  /** contentId → paper.js layer JSON or image `{asset}` ("" = empty). */
+  /** contentId → kernel content (`{"v":4,…}`) or image `{asset}` ("" = empty). */
   content: Record<string, string>;
+  /** Fill id `n` (n ≥ 1) is `palette[n - 1]`. */
+  palette: string[];
   /** Optional for older saves. */
   tags?: FrameTag[];
   /** Asset id → metadata. Bytes live in IndexedDB, not this JSON. */
@@ -326,60 +315,13 @@ function retimeTagList<T extends { start: number; end: number }>(
     .filter((t) => t.start <= t.end);
 }
 
-/** Parse a Paper layer JSON payload into `[tag, props, ...]`, or null. */
-function parseLayerPayload(
-  json: string,
-): [string, Record<string, unknown>, ...unknown[]] | null {
-  if (!json.startsWith('["Layer"')) return null;
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    if (
-      Array.isArray(parsed) &&
-      parsed[0] === "Layer" &&
-      parsed[1] &&
-      typeof parsed[1] === "object"
-    ) {
-      return parsed as [string, Record<string, unknown>, ...unknown[]];
-    }
-  } catch {
-    // Not parseable.
-  }
-  return null;
+/** Content strings carry no layer metadata; kept for call-site symmetry. */
+export function withLayerName(json: string, _name: string): string {
+  return json;
 }
 
-/** Layer JSON with the top-level layer `name` removed. */
-function stripLayerName(json: string): string {
-  const parsed = parseLayerPayload(json);
-  if (!parsed) return json;
-  delete parsed[1].name;
-  return JSON.stringify(parsed);
-}
-
-/**
- * Stamp the track's current name into layer artwork JSON.
- *
- * Paper.js embeds `layer.name` in `exportJSON`. That name is track metadata,
- * not artwork — it must stay in sync with the layer panel or commit sees a
- * false dirty and auto-keys phantom pose copies on holds.
- */
-export function withLayerName(json: string, name: string): string {
-  if (!json) return json;
-  const parsed = parseLayerPayload(json);
-  if (!parsed) return json;
-  if (parsed[1].name === name) return json;
-  parsed[1].name = name;
-  return JSON.stringify(parsed);
-}
-
-/**
- * Compare layer artwork JSON ignoring the layer's name.
- *
- * Defense in depth for rename / import drift: even if a stored keyframe
- * still carries a stale name, it must not count as an artwork edit.
- */
 export function layerJsonEquals(a: string, b: string): boolean {
-  if (a === b) return true;
-  return stripLayerName(a) === stripLayerName(b);
+  return a === b;
 }
 
 // ============================================================
@@ -387,10 +329,12 @@ export function layerJsonEquals(a: string, b: string): boolean {
 // ============================================================
 
 export class DocumentManager {
-  private renderer: PaperRenderer;
+  private renderer: StageRenderer;
+  /** Document color table (fill id → hex). */
+  readonly palette = new Palette();
 
   private tracks: LayerTrack[] = [];
-  /** contentId → paper layer JSON or image `{asset}` ("" means empty). */
+  /** contentId → v4 vector content JSON or image `{asset}` ("" means empty). */
   private content = new Map<string, string>([[EMPTY_CONTENT_ID, ""]]);
   private assets = new Map<string, AssetMeta>();
   private currentFrame = 0;
@@ -425,13 +369,18 @@ export class DocumentManager {
     getContent: (id) => this.content.get(id) ?? "",
   };
 
-  /** contentId currently loaded into each Paper layer. */
+  /** contentId currently loaded into each stage layer. */
   private loadedContent = new Map<string, string>();
   private contentIdCounter = 1;
 
-  constructor(renderer: PaperRenderer) {
+  getRenderer(): StageRenderer {
+    return this.renderer;
+  }
+
+  constructor(renderer: StageRenderer) {
     this.renderer = renderer;
     this.renderer.setSymbolResolver(this.symbolResolver);
+    this.renderer.setPalette(this.palette);
     // Ghosts follow layer selection / visibility / lock; those can change
     // without a document publish(), so refresh here too.
     let lastActive = layerStore.get().activeLayerId;
@@ -1131,7 +1080,7 @@ export class DocumentManager {
    * document model. Returns the surviving (below) layer id, or null when the
    * source is missing / already bottommost.
    *
-   * Caller is responsible for updating layerStore, deleting the Paper layer,
+   * Caller is responsible for updating layerStore, deleting the stage layer,
    * reloading the playhead, and taking a history snapshot.
    */
   mergeLayerDown(sourceLayerId: string): string | null {
@@ -1174,7 +1123,7 @@ export class DocumentManager {
         return id;
       }
 
-      const merged = this.renderer.mergeLayerJsons(
+      const merged = mergeContents(
         this.content.get(tgtId) ?? "",
         this.content.get(srcId) ?? "",
       );
@@ -1261,11 +1210,9 @@ export class DocumentManager {
       if (layer.kind === "stage") continue;
       const existing = byId.get(layer.id);
       if (existing) {
-        const renamed = existing.name !== layer.name;
         existing.name = layer.name;
         existing.visible = layer.visible;
         existing.locked = layer.locked;
-        if (renamed) this.rewriteTrackContentNames(existing);
         next.push(existing);
       } else {
         next.push({
@@ -1288,41 +1235,7 @@ export class DocumentManager {
   }
 
   /**
-   * Rewrite every unique content blob on a track so its embedded Paper layer
-   * `name` matches `track.name`. Content shared with other tracks is cloned
-   * first so a rename cannot bleed across layers.
-   */
-  private rewriteTrackContentNames(track: LayerTrack): void {
-    const seen = new Set<string>();
-    for (const kf of track.keyframes) {
-      const id = kf.contentId;
-      if (id === EMPTY_CONTENT_ID || seen.has(id)) continue;
-      seen.add(id);
-      const json = this.content.get(id) ?? "";
-      if (!json) continue;
-
-      const shared = this.tracks.some(
-        (t) =>
-          t.id !== track.id &&
-          t.keyframes.some((k) => k.contentId === id),
-      );
-      const next = withLayerName(json, track.name);
-      if (next === json && !shared) continue;
-
-      if (shared) {
-        const cloned = this.newContentId();
-        this.content.set(cloned, withLayerName(json, track.name));
-        for (const k of track.keyframes) {
-          if (k.contentId === id) k.contentId = cloned;
-        }
-      } else if (next !== json) {
-        this.content.set(id, next);
-      }
-    }
-  }
-
-  /**
-   * Apply solo + per-layer visibility to Paper without mutating stored
+   * Apply solo + per-layer visibility to the renderer without mutating stored
    * `visible` flags. Exclusive solo shows only that regular layer.
    * Reads visibility from layerStore so toggles take effect before the
    * next history sync copies them onto tracks.
@@ -1364,7 +1277,7 @@ export class DocumentManager {
   }
 
   /**
-   * Capture the live Paper content of the active layer into the document.
+   * Capture the live stage content of the active layer into the document.
    * Drawing tools use this; select edits across layers use
    * `commitDirtyLayerContent` / `commitLayersContent`.
    */
@@ -1378,7 +1291,7 @@ export class DocumentManager {
   }
 
   /**
-   * Commit live Paper content for dirty layers and any layer that owns a
+   * Commit live stage content for dirty layers and any layer that owns a
    * selected item. Timeline snapshots with nothing dirty skip exportJSON.
    */
   commitDirtyLayerContent(): boolean {
@@ -1386,10 +1299,7 @@ export class DocumentManager {
       return this.commitEditMultipleFrames();
     }
     const ids = new Set(this.renderer.consumeDirtyLayerIds());
-    for (const item of selectionStore.get().items) {
-      const layerId = this.renderer.getLayerIdForPathItem(item);
-      if (layerId) ids.add(layerId);
-    }
+    for (const layerId of this.renderer.getSelectionLayerIds()) ids.add(layerId);
     if (ids.size === 0) return false;
     return this.commitLayersContent(ids);
   }
@@ -1418,21 +1328,15 @@ export class DocumentManager {
     const track = this.getTrack(layerId);
     if (!track || !isVectorTrack(track)) return false;
 
-    const raw = this.renderer.isLayerEmpty(layerId)
+    const json = this.renderer.isLayerEmpty(layerId)
       ? ""
-      : this.renderer.exportLayerJSON(layerId) ?? "";
-    const paperName = this.renderer.getLayerName(layerId);
-    const json =
-      raw && paperName !== track.name ? withLayerName(raw, track.name) : raw;
+      : this.renderer.exportLayerJSON(layerId);
 
     const covering = this.coveringKeyframe(track, this.currentFrame);
     const visibleContentId = covering?.contentId ?? EMPTY_CONTENT_ID;
     const currentJson = this.content.get(visibleContentId) ?? "";
 
-    const unchanged =
-      json === currentJson ||
-      (paperName !== track.name && layerJsonEquals(json, currentJson));
-    if (unchanged) {
+    if (json === currentJson) {
       this.loadedContent.set(layerId, visibleContentId);
       return false;
     }
@@ -1984,7 +1888,7 @@ export class DocumentManager {
         }
         if (seen.has(kf.contentId)) continue;
         const json = this.content.get(kf.contentId) ?? "";
-        const bounds = json ? this.renderer.measureLayerJsonBounds(json) : null;
+        const bounds = json ? this.renderer.contentBounds([json]) : null;
         seen.set(kf.contentId, json);
         if (!bounds) continue;
         minX = Math.min(minX, bounds.x);
@@ -2017,10 +1921,7 @@ export class DocumentManager {
         remapped.set(oldId, EMPTY_CONTENT_ID);
         continue;
       }
-      const shifted = this.renderer.translateLayerJson(json, {
-        x: -origin.x,
-        y: -origin.y,
-      });
+      const shifted = translateContent(json, -origin.x, -origin.y);
       remapped.set(oldId, this.addContent(shifted));
     }
     for (const track of tracks) {
@@ -2047,10 +1948,9 @@ export class DocumentManager {
 
     const anchor = this.requireKeyframeTrack(anchorLayerId);
     if (anchor && isVectorTrack(anchor)) {
-      const json = this.renderer.exportInstanceLayerJSON(
+      const json = instanceContent(
         { symbol: symbol.id, iid: newInstanceId(), mode: "loop", firstFrame: 0 },
         origin,
-        anchor.name,
       );
       this.writeLayerContentAtFrame(anchor.id, start, json, { publish: false });
       this.extendKeyframeHoldThrough(anchor.id, start, end, { publish: false });
@@ -2804,19 +2704,17 @@ export class DocumentManager {
    * playhead. Layers that were just reimported are already hydrated.
    */
   private rehydrateHeldInstances(
-    reimported: Set<string>,
-    skip: Set<string> = new Set(),
+    _reimported: Set<string>,
+    _skip: Set<string> = new Set(),
   ): void {
-    for (const id of this.renderer.getAnimatedInstanceLayerIds()) {
-      if (reimported.has(id) || skip.has(id)) continue;
-      this.renderer.rehydrateLayerInstances(id);
-    }
+    // Instances resolve their frame at draw time from the layer elapsed map.
+    this.renderer.updateView();
   }
 
   /** Symbol artwork changed (edit / swap): re-resolve every placed instance. */
   rehydrateInstances(): void {
     this.renderer.setLayerElapsed(this.layerElapsedMap());
-    this.renderer.rehydrateAllInstances();
+    this.renderer.invalidateContentCache();
   }
 
   // ------------------------------------------------------------
@@ -2969,12 +2867,13 @@ export class DocumentManager {
     }
     const symbols = cloneSymbols(this.symbols);
     return {
-      version: 3,
+      version: 4,
       stage: { ...stage },
       frameRate: this.frameRate,
       duration: root.duration,
       tracks: cloneTracks(root.tracks),
       content,
+      palette: this.palette.toJSON(),
       tags: cloneTags(root.tags),
       ...(Object.keys(assets).length > 0 ? { assets } : {}),
       ...(Object.keys(symbols).length > 0 ? { symbols } : {}),
@@ -2988,8 +2887,9 @@ export class DocumentManager {
   loadSerialized(doc: SerializedDocument): void {
     this.content = new Map(Object.entries(doc.content));
     this.content.set(EMPTY_CONTENT_ID, "");
+    this.palette.reset(doc.palette ?? []);
     this.symbolRefCache.clear();
-    clearSymbolTemplateCache();
+    contentCache.clear();
     clearSymbolThumbnailCache();
     this.contextStack = [];
     this.symbols = new Map();
@@ -3057,18 +2957,14 @@ export class DocumentManager {
   // ------------------------------------------------------------
 
   /**
-   * Live recolor session: originals are captured once per source hex so
-   * continuous picker drags always remap from the starting artwork.
+   * Live recolor session: the palette id being dragged. Faces reference the
+   * id, so renaming the palette entry recolors every frame at once.
    */
-  private recolorSession: {
-    fromHex: string;
-    originals: Map<string, string>;
-  } | null = null;
+  private recolorSession: { fromHex: string; fillId: number } | null = null;
 
   /**
-   * Replace `fromHex` with `toHex` across every keyframe content blob.
-   * During a drag, pass the same `fromHex` each time; call
-   * `endDocumentRecolor()` when the gesture finishes.
+   * Replace `fromHex` with `toHex` across the whole document. During a drag,
+   * pass the same `fromHex` each time; call `endDocumentRecolor()` after.
    */
   recolorDocument(fromHex: string, toHex: string): boolean {
     const from = normalizeDocumentHex(fromHex);
@@ -3077,45 +2973,41 @@ export class DocumentManager {
 
     if (!this.recolorSession || this.recolorSession.fromHex !== from) {
       this.commitDirtyLayerContent();
-      const originals = new Map<string, string>();
-      const seen = new Set<string>();
-      for (const track of this.allTracks()) {
-        if (!isVectorTrack(track)) continue;
-        for (const kf of track.keyframes) {
-          const id = kf.contentId;
-          if (id === EMPTY_CONTENT_ID || seen.has(id)) continue;
-          seen.add(id);
-          const json = this.content.get(id) ?? "";
-          if (!json) continue;
-          if (colorsFromPaperJson(json).includes(from)) {
-            originals.set(id, json);
-          }
-        }
-      }
-      this.recolorSession = { fromHex: from, originals };
+      const fillId = this.palette.lookup(from);
+      if (fillId == null) return false;
+      this.recolorSession = { fromHex: from, fillId };
     }
-
-    let changed = false;
-    for (const [id, original] of this.recolorSession.originals) {
-      const next = replaceColorInPaperJson(original, from, to);
-      if (next == null) continue;
-      this.content.set(id, next);
-      changed = true;
-    }
-    if (!changed) return false;
-
-    // Symbol content may have changed: drop parsed templates.
-    clearSymbolTemplateCache();
+    if (!this.palette.rename(this.recolorSession.fillId, to)) return false;
+    this.renderer.updateView();
     clearSymbolThumbnailCache();
-    this.loadedContent.clear();
-    this.reloadCurrentFrame();
     this.publish();
     return true;
   }
 
   /** Clear a live recolor drag session (after history snapshot). */
   endDocumentRecolor(): void {
+    if (this.recolorSession) this.mergeDuplicatePaletteEntries();
     this.recolorSession = null;
+  }
+
+  /** Fold palette entries that now share a hex into the lowest id. */
+  private mergeDuplicatePaletteEntries(): void {
+    const pairs = this.palette.duplicatePairs();
+    if (pairs.length === 0) return;
+    const seen = new Set<string>();
+    for (const track of this.allTracks()) {
+      if (!isVectorTrack(track)) continue;
+      for (const kf of track.keyframes) {
+        if (kf.contentId === EMPTY_CONTENT_ID || seen.has(kf.contentId)) continue;
+        seen.add(kf.contentId);
+        const json = this.content.get(kf.contentId) ?? "";
+        const next = json ? remapContentFills(json, pairs) : null;
+        if (next != null) this.content.set(kf.contentId, next);
+      }
+    }
+    contentCache.clear();
+    this.loadedContent.clear();
+    this.reloadCurrentFrame();
   }
 
   // ------------------------------------------------------------
@@ -3123,7 +3015,32 @@ export class DocumentManager {
   // ------------------------------------------------------------
 
   private refreshDocumentColors(): void {
-    documentColorsStore.set(collectDocumentColors(this.allTracks(), this.content));
+    const used = new Set<number>();
+    const seen = new Set<string>();
+    for (const track of this.allTracks()) {
+      if (!isVectorTrack(track)) continue;
+      for (const kf of track.keyframes) {
+        if (kf.contentId === EMPTY_CONTENT_ID || seen.has(kf.contentId)) continue;
+        seen.add(kf.contentId);
+        const json = this.content.get(kf.contentId) ?? "";
+        if (!json) continue;
+        for (const f of contentFills(json)) used.add(f);
+      }
+    }
+    for (const layerId of this.renderer.getLayerIds()) {
+      const json = this.renderer.exportLayerJSON(layerId);
+      if (json) for (const f of contentFills(json)) used.add(f);
+    }
+    const colors: string[] = [];
+    const seenHex = new Set<string>();
+    for (const f of [...used].sort((a, b) => a - b)) {
+      const hex = this.palette.colorOf(f);
+      if (hex && !seenHex.has(hex)) {
+        seenHex.add(hex);
+        colors.push(hex);
+      }
+    }
+    documentColorsStore.set(colors);
   }
 
   /** Snapshot tracks/flags into the store (content may have changed). */

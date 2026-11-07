@@ -1,3 +1,2 @@
-/** Direct-select tool — vertex / Bezier editing. */
+/** Direct-select tool — kernel vertex / edge editing. */
 export { DirectSelectController } from "./direct-select/controller";
-export type { AnchorHandle, AnchorKey } from "./direct-select/anchors";

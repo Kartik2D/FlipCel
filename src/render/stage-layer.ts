@@ -1,6 +1,6 @@
 /**
- * Stage canvas — world-space artboard rectangle drawn below Paper.js.
- * Uses the same camera matrix as Paper so pan/zoom/rotate match the vector layer.
+ * Stage canvas — world-space artboard rectangle drawn below the vector stage.
+ * Uses the same camera matrix as the renderer so pan/zoom/rotate match.
  */
 import type { CanvasConfig } from "../geometry/types";
 import type { Camera } from "./camera";

@@ -442,7 +442,7 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
               <blocky-button
                 flat
                 stretch
-                ?disabled=${this.selection.value.items.length === 0}
+                ?disabled=${this.selection.value.count === 0}
                 @click=${() => this.emit("select-copy")}
                 >Copy</blocky-button
               >

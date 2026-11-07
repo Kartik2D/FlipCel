@@ -19,7 +19,7 @@ import type { SelectionController } from "../editing/object-select";
 import type { DirectSelectController } from "../editing/direct-select";
 import type { MagicMoveController } from "../editing/magic-move";
 import type { MagicMorphController } from "../editing/magic-morph";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
 import type { FlipCelLayersPanel } from "../ui/register";
 import type { ToolId } from "../tools/registry";
 import type { FrameRangeDetail } from "./panel-bridge";
@@ -41,7 +41,8 @@ import {
 export function createBlankSerializedDocument(): SerializedDocument {
   const layerId = generateLayerId();
   return {
-    version: 3,
+    version: 4,
+    palette: [],
     name: DEFAULT_DOCUMENT_NAME,
     stage: {
       width: DEFAULT_STAGE_WIDTH,
@@ -71,7 +72,7 @@ export interface TimelineSessionDeps {
   directSelectController: DirectSelectController;
   magicMoveController: MagicMoveController;
   magicMorphController: MagicMorphController;
-  paperRenderer: PaperRenderer;
+  renderer: StageRenderer;
   layersPanel: FlipCelLayersPanel;
   switchTool: (tool: ToolId) => void;
   requestRedraw: () => void;
@@ -183,7 +184,7 @@ export class TimelineSession {
       directSelectController,
       magicMoveController,
       magicMorphController,
-      paperRenderer,
+      renderer,
       switchTool,
       requestRedraw,
       closeFunctionsPanelHidden,
@@ -237,7 +238,7 @@ export class TimelineSession {
     }
 
     if (layerId && layerId !== layerStore.get().activeLayerId) {
-      if (paperRenderer.setActiveLayer(layerId)) {
+      if (renderer.setActiveLayer(layerId)) {
         stageSelectedStore.set(false);
         layerStore.update((s) => ({ ...s, activeLayerId: layerId }));
       }
@@ -253,8 +254,7 @@ export class TimelineSession {
       if (toolStore.get() !== "select") {
         switchTool("select");
       }
-      const allItems = paperRenderer.getAllSelectableItems();
-      selectionController.setSelectedItems(allItems);
+      selectionController.selectAll();
     }
 
     requestRedraw();
@@ -263,12 +263,11 @@ export class TimelineSession {
   timelineTargetLayerId(): string | null {
     const active = layerStore.get().activeLayerId;
     if (active !== STAGE_LAYER_ID) return active;
-    return this.deps.paperRenderer.getActiveLayerId();
+    return this.deps.renderer.getActiveLayerId();
   }
 
-  /** Pull live Paper edits into the document model without a history entry. */
+  /** Pull live stage edits into the document model without a history entry. */
   async commitLiveEdits(): Promise<void> {
-    await this.deps.paperRenderer.mergeIdle();
     this.deps.documentManager.syncFromLayerStore(layerStore.get());
     this.deps.documentManager.commitDirtyLayerContent();
   }

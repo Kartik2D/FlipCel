@@ -8,8 +8,3 @@ export interface SelectionHandle {
   x: number;
   y: number;
 }
-
-export interface MergePassResult {
-  survivors: paper.PathItem[];
-  changedItems: paper.PathItem[];
-}

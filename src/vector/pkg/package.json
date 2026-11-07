@@ -1,0 +1,15 @@
+{
+  "name": "flipcel_kernel",
+  "type": "module",
+  "version": "0.2.0",
+  "files": [
+    "kernel_bg.wasm",
+    "kernel.js",
+    "kernel.d.ts"
+  ],
+  "main": "kernel.js",
+  "types": "kernel.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

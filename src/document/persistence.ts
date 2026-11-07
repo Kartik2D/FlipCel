@@ -68,8 +68,10 @@ export function parseSerializedDocument(data: unknown): SerializedDocument {
     throw new Error("Not a document (expected a JSON object)");
   }
   const doc = data as Partial<SerializedDocument>;
-  if (doc.version !== 1 && doc.version !== 2 && doc.version !== 3) {
-    throw new Error(`Unsupported document version: ${String(doc.version)}`);
+  if (doc.version !== 4) {
+    throw new Error(
+      `Unsupported document version: ${String(doc.version)} (FlipCel now saves kernel documents, v4)`,
+    );
   }
   if (!Array.isArray(doc.tracks) || typeof doc.content !== "object" || doc.content === null) {
     throw new Error("Malformed document (missing tracks/content)");
@@ -87,8 +89,12 @@ export function parseSerializedDocument(data: unknown): SerializedDocument {
       if (sym) symbols[sym.id] = sym;
     }
   }
+  const palette = Array.isArray(doc.palette)
+    ? doc.palette.filter((c): c is string => typeof c === "string")
+    : [];
   return {
-    version: 3,
+    version: 4,
+    palette,
     stage: {
       width: Number(doc.stage?.width) || DEFAULT_STAGE_WIDTH,
       height: Number(doc.stage?.height) || DEFAULT_STAGE_HEIGHT,

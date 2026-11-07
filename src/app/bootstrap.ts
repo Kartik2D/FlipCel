@@ -17,11 +17,12 @@
  * - Tool and modifier state management
  */
 import { init, potrace } from "esm-potrace-wasm";
-import paper from "paper";
 import { UnifiedInputManager } from "../input/pointer-gestures";
 import { PixelCanvas } from "../tools/pixel-canvas";
 import { Tracer } from "../tracing/potrace-tracer";
-import { PaperRenderer } from "../render/paper-renderer";
+import { StageRenderer } from "../render/stage-renderer";
+import { initKernel } from "../vector/kernel";
+import { setThumbnailRenderer } from "../render/symbol-thumbnail";
 import { FeedbackLayer } from "../render/feedback-layer";
 import { StageLayer } from "../render/stage-layer";
 import { ChromeLayer } from "../render/chrome-layer";
@@ -40,22 +41,17 @@ import {
   type SerializedDocument,
 } from "../document/document";
 import { childFrameFor, type SymbolPlayMode } from "../document/symbols";
-import {
-  isSymbolInstance,
-  readInstance,
-  type SymbolInstanceGroup,
-} from "../render/paper/symbol-instances";
+import type { PlacedInstance } from "../vector/content";
+import { mulAffine, translation, type Affine } from "../vector/kernel";
 import type {
   InstancePlaybackDetail,
   SymbolInstancePopupModel,
 } from "../ui/panels/symbol-instance-popup";
-import { composeContextToLocal } from "../render/paper/context-backdrop";
+import { composeContextToLocal } from "../render/stage-renderer";
 import { bus, Events } from "../input/event-bus";
 import type { CanvasConfig, Point, Modifiers } from "../geometry/types";
 import { cycleDockMode, type ToolId, type AllToolSettings } from "../tools/registry";
 
-/** Additive drawing can continue while merge bakes; everything else waits. */
-const MERGE_LIVE_TOOLS = new Set<ToolId>(["brush", "lasso", "shape", "pan", "eyedropper"]);
 import { pixelToViewport } from "../geometry/coords";
 import {
   getAvailableContextualActions,
@@ -63,8 +59,8 @@ import {
   type ContextualActionContext,
 } from "../editing/contextual-actions";
 import {
-  getSelectionClipboard,
-  setSelectionClipboardFromItems,
+  pasteClipboardOntoLayer,
+  setSelectionClipboardFromSelection,
 } from "../editing/selection-clipboard";
 import {
   convertFrameRangeToSymbol,
@@ -109,8 +105,7 @@ import {
   toolSettingsStore,
   layerStore,
   selectionStore,
-  isPathItem,
-  pathItemsOf,
+  type SelectionState,
   viewOverlayStore,
   normalizeViewOverlaySettings,
   symmetryStore,
@@ -147,6 +142,7 @@ import {
 } from "../import/image-import";
 import {
   fileToSvgText,
+  importSvgOntoActiveLayer,
   isSvgFile,
   pickSvgFile,
 } from "../import/svg-import";
@@ -191,7 +187,7 @@ class App {
   private inputManager: UnifiedInputManager;
   private pixelCanvasManager: PixelCanvas;
   private tracer: Tracer;
-  private paperRenderer: PaperRenderer;
+  private renderer: StageRenderer;
   private feedbackLayer: FeedbackLayer;
   private stageLayer: StageLayer;
   private chromeLayer: ChromeLayer;
@@ -247,7 +243,6 @@ class App {
   private contextOriginOffset = { x: 0, y: 0 };
   private duplicateDragSession:
     | {
-        items: paper.Item[];
         lastWorldDelta: { x: number; y: number };
       }
     | null = null;
@@ -314,9 +309,10 @@ class App {
       paintSizeScale(this.camera.zoom),
     );
     this.tracer = new Tracer(potrace, init);
-    this.paperRenderer = new PaperRenderer(this.paperCanvas, this.config);
-    this.paperRenderer.setCamera(this.camera);
-    this.paperRenderer.setImageResolver((id) => assetCache.getImage(id));
+    this.renderer = new StageRenderer(this.paperCanvas, this.config);
+    this.renderer.setCamera(this.camera);
+    this.renderer.setImageResolver((id) => assetCache.getImage(id));
+    setThumbnailRenderer(this.renderer);
     this.audioPlayback = new AudioPlayback();
     this.feedbackLayer = new FeedbackLayer(this.uiCanvas, this.uiCanvas2D, this.config);
     this.feedbackLayer.setCamera(this.camera);
@@ -328,38 +324,38 @@ class App {
       this.config,
     );
     this.selectionController = new SelectionController(
-      this.paperRenderer,
+      this.renderer,
       this.camera,
       this.chromeLayer,
     );
     this.directSelectController = new DirectSelectController(
-      this.paperRenderer,
+      this.renderer,
       this.camera,
       this.chromeLayer,
     );
     this.createPointsController = new CreatePointsController(
-      this.paperRenderer,
+      this.renderer,
       this.camera,
       this.chromeLayer,
     );
     this.artisticTextController = new ArtisticTextController(
-      this.paperRenderer,
+      this.renderer,
       this.camera,
       this.chromeLayer,
       this.tracer,
     );
-    this.magnetController = new MagnetController(this.paperRenderer, this.camera);
+    this.magnetController = new MagnetController(this.renderer, this.camera);
     this.magicMoveController = new MagicMoveController(
-      this.paperRenderer,
+      this.renderer,
       this.camera,
       this.chromeLayer,
     );
     this.magicMorphController = new MagicMorphController(
-      this.paperRenderer,
+      this.renderer,
       this.camera,
       this.chromeLayer,
     );
-    this.documentManager = new DocumentManager(this.paperRenderer);
+    this.documentManager = new DocumentManager(this.renderer);
     this.historyManager = new HistoryManager(this.documentManager);
     assetCache.onChange = (id) => {
       const decoded = assetCache.getAudio(id);
@@ -378,7 +374,7 @@ class App {
       this.requestRedraw();
       if (this.documentManager.isPlaying()) this.timelineSession?.syncAudio();
     };
-    this.paperRenderer.setMergeBakedCallback(() => this.historyManager.snapshot());
+    this.renderer.setSelectableFilter((id) => this.documentManager.isTrackSelectable(id));
     this.documentManager.onContextChanged = () => this.onEditContextChanged();
     this.magicMoveController.setDocumentManager(this.documentManager);
     this.magicMoveController.setHistoryManager(this.historyManager);
@@ -388,9 +384,8 @@ class App {
     this.selectionController.setLiveEditStartCallback(() =>
       this.documentManager.refreshOnionSkin(),
     );
-    this.selectionController.setEnterInstanceCallback((instance) => {
-      const data = readInstance(instance);
-      if (data) void this.enterSymbol(data.symbol, instance);
+    this.selectionController.setEnterInstanceCallback((instance, worldMatrix, layerId) => {
+      void this.enterSymbol(instance.symbol, { instance, worldMatrix, layerId });
     });
     this.selectionController.setActivateLayerCallback((layerId) =>
       this.activateLayerFromSelect(layerId),
@@ -402,21 +397,12 @@ class App {
     this.directSelectController.setActivateLayerCallback((layerId) =>
       this.activateLayerFromSelect(layerId),
     );
-    // Direct Select / Magnet: expand + weld on commit only (not per drag frame).
-    this.directSelectController.setReconcileCallback((items) => {
-      const expanded = this.paperRenderer.expandIncomingWithSymmetry(items);
-      return this.paperRenderer.reconcileItemsToFixpoint(expanded);
-    });
     this.createPointsController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.artisticTextController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.magnetController.setSnapshotCallback(() => this.historyManager.snapshot());
     this.magnetController.setLiveEditStartCallback(() =>
       this.documentManager.refreshOnionSkin(),
     );
-    this.magnetController.setReconcileCallback((items) => {
-      const expanded = this.paperRenderer.expandIncomingWithSymmetry(items);
-      return this.paperRenderer.reconcileItemsToFixpoint(expanded);
-    });
 
     // Get panel Lit elements
     this.colorPanel = document.getElementById("color-panel") as FlipCelColorPanel;
@@ -459,14 +445,18 @@ class App {
       this.updateSelectedInstance({ symbol: symbolId });
     });
     this.symbolInstancePopup.addEventListener("instance-edit", () => {
-      const instance = this.selectedInstance();
-      const data = instance ? readInstance(instance) : null;
+      const sel = this.selectedInstance();
       this.symbolInstancePopup.hidePanel();
-      if (instance && data) void this.enterSymbol(data.symbol, instance);
+      if (sel) {
+        void this.enterSymbol(sel.instance.symbol, {
+          instance: sel.instance,
+          worldMatrix: mulAffine(sel.part.xf, sel.instance.matrix),
+          layerId: sel.part.layerId,
+        });
+      }
     });
     this.symbolInstancePopup.addEventListener("instance-reset-pivot", () => {
-      const instance = this.selectedInstance();
-      if (!instance || !this.paperRenderer.resetInstancePivot(instance)) return;
+      if (!this.selectedInstance() || !this.renderer.resetInstancePivot()) return;
       this.selectionController.markSelectionAsModified();
       this.historyManager.snapshot();
       this.redrawActiveSelectionUI();
@@ -511,7 +501,7 @@ class App {
       directSelectController: this.directSelectController,
       magicMoveController: this.magicMoveController,
       magicMorphController: this.magicMorphController,
-      paperRenderer: this.paperRenderer,
+      renderer: this.renderer,
       layersPanel: this.layersPanel,
       closeFunctionsPanelHidden: () => this.functionsPanel.close("hidden"),
       closeSettingsPanel: () => this.universalPanel.hidePanel(),
@@ -532,15 +522,14 @@ class App {
     this.toolSettingsPanel.addEventListener("magic-move-apply", onMagicMoveApply);
     this.magicMovePopup.addEventListener("magic-move-apply", onMagicMoveApply);
     this.toolSettingsPanel.addEventListener("select-copy", () => {
-      // Clipboard carries merge shapes only (instances: phase 2).
-      const items = pathItemsOf(selectionStore.get().items).filter((item) => item.parent);
-      setSelectionClipboardFromItems(items);
+      setSelectionClipboardFromSelection(this.renderer);
     });
     this.toolSettingsPanel.addEventListener("select-paste", () => {
-      const pasted = this.paperRenderer.pasteJsonOntoActiveLayer(getSelectionClipboard());
-      if (pasted.length === 0) return;
-      this.selectionController.setSelectedItems(pasted, { didMove: true });
-      this.historyManager.snapshot("Paste");
+      const layerId = this.renderer.getActiveLayerId();
+      if (!layerId) return;
+      this.selectionController.placeSelection();
+      if (!pasteClipboardOntoLayer(this.renderer, layerId)) return;
+      this.selectionController.markSelectionAsModified();
       this.requestRedraw();
     });
     const onMagicMorphApply = () => {
@@ -599,25 +588,22 @@ class App {
     stageSelectedStore.subscribe((selected) => {
       if (selected) return;
       if (layerStore.get().activeLayerId !== STAGE_LAYER_ID) return;
-      const paperActiveId = this.paperRenderer.getActiveLayerId();
+      const paperActiveId = this.renderer.getActiveLayerId();
       if (paperActiveId) {
         layerStore.update((s) => ({ ...s, activeLayerId: paperActiveId }));
       }
     });
 
     selectionStore.subscribeImmediate((selection) => {
-      if (stageSelectedStore.get() && selection.items.some((i) => i.parent)) {
+      if (stageSelectedStore.get() && selection.count > 0) {
         stageSelectedStore.set(false);
-        const first = selection.items.find((i) => i.parent);
-        if (first) {
-          const lid = this.paperRenderer.getLayerIdForPathItem(first);
-          if (lid) {
-            this.paperRenderer.setActiveLayer(lid);
-            layerStore.update((s) => ({ ...s, activeLayerId: lid }));
-          }
+        const lid = selection.layerIds[selection.layerIds.length - 1];
+        if (lid) {
+          this.renderer.setActiveLayer(lid);
+          layerStore.update((s) => ({ ...s, activeLayerId: lid }));
         }
       }
-      this.onSelectionItemsChange(selection.items);
+      this.onSelectionChange(selection);
     });
 
     // Initialize unified input manager
@@ -634,7 +620,7 @@ class App {
       magnetController: this.magnetController,
       magicMoveController: this.magicMoveController,
       magicMorphController: this.magicMorphController,
-      paperRenderer: this.paperRenderer,
+      renderer: this.renderer,
       pixelCanvasManager: this.pixelCanvasManager,
       feedbackLayer: this.feedbackLayer,
       tracer: this.tracer,
@@ -858,10 +844,10 @@ class App {
     // Configure pixel canvas context
     this.pixelCanvas2D.imageSmoothingEnabled = false;
 
-    // Update Paper.js view size
+    // Update stage renderer view size
     if (this.isInitialized) {
-      paper.view.viewSize = new paper.Size(viewportWidth, viewportHeight);
-      this.paperRenderer.applyCamera();
+      this.renderer.updateConfig(this.config);
+      this.renderer.applyCamera();
     }
   }
 
@@ -869,21 +855,21 @@ class App {
     // Initialize esm-potrace-wasm
     await init();
 
-    // Initialize Paper.js
-    paper.setup(this.paperCanvas);
+    // Initialize the DCEL kernel (wasm) before any vector work.
+    await initKernel();
     this.isInitialized = true;
 
-    // Initialize the default layer - map Paper.js activeLayer to our layer store
+    // Initialize the default layer
     const initialLayerState = layerStore.get();
     const defaultLayer =
       initialLayerState.layers.find((l) => l.kind !== "stage") ?? initialLayerState.layers[0];
-    this.paperRenderer.initializeDefaultLayer(defaultLayer.id, defaultLayer.name);
+    this.renderer.initializeDefaultLayer(defaultLayer.id, defaultLayer.name);
 
     // Resize canvases
     this.resizeCanvases();
 
     // Apply initial camera transformation
-    this.paperRenderer.applyCamera();
+    this.renderer.applyCamera();
 
     // Set up store subscriptions
     this.setupStoreSubscriptions();
@@ -964,7 +950,7 @@ class App {
       const cameraMoved = this.camera.stepLerp(dt);
       if (cameraMoved || this.redrawRequested) {
         this.redrawRequested = false;
-        this.paperRenderer.applyCamera();
+        this.renderer.applyCamera();
         // Grid + brush ring live on #ui-canvas; stage fill on #stage-canvas.
         this.feedbackLayer.redraw();
         this.stageLayer.redraw();
@@ -990,7 +976,7 @@ class App {
       this.feedbackLayer.updateConfig(config);
       this.stageLayer.updateConfig(config);
       this.inputManager.updateConfig(config);
-      this.paperRenderer.updateConfig(config);
+      this.renderer.updateConfig(config);
     });
 
     // Tool settings store - update UI overlay with brush tip + magnet size
@@ -1020,6 +1006,8 @@ class App {
       this.inputManager.setTool(tool);
       this.feedbackLayer.setActiveTool(tool);
       this.updateFunctionsPanel();
+      // Paint (or clear) the new tool's chrome now rather than on the next pointer move.
+      this.redrawActiveSelectionUI();
     });
 
     themeModeStore.subscribeImmediate((mode) => {
@@ -1027,7 +1015,7 @@ class App {
     });
 
     aliasFixStore.subscribeImmediate((enabled) => {
-      this.paperRenderer.setAliasFixEnabled(enabled);
+      this.renderer.setAliasFixEnabled(enabled);
     });
     brushSizeIndicatorStore.subscribeImmediate((enabled) => {
       this.feedbackLayer.setBrushSizeIndicatorEnabled(enabled);
@@ -1325,15 +1313,13 @@ class App {
     }
   }
 
-  private onSelectionItemsChange(items: paper.Item[]) {
-    if (items.length === 1 && isPathItem(items[0])) {
-      const fill = items[0].fillColor;
-      if (fill) {
-        const toHex = (channel: number) =>
-          Math.round(Math.max(0, Math.min(1, channel)) * 255)
-            .toString(16)
-            .padStart(2, "0");
-        const color = `#${toHex(fill.red)}${toHex(fill.green)}${toHex(fill.blue)}`;
+  private onSelectionChange(selection: SelectionState) {
+    // A single lifted shape with one fill adopts its color as the active color.
+    if (selection.count === 1 && selection.hasShapes && selection.instances.length === 0) {
+      const parts = this.renderer.getSelection();
+      const fills = parts.length === 1 ? parts[0].base.fills().filter((f) => f !== 0) : [];
+      const color = fills.length === 1 ? this.documentManager.palette.colorOf(fills[0]) : null;
+      if (color) {
         colorStore.set(color);
         prevColorStore.set(color);
       }
@@ -1345,16 +1331,18 @@ class App {
   private buildFunctionContext(): ContextualActionContext {
     return {
       tool: toolStore.get(),
-      items: selectionStore.get().items.filter((item) => item.parent),
+      selection: selectionStore.get(),
       pickedAnchorCount: this.directSelectController.getPickedAnchorCount(),
     };
   }
 
   private getFunctionsPanelKey(context: ContextualActionContext, functionIds: string[]): string {
-    const itemIds = context.items.map((item) => item.id).sort((a, b) => a - b);
+    const b = this.renderer.selectionBounds();
     return [
       context.tool,
-      itemIds.join(","),
+      context.selection.count,
+      context.selection.instances.map((i) => i.iid).join(","),
+      b ? [b.x, b.y, b.width, b.height].map((v) => Math.round(v)).join(",") : "",
       context.pickedAnchorCount,
       functionIds.join(","),
     ].join("|");
@@ -1362,7 +1350,7 @@ class App {
 
   private getFunctionsPanelPosition(context: ContextualActionContext): { x: number; y: number } | null {
     if (context.tool === "select") {
-      const bounds = this.paperRenderer.getSelectionFrameScreenBounds(context.items);
+      const bounds = this.renderer.selectionScreenBounds();
       if (!bounds) return null;
       return {
         x: bounds.x + bounds.width / 2,
@@ -1472,10 +1460,9 @@ class App {
 
   /** One view paint for the whole selection. History and selection chrome wait until pointer-up. */
   private paintSelectionColor(color: string): boolean {
-    const items = selectionStore.get().items.filter((item) => item.parent);
-    if (items.length === 0) return false;
-    for (const item of items) this.paperRenderer.setItemFillColor(item, color, false);
-    this.paperRenderer.updateView();
+    if (!selectionStore.get().hasShapes) return false;
+    const fill = this.documentManager.palette.fillFor(color);
+    if (!this.renderer.recolorSelection(fill)) return false;
     this.selectionController.pinLiveEdit();
     return true;
   }
@@ -1523,24 +1510,14 @@ class App {
 
   private pickColorAt(point: Point) {
     const viewportPoint = pixelToViewport(point, this.config);
+    const world = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
     const scope =
       toolSettingsStore.get().eyedropper.scope === "active" ? "active" : "all";
-    const item = this.paperRenderer.hitTestSelectable(viewportPoint, scope);
-    if (!item) return;
-
-    let sample: paper.Color | null = null;
-    if ("fillColor" in item && item.fillColor) {
-      sample = item.fillColor;
-    } else if ("strokeColor" in item && item.strokeColor) {
-      sample = item.strokeColor;
-    }
-    if (!sample) return;
-
-    const toHex = (channel: number) =>
-      Math.round(Math.max(0, Math.min(1, channel)) * 255)
-        .toString(16)
-        .padStart(2, "0");
-    const pickedColor = `#${toHex(sample.red)}${toHex(sample.green)}${toHex(sample.blue)}`;
+    const pickedColor =
+      scope === "active"
+        ? this.documentManager.palette.colorOf(this.renderer.faceFillAt(world))
+        : this.renderer.colorAt(world);
+    if (!pickedColor) return;
 
     colorStore.set(pickedColor);
     prevColorStore.set(pickedColor);
@@ -1575,9 +1552,6 @@ class App {
   private async switchToolAsync(next: ToolId) {
     const prev = toolStore.get();
     if (prev !== next) prevToolStore.set(prev);
-    if (!MERGE_LIVE_TOOLS.has(next)) {
-      await this.paperRenderer.mergeIdle();
-    }
     this.onToolChange(next);
     toolStore.set(next);
     this.inputManager.setTool(next);
@@ -1593,21 +1567,18 @@ class App {
   // ============================================================
 
   private async onUndo() {
-    await this.paperRenderer.mergeIdle();
     if (this.historyManager.undo()) {
       this.afterHistoryRestore();
     }
   }
 
   private async onRedo() {
-    await this.paperRenderer.mergeIdle();
     if (this.historyManager.redo()) {
       this.afterHistoryRestore();
     }
   }
 
   private async onHistoryGoTo(index: number) {
-    await this.paperRenderer.mergeIdle();
     if (this.historyManager.goTo(index)) {
       this.afterHistoryRestore();
     }
@@ -1656,7 +1627,7 @@ class App {
     if (kind !== "regular" && this.documentManager.isEditingSymbol()) return;
     stageSelectedStore.set(false);
     // Create the layer in Paper.js (it lands at the top of z-order by default).
-    this.paperRenderer.createLayer(id, name);
+    this.renderer.createLayer(id, name);
 
     // Insert the new layer directly above the currently active layer in the
     // store's bottom->top ordering. If there's no active layer, fall back to
@@ -1683,7 +1654,7 @@ class App {
 
     // Sync Paper.js z-order to match the store.
     const orderedBottomToTop = layerStore.get().layers.map((layer) => layer.id);
-    this.paperRenderer.reorderLayers(orderedBottomToTop);
+    this.renderer.reorderLayers(orderedBottomToTop);
     this.documentManager.syncFromLayerStore(layerStore.get());
 
     if (file && (kind === "image" || kind === "audio")) {
@@ -1757,7 +1728,7 @@ class App {
     if (nonStage.length <= 1) return;
     
     // Delete from Paper.js
-    if (!this.paperRenderer.deleteLayer(layerId)) return;
+    if (!this.renderer.deleteLayer(layerId)) return;
     
     // Update the store
     const remainingLayers = state.layers.filter((l) => l.id !== layerId);
@@ -1776,7 +1747,7 @@ class App {
 
     // Keep Paper.js aligned with the store. PaperRenderer.deleteLayer() picks
     // an arbitrary survivor when the active layer is deleted.
-    this.paperRenderer.setActiveLayer(newActiveId);
+    this.renderer.setActiveLayer(newActiveId);
     
     // Clear selection when deleting layers
     this.selectionController.clearSelection();
@@ -1788,7 +1759,6 @@ class App {
 
   private async onLayerMergeDown(layerId: string) {
     if (layerId === STAGE_LAYER_ID) return;
-    await this.paperRenderer.mergeIdle();
 
     const targetId = this.documentManager.mergeLayerDown(layerId);
     if (!targetId) return;
@@ -1804,8 +1774,8 @@ class App {
       soloLayerId,
     });
 
-    this.paperRenderer.deleteLayer(layerId);
-    this.paperRenderer.setActiveLayer(targetId);
+    this.renderer.deleteLayer(layerId);
+    this.renderer.setActiveLayer(targetId);
     this.documentManager.applyEffectiveVisibility(soloLayerId);
     this.documentManager.invalidateLoadedLayer(targetId);
     this.documentManager.reloadVisibleFrame();
@@ -1839,7 +1809,7 @@ class App {
     }
 
     // Set active layer in Paper.js
-    if (!this.paperRenderer.setActiveLayer(layerId)) return;
+    if (!this.renderer.setActiveLayer(layerId)) return;
 
     // Update the store
     layerStore.update((state) => ({
@@ -1852,8 +1822,7 @@ class App {
     if (toolStore.get() !== "select") {
       this.switchTool("select");
     }
-    const allItems = this.paperRenderer.getAllSelectableItems();
-    this.selectionController.setSelectedItems(allItems);
+    this.selectionController.selectAll();
   }
 
   private onLayerRename(layerId: string, name: string) {
@@ -1863,7 +1832,7 @@ class App {
     const state = layerStore.get();
     const layer = state.layers.find((l) => l.id === layerId);
     if (!layer || layer.name === trimmed) return;
-    if (!this.paperRenderer.setLayerName(layerId, trimmed)) return;
+    if (!this.renderer.setLayerName(layerId, trimmed)) return;
     layerStore.update((s) => ({
       ...s,
       layers: s.layers.map((l) => (l.id === layerId ? { ...l, name: trimmed } : l)),
@@ -1914,7 +1883,7 @@ class App {
     if (!layer || layer.locked || layer.kind === "stage") return;
     stageSelectedStore.set(false);
     if (state.activeLayerId === layerId) return;
-    if (!this.paperRenderer.setActiveLayer(layerId)) return;
+    if (!this.renderer.setActiveLayer(layerId)) return;
     layerStore.update((s) => ({ ...s, activeLayerId: layerId }));
   }
 
@@ -1942,7 +1911,7 @@ class App {
             l.visible &&
             l.id !== layerId,
         );
-      if (unlocked && this.paperRenderer.setActiveLayer(unlocked.id)) {
+      if (unlocked && this.renderer.setActiveLayer(unlocked.id)) {
         layerStore.update((s) => ({ ...s, activeLayerId: unlocked.id }));
         stageSelectedStore.set(false);
       }
@@ -1969,7 +1938,7 @@ class App {
 
   private onFunctionInvoke(functionId: string): boolean {
     const didRun = runContextualAction(functionId, this.buildFunctionContext(), {
-      paperRenderer: this.paperRenderer,
+      renderer: this.renderer,
       selectionController: this.selectionController,
       directSelectController: this.directSelectController,
       historyManager: this.historyManager,
@@ -1988,7 +1957,7 @@ class App {
   private symbolActionServices(): SymbolActionServices {
     return {
       documentManager: this.documentManager,
-      paperRenderer: this.paperRenderer,
+      renderer: this.renderer,
       selectionController: this.selectionController,
       historyManager: this.historyManager,
       camera: this.camera,
@@ -2021,17 +1990,14 @@ class App {
     this.updateFunctionsPanel();
   }
 
-  /** The single selected symbol instance, or null. */
-  private selectedInstance(): SymbolInstanceGroup | null {
-    const items = this.selectionController.getSelectedItems().filter((item) => item.parent);
-    const item = items.length === 1 ? items[0] : null;
-    return item && isSymbolInstance(item) ? item : null;
+  /** The single selected symbol instance (with its owning part), or null. */
+  private selectedInstance(): { part: { xf: Affine; layerId: string }; instance: PlacedInstance } | null {
+    return this.renderer.singleSelectedInstance();
   }
 
-  private instancePopupModel(instance: SymbolInstanceGroup): SymbolInstancePopupModel | null {
-    const data = readInstance(instance);
-    const symbol = data ? this.documentManager.getSymbol(data.symbol) : null;
-    if (!data || !symbol) return null;
+  private instancePopupModel(data: PlacedInstance): SymbolInstancePopupModel | null {
+    const symbol = this.documentManager.getSymbol(data.symbol);
+    if (!symbol) return null;
     const editing = this.documentManager.getEditingSymbolId();
     const swapCandidates = this.documentManager
       .listSymbols()
@@ -2050,8 +2016,8 @@ class App {
   }
 
   private async openSymbolInstancePopup(): Promise<void> {
-    const instance = this.selectedInstance();
-    const model = instance ? this.instancePopupModel(instance) : null;
+    const sel = this.selectedInstance();
+    const model = sel ? this.instancePopupModel(sel.instance) : null;
     if (!model) return;
     await this.symbolInstancePopup.openFor(model, this.functionsPanel);
   }
@@ -2060,12 +2026,12 @@ class App {
   private updateSelectedInstance(
     patch: Partial<{ symbol: string; mode: SymbolPlayMode; firstFrame: number }>,
   ): void {
-    const instance = this.selectedInstance();
-    if (!instance) return;
-    if (!this.paperRenderer.updateInstance(instance, patch)) return;
+    if (!this.selectedInstance()) return;
+    if (!this.renderer.updateSelectedInstances(patch)) return;
     this.selectionController.markSelectionAsModified();
     this.historyManager.snapshot();
-    const model = this.instancePopupModel(instance);
+    const sel = this.selectedInstance();
+    const model = sel ? this.instancePopupModel(sel.instance) : null;
     if (model) this.symbolInstancePopup.setModel(model);
     this.redrawActiveSelectionUI();
   }
@@ -2090,21 +2056,25 @@ class App {
    * (parent artwork stays visible behind); without, it is an isolated edit
    * from the Library. Entering is not a history entry.
    */
-  private async enterSymbol(symbolId: string, instance?: SymbolInstanceGroup): Promise<void> {
+  private async enterSymbol(
+    symbolId: string,
+    instance?: { instance: PlacedInstance; worldMatrix: Affine; layerId: string },
+  ): Promise<void> {
     if (toolStore.get() === "magic-move") return;
     let via: Parameters<DocumentManager["enterSymbol"]>[1];
-    if (instance?.parent) {
-      const layerId = this.paperRenderer.getLayerIdForPathItem(instance);
+    if (instance) {
       const symbol = this.documentManager.getSymbol(symbolId);
-      if (!layerId || !symbol) return;
-      const data = readInstance(instance);
-      if (!data) return;
-      const m = instance.globalMatrix;
+      if (!symbol) return;
+      const { layerId } = instance;
       via = {
         layerId,
-        instanceIid: data.iid,
-        childFrame: childFrameFor(data, this.paperRenderer.getLayerElapsed(layerId), symbol.duration),
-        worldMatrix: [m.a, m.b, m.c, m.d, m.tx, m.ty],
+        instanceIid: instance.instance.iid,
+        childFrame: childFrameFor(
+          instance.instance,
+          this.renderer.getLayerElapsed(layerId),
+          symbol.duration,
+        ),
+        worldMatrix: [...instance.worldMatrix],
       };
     }
     await this.timelineSession.commitLiveEdits();
@@ -2135,9 +2105,7 @@ class App {
         matrix: ref.worldMatrix,
       })),
     );
-    this.stageLayer.setLocalTransform(
-      toLocal ? [toLocal.a, toLocal.b, toLocal.c, toLocal.d, toLocal.tx, toLocal.ty] : null,
-    );
+    this.stageLayer.setLocalTransform(toLocal ? [...toLocal] : null);
     this.selectionController.discardSelection();
     this.directSelectController.clearSelection();
     this.functionsPanel.close("hidden");
@@ -2158,22 +2126,24 @@ class App {
 
   /** Quick option: lift the current selection onto a brand-new layer above it. */
   private moveSelectionToNewLayer() {
-    const items = this.selectionController
-      .getSelectedItems()
-      .filter((item) => item.parent);
-    if (items.length === 0) return;
+    if (!this.renderer.hasSelection()) return;
 
     const id = generateLayerId();
     const state = layerStore.get();
     const nonStage = state.layers.filter((layer) => layer.kind !== "stage");
     const name = `Layer ${nonStage.length + 1}`;
+    const selectedIds = this.renderer.getSelectionLayerIds();
     const anchorId =
-      this.paperRenderer.getTopmostSelectedLayerId(items) ?? state.activeLayerId;
+      selectedIds.length > 0
+        ? selectedIds.reduce((best, cur) =>
+            state.layers.findIndex((l) => l.id === cur) > state.layers.findIndex((l) => l.id === best) ? cur : best,
+          )
+        : state.activeLayerId;
     const anchorIndex = state.layers.findIndex((layer) => layer.id === anchorId);
     const insertAt = anchorIndex < 0 ? state.layers.length : anchorIndex + 1;
 
     stageSelectedStore.set(false);
-    this.paperRenderer.createLayer(id, name);
+    this.renderer.createLayer(id, name);
     layerStore.update((current) => {
       const nextLayers = [...current.layers];
       nextLayers.splice(insertAt, 0, {
@@ -2185,19 +2155,14 @@ class App {
       });
       return { ...current, layers: nextLayers, activeLayerId: id };
     });
-    this.paperRenderer.reorderLayers(layerStore.get().layers.map((layer) => layer.id));
-    this.paperRenderer.moveItemsToLayer(items, id);
-    this.selectionController.releasePendingExtraction();
-    this.selectionController.setSelectedItems(
-      items.filter((item) => item.parent),
-      { didMove: true },
-    );
-    this.historyManager.snapshot();
+    this.renderer.reorderLayers(layerStore.get().layers.map((layer) => layer.id));
+    this.renderer.moveSelectionToLayer(id);
+    this.selectionController.markSelectionAsModified();
     this.requestRedraw();
   }
 
   private onFunctionDragStart(functionId: string) {
-    if (functionId === "round-corners") {
+    if (functionId === "simplify") {
       if (!this.directSelectController.beginPathEditDrag(functionId)) return;
       this.functionsPanel.close("hidden");
       // Seed preview from the threshold distance that armed the drag.
@@ -2207,20 +2172,18 @@ class App {
 
     if (functionId !== "duplicate") return;
     const context = this.buildFunctionContext();
-    if (context.tool !== "select" || context.items.length === 0) return;
+    if (context.tool !== "select" || context.selection.count === 0) return;
 
-    const items = this.selectionController.duplicateSelection(0, 0);
-    if (items.length === 0) return;
+    if (!this.selectionController.duplicateSelection(0, 0)) return;
 
     this.duplicateDragSession = {
-      items,
       lastWorldDelta: { x: 0, y: 0 },
     };
     this.functionsPanel.close("hidden");
   }
 
   private onFunctionDragMove(functionId: string, dx: number, dy: number) {
-    if (functionId === "round-corners") {
+    if (functionId === "simplify") {
       if (!this.directSelectController.isPathEditDragActive()) return;
       const world = this.camera.screenDeltaToWorld(dx, dy);
       // Distance only — X and Y are not separate controls.
@@ -2236,17 +2199,13 @@ class App {
     const stepY = worldDelta.y - this.duplicateDragSession.lastWorldDelta.y;
     if (stepX === 0 && stepY === 0) return;
 
-    for (const item of this.duplicateDragSession.items) {
-      if (!item.parent) continue;
-      item.position = item.position.add(new paper.Point(stepX, stepY));
-    }
+    this.renderer.transformSelection(translation(stepX, stepY));
     this.duplicateDragSession.lastWorldDelta = worldDelta;
-    paper.view.update();
     this.selectionController.drawUI();
   }
 
   private onFunctionDragEnd(functionId: string, dx: number, dy: number) {
-    if (functionId === "round-corners") {
+    if (functionId === "simplify") {
       if (!this.directSelectController.isPathEditDragActive()) return;
       this.onFunctionDragMove(functionId, dx, dy);
       this.directSelectController.endPathEditDrag();
@@ -2270,9 +2229,8 @@ class App {
       this.onFunctionDragMove("duplicate", screenDelta.dx, screenDelta.dy);
     }
 
-    const items = this.duplicateDragSession.items.filter((item) => item.parent);
     this.duplicateDragSession = null;
-    this.selectionController.setSelectedItems(items, { didMove: true });
+    this.selectionController.markSelectionAsModified();
   }
 
   private async onExportSvg(options: SvgExportOptions) {
@@ -2367,10 +2325,9 @@ class App {
         return;
       }
       const stage = stageStore.get();
-      const ok = await this.paperRenderer.addImportedSvg(svg, {
+      const ok = importSvgOntoActiveLayer(this.renderer, svg, {
         stageWidth: stage.width,
         stageHeight: stage.height,
-        convertStrokesToFills: true,
         snapColors: detail.options.snapToDocumentColors
           ? documentColorsStore.get()
           : undefined,
@@ -2396,7 +2353,7 @@ class App {
     const name = nextImportedImageName();
     try {
       stageSelectedStore.set(false);
-      this.paperRenderer.createLayer(id, name);
+      this.renderer.createLayer(id, name);
       layerStore.update((state) => {
         const activeIndex = state.layers.findIndex(
           (layer) => layer.id === state.activeLayerId,
@@ -2412,16 +2369,15 @@ class App {
         });
         return { ...state, layers: nextLayers, activeLayerId: id };
       });
-      this.paperRenderer.reorderLayers(layerStore.get().layers.map((layer) => layer.id));
+      this.renderer.reorderLayers(layerStore.get().layers.map((layer) => layer.id));
       this.documentManager.syncFromLayerStore(layerStore.get());
       this.selectionController.clearSelection();
       this.directSelectController.clearSelection();
 
       const stage = stageStore.get();
-      const ok = await this.paperRenderer.addImportedSvg(detail.svg, {
+      const ok = importSvgOntoActiveLayer(this.renderer, detail.svg, {
         stageWidth: stage.width,
         stageHeight: stage.height,
-        skipMerge: true,
       });
       if (!ok) {
         alert("Tracing produced no paths.");
@@ -2621,7 +2577,7 @@ class App {
 
     if (reorderedLayers.length !== state.layers.length) return;
 
-    this.paperRenderer.reorderLayers(orderedBottomToTop);
+    this.renderer.reorderLayers(orderedBottomToTop);
 
     // The layer just dragged becomes the active layer.
     let activeLayerId = state.activeLayerId;
@@ -2629,7 +2585,7 @@ class App {
       movedId &&
       movedId !== STAGE_LAYER_ID &&
       movedId !== activeLayerId &&
-      this.paperRenderer.setActiveLayer(movedId)
+      this.renderer.setActiveLayer(movedId)
     ) {
       activeLayerId = movedId;
       stageSelectedStore.set(false);

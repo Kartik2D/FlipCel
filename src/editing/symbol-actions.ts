@@ -4,26 +4,28 @@
  */
 import type { DocumentManager } from "../document/document";
 import type { HistoryManager } from "../document/history";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
 import type { SelectionController } from "./object-select";
 import type { Camera } from "../render/camera";
 import { newInstanceId, type SymbolTrack } from "../document/symbols";
 import { configStore, generateLayerId, layerStore, STAGE_LAYER_ID } from "../state/index";
-import { isSymbolInstance, readInstance } from "../render/paper/symbol-instances";
+import { encodeLayerContent } from "../vector/content";
+import { translation } from "../vector/kernel";
+import { publishSelection } from "./object-select";
 
 export interface SymbolActionServices {
   documentManager: DocumentManager;
-  paperRenderer: PaperRenderer;
+  renderer: StageRenderer;
   selectionController: SelectionController;
   historyManager: HistoryManager;
   camera: Camera;
 }
 
 /** Active vector layer that can take an instance, or null. */
-export function instanceTargetLayerId(paperRenderer: PaperRenderer): string | null {
+export function instanceTargetLayerId(renderer: StageRenderer): string | null {
   const state = layerStore.get();
   let id = state.activeLayerId;
-  if (id === STAGE_LAYER_ID) id = paperRenderer.getActiveLayerId() ?? id;
+  if (id === STAGE_LAYER_ID) id = renderer.getActiveLayerId() ?? id;
   const layer = state.layers.find((l) => l.id === id);
   if (!layer || layer.kind !== "regular" || layer.locked) return null;
   return layer.id;
@@ -35,30 +37,29 @@ export function instanceTargetLayerId(paperRenderer: PaperRenderer): string | nu
  * become several symbol layers, preserving order. Returns the new symbol id.
  */
 export function convertSelectionToSymbol(services: SymbolActionServices): string | null {
-  const { documentManager, paperRenderer, selectionController, historyManager } = services;
-  const items = selectionController.getSelectedItems().filter((item) => item.parent);
-  if (items.length === 0) return null;
+  const { documentManager, renderer, selectionController, historyManager } = services;
+  if (!renderer.hasSelection()) return null;
   const editing = documentManager.getEditingSymbolId();
   if (editing) {
-    for (const item of items) {
-      if (!isSymbolInstance(item)) continue;
-      const data = readInstance(item);
-      if (data && documentManager.symbolWouldCycle(editing, data.symbol)) return null;
+    for (const inst of renderer.selectionInstances()) {
+      if (documentManager.symbolWouldCycle(editing, inst.symbol)) return null;
     }
   }
-  const bounds = paperRenderer.getCombinedBounds(items);
+  const bounds = renderer.selectionBounds();
   if (!bounds) return null;
-  const origin = { x: bounds.center.x, y: bounds.center.y };
+  const origin = {
+    x: Math.round(bounds.x + bounds.width / 2),
+    y: Math.round(bounds.y + bounds.height / 2),
+  };
 
   // Bucket by layer, bottom → top (layerStore lists stage first, then tracks bottom → top).
   const rank = new Map(layerStore.get().layers.map((l, i) => [l.id, i] as const));
-  const byLayer = new Map<string, paper.Item[]>();
-  for (const item of items) {
-    const layerId = paperRenderer.getLayerIdForPathItem(item);
-    if (!layerId) continue;
-    const bucket = byLayer.get(layerId);
-    if (bucket) bucket.push(item);
-    else byLayer.set(layerId, [item]);
+  const parts = renderer.selectionSnapshot();
+  const byLayer = new Map<string, typeof parts>();
+  for (const part of parts) {
+    const bucket = byLayer.get(part.layerId);
+    if (bucket) bucket.push(part);
+    else byLayer.set(part.layerId, [part]);
   }
   if (byLayer.size === 0) return null;
   const layerIds = [...byLayer.keys()].sort(
@@ -66,10 +67,27 @@ export function convertSelectionToSymbol(services: SymbolActionServices): string
   );
 
   const tracks: SymbolTrack[] = layerIds.map((layerId) => {
-    const json = paperRenderer.exportItemsAsLayerJSON(byLayer.get(layerId)!, origin);
+    const bucket = byLayer.get(layerId)!;
+    // Merge all parts on this layer into one map, re-based on `origin`.
+    const merged = bucket[0].art;
+    for (let i = 1; i < bucket.length; i++) {
+      merged.stamp(bucket[i].art);
+      bucket[i].art.free();
+    }
+    merged.transform(translation(-origin.x, -origin.y));
+    const instances = bucket.flatMap((p) => p.instances).map((inst) => ({
+      ...inst,
+      matrix: [...inst.matrix] as typeof inst.matrix,
+    }));
+    for (const inst of instances) {
+      inst.matrix[4] -= origin.x;
+      inst.matrix[5] -= origin.y;
+    }
+    const json = encodeLayerContent(merged, instances);
+    merged.free();
     return {
       id: generateLayerId(),
-      name: paperRenderer.getLayerName(layerId) ?? "Layer 1",
+      name: renderer.getLayerName(layerId) ?? "Layer 1",
       visible: true,
       locked: false,
       kind: "vector",
@@ -78,17 +96,17 @@ export function convertSelectionToSymbol(services: SymbolActionServices): string
   });
   const symbol = documentManager.createSymbol({ tracks, duration: 1, tags: [] });
 
-  // Originals go away (extracted marquee selections already left their holes).
+  // Originals go away (lifting already removed them from their layers).
+  renderer.deleteSelection();
   selectionController.discardSelection();
-  for (const item of items) paperRenderer.deleteItem(item);
 
   const targetLayerId = layerIds[layerIds.length - 1]!;
-  const instance = paperRenderer.addInstanceToLayer(
+  renderer.addInstanceToLayer(
     targetLayerId,
     { symbol: symbol.id, iid: newInstanceId(), mode: "loop", firstFrame: 0 },
     origin,
   );
-  if (instance) selectionController.setSelectedItems([instance]);
+  selectionController.selectAtWorld(origin);
   historyManager.snapshot();
   return symbol.id;
 }
@@ -102,12 +120,12 @@ export function placeSymbolInstance(
   symbolId: string,
   world?: { x: number; y: number },
 ): boolean {
-  const { documentManager, paperRenderer, selectionController, historyManager, camera } =
+  const { documentManager, renderer, selectionController, historyManager, camera } =
     services;
   if (!documentManager.getSymbol(symbolId)) return false;
   const editing = documentManager.getEditingSymbolId();
   if (editing && documentManager.symbolWouldCycle(editing, symbolId)) return false;
-  const layerId = instanceTargetLayerId(paperRenderer);
+  const layerId = instanceTargetLayerId(renderer);
   if (!layerId) return false;
 
   let point = world;
@@ -117,13 +135,14 @@ export function placeSymbolInstance(
     point = { x: Math.round(c.x), y: Math.round(c.y) };
   }
   selectionController.placeSelection();
-  const instance = paperRenderer.addInstanceToLayer(
+  const instance = renderer.addInstanceToLayer(
     layerId,
     { symbol: symbolId, iid: newInstanceId(), mode: "loop", firstFrame: 0 },
     point,
   );
   if (!instance) return false;
-  selectionController.setSelectedItems([instance]);
+  selectionController.selectAtWorld(point);
+  publishSelection(renderer);
   historyManager.snapshot();
   return true;
 }

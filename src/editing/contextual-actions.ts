@@ -1,18 +1,17 @@
 /** Contextual selection/edit actions (duplicate, flip, simplify, vertex modes). */
 import type { ToolId } from "../tools/registry";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
 import type { SelectionController } from "./object-select";
 import type { DirectSelectController } from "./direct-select";
 import type { HistoryManager } from "../document/history";
 import type { Camera } from "../render/camera";
-import { setSelectionClipboardFromItems } from "./selection-clipboard";
-import { pathItemsOf } from "../state/index";
-import { isSymbolInstance } from "../render/paper/symbol-instances";
+import { setSelectionClipboardFromSelection } from "./selection-clipboard";
+import type { SelectionState } from "../state/index";
 
 export interface ContextualActionContext {
   tool: ToolId;
-  /** Selected merge shapes and symbol instances. */
-  items: paper.Item[];
+  /** Select-tool selection summary. */
+  selection: SelectionState;
   pickedAnchorCount: number;
 }
 
@@ -29,7 +28,7 @@ interface ContextualActionDef extends ContextualActionMenuItem {
 }
 
 export interface ContextualActionServices {
-  paperRenderer: PaperRenderer;
+  renderer: StageRenderer;
   selectionController: SelectionController;
   directSelectController: DirectSelectController;
   historyManager: HistoryManager;
@@ -44,17 +43,16 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "copy",
     name: "Copy",
-    isAvailable: (context) =>
-      context.tool === "select" && pathItemsOf(context.items).length > 0,
-    run: (context) => {
-      setSelectionClipboardFromItems(pathItemsOf(context.items));
+    isAvailable: (context) => context.tool === "select" && context.selection.count > 0,
+    run: (_context, services) => {
+      setSelectionClipboardFromSelection(services.renderer);
     },
   },
   {
     id: "duplicate",
     name: "Duplicate",
     draggable: true,
-    isAvailable: (context) => context.tool === "select" && context.items.length > 0,
+    isAvailable: (context) => context.tool === "select" && context.selection.count > 0,
     run: (_context, services) => {
       const worldOffset = 10 / services.camera.zoom;
       services.selectionController.duplicateSelection(worldOffset, worldOffset);
@@ -63,7 +61,7 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "extract-layer",
     name: "Extract Layer",
-    isAvailable: (context) => context.tool === "select" && context.items.length > 0,
+    isAvailable: (context) => context.tool === "select" && context.selection.count > 0,
     run: (_context, services) => {
       services.moveSelectionToNewLayer();
     },
@@ -71,7 +69,7 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "to-symbol",
     name: "To Symbol",
-    isAvailable: (context) => context.tool === "select" && context.items.length > 0,
+    isAvailable: (context) => context.tool === "select" && context.selection.count > 0,
     run: (_context, services) => {
       services.convertSelectionToSymbol();
     },
@@ -80,7 +78,9 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
     id: "symbol-settings",
     name: "Symbol…",
     isAvailable: (context) =>
-      context.tool === "select" && context.items.length === 1 && isSymbolInstance(context.items[0]),
+      context.tool === "select"
+      && context.selection.count === 1
+      && context.selection.instances.length === 1,
     run: (_context, services) => {
       services.openSymbolInstancePopup();
     },
@@ -88,42 +88,37 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
   {
     id: "flip-horizontal",
     name: "Flip Horizontal",
-    isAvailable: (context) => context.tool === "select" && context.items.length > 0,
-    run: (context, services) => {
-      services.paperRenderer.flipItemsInViewSpace(context.items, "horizontal");
-      services.selectionController.markSelectionAsModified();
+    isAvailable: (context) => context.tool === "select" && context.selection.count > 0,
+    run: (_context, services) => {
+      services.selectionController.flipSelection("horizontal");
     },
   },
   {
     id: "flip-vertical",
     name: "Flip Vertical",
-    isAvailable: (context) => context.tool === "select" && context.items.length > 0,
-    run: (context, services) => {
-      services.paperRenderer.flipItemsInViewSpace(context.items, "vertical");
-      services.selectionController.markSelectionAsModified();
+    isAvailable: (context) => context.tool === "select" && context.selection.count > 0,
+    run: (_context, services) => {
+      services.selectionController.flipSelection("vertical");
     },
   },
   {
     id: "delete",
     name: "Delete",
     negative: true,
-    isAvailable: (context) => context.tool === "select" && context.items.length > 0,
-    run: (context, services) => {
-      for (const item of context.items) {
-        services.paperRenderer.deleteItem(item);
-      }
+    isAvailable: (context) => context.tool === "select" && context.selection.count > 0,
+    run: (_context, services) => {
       services.directSelectController.clearSelection();
-      services.selectionController.discardSelection();
+      services.selectionController.deleteSelection();
       services.closePanel();
-      services.historyManager.snapshot();
     },
   },
   {
     id: "simplify",
     name: "Simplify",
+    draggable: true,
     isAvailable: (context) =>
       context.tool === "direct-select"
-      && context.items.length > 0
+      && context.selection.count > 0
       && context.pickedAnchorCount > 0,
     run: (_context, services) => {
       services.directSelectController.simplifyPickedVertices();
@@ -134,55 +129,10 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
     name: "Smooth",
     isAvailable: (context) =>
       context.tool === "direct-select"
-      && context.items.length > 0
+      && context.selection.count > 0
       && context.pickedAnchorCount > 0,
     run: (_context, services) => {
       services.directSelectController.smoothPickedVertices();
-    },
-  },
-  {
-    id: "round-corners",
-    name: "Round Corners",
-    draggable: true,
-    isAvailable: (context) =>
-      context.tool === "direct-select"
-      && context.items.length > 0
-      && context.pickedAnchorCount > 0,
-    run: (_context, services) => {
-      services.directSelectController.roundPickedCorners();
-    },
-  },
-  {
-    id: "point-sharp",
-    name: "Sharp",
-    isAvailable: (context) =>
-      context.tool === "direct-select"
-      && context.items.length > 0
-      && context.pickedAnchorCount > 0,
-    run: (_context, services) => {
-      services.directSelectController.setPickedAnchorHandleMode("sharp");
-    },
-  },
-  {
-    id: "point-mirrored",
-    name: "Mirrored",
-    isAvailable: (context) =>
-      context.tool === "direct-select"
-      && context.items.length > 0
-      && context.pickedAnchorCount > 0,
-    run: (_context, services) => {
-      services.directSelectController.setPickedAnchorHandleMode("mirrored");
-    },
-  },
-  {
-    id: "point-independent",
-    name: "Independent",
-    isAvailable: (context) =>
-      context.tool === "direct-select"
-      && context.items.length > 0
-      && context.pickedAnchorCount > 0,
-    run: (_context, services) => {
-      services.directSelectController.setPickedAnchorHandleMode("independent");
     },
   },
   {
@@ -191,7 +141,7 @@ const CONTEXTUAL_ACTION_REGISTRY: ContextualActionDef[] = [
     negative: true,
     isAvailable: (context) =>
       context.tool === "direct-select"
-      && context.items.length > 0
+      && context.selection.count > 0
       && context.pickedAnchorCount > 0,
     run: (_context, services) => {
       services.directSelectController.deletePickedVertices();

@@ -3,14 +3,15 @@
  * Drag sets baseline + font size; release starts typing; finish traces
  * glyphs to paths via potrace (same vector merge as brush/shape).
  */
-import paper from "paper";
 import type { Point, CanvasConfig } from "../geometry/types";
 import { pixelToViewport } from "../geometry/coords";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
+import { mulAffine, type Px, type Ring } from "../vector/kernel";
+import { parseSvgRings } from "../vector/rings";
+import { commitPaint, viewportToWorldAffine, worldRings } from "../vector/paint";
 import type { ChromeLayer } from "../render/chrome-layer";
 import type { Camera } from "../render/camera";
 import { setSnapGuides, snapScreenPoint, type SnapGuide } from "./snap";
-import { extractPaths } from "../render/paper/svg-io";
 import {
   configStore,
   colorStore,
@@ -29,7 +30,7 @@ type Phase = "idle" | "dragging" | "typing";
 
 export class ArtisticTextController {
   private config: CanvasConfig;
-  private paperRenderer: PaperRenderer;
+  private renderer: StageRenderer;
   private camera: Camera;
   private chromeLayer: ChromeLayer;
   private tracer: Tracer;
@@ -42,7 +43,7 @@ export class ArtisticTextController {
   private baselineScreen: Point | null = null;
   private fontSize = DEFAULT_FONT_PX;
   private text = "";
-  private insideClip: paper.PathItem | null | undefined = undefined;
+  private insideClip: Px | null | undefined = undefined;
   private caretOn = true;
   private caretTimer: ReturnType<typeof setInterval> | null = null;
   private committing = false;
@@ -50,12 +51,12 @@ export class ArtisticTextController {
   private readonly input = document.createElement("textarea");
 
   constructor(
-    paperRenderer: PaperRenderer,
+    renderer: StageRenderer,
     camera: Camera,
     chromeLayer: ChromeLayer,
     tracer: Tracer,
   ) {
-    this.paperRenderer = paperRenderer;
+    this.renderer = renderer;
     this.camera = camera;
     this.chromeLayer = chromeLayer;
     this.tracer = tracer;
@@ -251,9 +252,9 @@ export class ArtisticTextController {
     this.text = "";
 
     if (this.paintMode() === "inside") {
-      this.insideClip = this.paperRenderer.hitToClipPathItem(
-        this.paperRenderer.hitTest(screen),
-      );
+      const w = this.camera.screenToWorld(screen.x, screen.y);
+      const hit = this.renderer.hitTest(w, "active");
+      this.insideClip = hit && hit.kind === "face" ? w : null;
     } else {
       this.insideClip = undefined;
     }
@@ -310,19 +311,11 @@ export class ArtisticTextController {
     this.chromeLayer.clear();
 
     try {
-      const path = await this.traceTextToPath(text, fontFamily, fontSize, baseline);
-      if (!path) return;
-
-      const color = colorStore.get();
-      if (paint === "subtract") {
-        await this.paperRenderer.subtractShape(path);
-        this.onSnapshot?.();
-      } else if (paint === "inside") {
-        await this.paperRenderer.addShapeIntersectClip(path, color, clip ?? null);
-        this.onSnapshot?.();
-      } else {
-        this.paperRenderer.addShape(path, color);
-      }
+      const screenRings = await this.traceTextToPath(text, fontFamily, fontSize, baseline);
+      if (!screenRings) return;
+      const rings = worldRings(screenRings, viewportToWorldAffine(this.camera));
+      const changed = commitPaint(this.renderer, rings, paint, colorStore.get(), clip ?? null);
+      if (changed) this.onSnapshot?.();
     } catch (error) {
       console.error("Artistic text commit failed:", error);
     } finally {
@@ -335,7 +328,7 @@ export class ArtisticTextController {
     fontFamily: string,
     fontSize: number,
     baseline: Point,
-  ): Promise<paper.PathItem | null> {
+  ): Promise<Ring[] | null> {
     const measure = document.createElement("canvas").getContext("2d");
     if (!measure) return null;
     measure.font = cssFont(fontSize, fontFamily);
@@ -385,43 +378,12 @@ export class ArtisticTextController {
     const svg = await this.tracer.trace(canvas);
     if (!svg) return null;
 
-    const imported = paper.project.importSVG(svg) as paper.Item | null;
-    if (!imported) return null;
-
-    const paths = extractPaths(imported);
-    if (
-      imported.parent &&
-      !(imported instanceof paper.Path) &&
-      !(imported instanceof paper.CompoundPath)
-    ) {
-      imported.remove();
-    }
-    if (paths.length === 0) return null;
-
-    for (const p of paths) p.remove();
-
-    let shape: paper.PathItem;
-    if (paths.length === 1) {
-      shape = paths[0];
-    } else {
-      const compound = new paper.CompoundPath({ insert: false });
-      for (const p of paths) {
-        if (p instanceof paper.CompoundPath) {
-          for (const child of [...p.children]) compound.addChild(child);
-          p.remove();
-        } else {
-          compound.addChild(p);
-        }
-      }
-      shape = compound;
-    }
-
     // Canvas px → screen px, then place so first baseline matches drag origin.
-    shape.scale(1 / RENDER_SCALE, new paper.Point(0, 0));
     const screenLeft = baseline.x - pad;
     const screenTop = baseline.y - ascent - pad;
-    shape.translate(new paper.Point(screenLeft, screenTop));
-    return shape;
+    const xf = mulAffine([1, 0, 0, 1, screenLeft, screenTop], [1 / RENDER_SCALE, 0, 0, 1 / RENDER_SCALE, 0, 0]);
+    const rings = parseSvgRings(svg, xf);
+    return rings.length > 0 ? rings : null;
   }
 
   private fontFamily(): string {
@@ -440,12 +402,7 @@ export class ArtisticTextController {
   }
 
   private snapScreen(point: Point): Point {
-    const snapped = snapScreenPoint(
-      this.toScreen(point),
-      this.camera,
-      this.paperRenderer,
-      new Set(),
-    );
+    const snapped = snapScreenPoint(this.toScreen(point), this.camera, this.renderer);
     this.snapGuides = snapped.guides;
     return snapped.screen;
   }

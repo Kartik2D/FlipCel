@@ -20,7 +20,7 @@
  * 6. CompoundPath uses evenodd; fill only on the parent
  */
 import paper from "paper";
-import { getContainmentPoint } from "../render/paper/path-geometry";
+import { ensurePaperScope, getContainmentPoint } from "../vector/paper-adapter";
 import { matchItemsWithMass } from "./magic-morph-mass";
 import { morphItemSdf } from "./magic-morph-sdf";
 
@@ -1066,6 +1066,7 @@ export function morphLayerJson(
   if (t <= 0) return aJson;
   if (t >= 1) return bJson || aJson;
   const opts: MorphOptions = { ...DEFAULT_MORPH_OPTIONS, ...options };
+  ensurePaperScope();
 
   const layerA = new paper.Layer();
   const layerB = new paper.Layer();

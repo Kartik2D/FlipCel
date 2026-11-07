@@ -8,7 +8,7 @@
  * 4. Apply bakes each lasso along its own chart
  */
 import type { Point, CanvasConfig } from "../geometry/types";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
 import type { Camera } from "../render/camera";
 import type { ChromeLayer } from "../render/chrome-layer";
 import type { DocumentManager } from "../document/document";
@@ -17,11 +17,21 @@ import {
   configStore,
   toolSettingsStore,
   selectionStore,
+  EMPTY_SELECTION,
   magicMoveUiStore,
   layerStore,
-  isPathItem,
-  pathItemsOf,
 } from "../state/index";
+import {
+  IDENTITY,
+  mulAffine,
+  rotateAbout,
+  scaleAbout,
+  translation,
+  type Affine,
+  type Px,
+  type VectorLayer,
+} from "../vector/kernel";
+import { cloneInstance, encodeLayerContent, mergeContents, type PlacedInstance } from "../vector/content";
 import { pixelToViewport } from "../geometry/coords";
 import { MarqueeTracker } from "./marquee";
 import {
@@ -44,11 +54,45 @@ interface MagicMoveSettings {
   orient: "fixed" | "direction";
 }
 
+/** Artwork carved out of one layer (world coordinates). */
+interface CarvedPart {
+  layerId: string;
+  art: VectorLayer;
+  instances: PlacedInstance[];
+}
+
 /** One lasso selection + its timing chart, sharing a chrome color. */
 interface MagicMoveGroup {
   color: string;
-  items: paper.PathItem[];
+  parts: CarvedPart[];
   chartStrokesWorldPts: Point[][];
+}
+
+function freeParts(parts: CarvedPart[]): void {
+  for (const p of parts) p.art.free();
+}
+
+/** World-space pose transform about `center`. */
+function poseAffine(
+  center: Px,
+  pose: { moveCenterTo?: Px; delta?: Px; rotateDeg: number; scale: number },
+): Affine {
+  let m: Affine = IDENTITY;
+  if (pose.scale !== 1) m = mulAffine(scaleAbout(pose.scale, pose.scale, center), m);
+  if (pose.rotateDeg !== 0) m = mulAffine(rotateAbout(pose.rotateDeg, center), m);
+  if (pose.moveCenterTo) m = mulAffine(translation(pose.moveCenterTo.x - center.x, pose.moveCenterTo.y - center.y), m);
+  else if (pose.delta) m = mulAffine(translation(pose.delta.x, pose.delta.y), m);
+  return m;
+}
+
+/** Content string for a carved part under `m` (fresh instance ids are not needed: originals were removed). */
+function posedContent(part: CarvedPart, m: Affine): string {
+  const art = part.art.clone();
+  art.transform(m);
+  const instances = part.instances.map((i) => ({ ...cloneInstance(i), matrix: mulAffine(m, i.matrix) }));
+  const json = encodeLayerContent(art, instances);
+  art.free();
+  return json;
 }
 
 const GROUP_COLORS = [
@@ -231,7 +275,7 @@ function scaleAtFrame(
 
 export class MagicMoveController {
   private config: CanvasConfig;
-  private paperRenderer: PaperRenderer;
+  private renderer: StageRenderer;
   private camera: Camera;
   private chromeLayer: ChromeLayer;
   private chromeCtx: CanvasRenderingContext2D;
@@ -240,8 +284,6 @@ export class MagicMoveController {
 
   private phase: Phase = "select";
   private groups: MagicMoveGroup[] = [];
-  private pendingExtractionSnapshot: Map<string, paper.Item[]> | null =
-    null;
   private selectionNeedsPlacement = false;
 
   private marquee = new MarqueeTracker();
@@ -249,11 +291,11 @@ export class MagicMoveController {
   private liveChartStroke: Point[] | null = null;
 
   constructor(
-    paperRenderer: PaperRenderer,
+    renderer: StageRenderer,
     camera: Camera,
     chromeLayer: ChromeLayer,
   ) {
-    this.paperRenderer = paperRenderer;
+    this.renderer = renderer;
     this.camera = camera;
     this.chromeLayer = chromeLayer;
     this.chromeCtx = chromeLayer.getContext();
@@ -276,16 +318,18 @@ export class MagicMoveController {
     this.historyManager = hm;
   }
 
-  private liveItems(group: MagicMoveGroup): paper.PathItem[] {
-    return group.items.filter((item) => item.parent);
+  private liveParts(group: MagicMoveGroup): CarvedPart[] {
+    return group.parts.filter((p) => !p.art.isEmpty() || p.instances.length > 0);
   }
 
-  private allLiveItems(): paper.PathItem[] {
-    const out: paper.PathItem[] = [];
-    for (const group of this.groups) {
-      out.push(...this.liveItems(group));
-    }
+  private allLiveParts(): CarvedPart[] {
+    const out: CarvedPart[] = [];
+    for (const group of this.groups) out.push(...this.liveParts(group));
     return out;
+  }
+
+  private partsForOutline(parts: CarvedPart[]) {
+    return parts.map((p) => ({ base: p.art, instances: p.instances, xf: IDENTITY }));
   }
 
   private activeGroup(): MagicMoveGroup | null {
@@ -293,11 +337,21 @@ export class MagicMoveController {
   }
 
   private syncSelectionStore(): void {
-    selectionStore.set({ items: [...this.allLiveItems()] });
+    const parts = this.allLiveParts();
+    selectionStore.set(
+      parts.length === 0
+        ? EMPTY_SELECTION
+        : {
+            count: parts.length,
+            hasShapes: parts.some((p) => !p.art.isEmpty()),
+            instances: parts.flatMap((p) => p.instances),
+            layerIds: [...new Set(parts.map((p) => p.layerId))],
+          },
+    );
   }
 
   hasSelection(): boolean {
-    return this.allLiveItems().length > 0;
+    return this.allLiveParts().length > 0;
   }
 
   hasTransientUI(): boolean {
@@ -310,7 +364,7 @@ export class MagicMoveController {
   }
 
   private groupChartOk(group: MagicMoveGroup, divisions: number): boolean {
-    if (this.liveItems(group).length === 0) return false;
+    if (this.liveParts(group).length === 0) return false;
     const strokes: ChartStroke[] = group.chartStrokesWorldPts.map((points) => ({
       points,
     }));
@@ -320,7 +374,7 @@ export class MagicMoveController {
   canApply(): boolean {
     if (this.phase !== "chart" || this.groups.length === 0) return false;
     const settings = this.readSettings();
-    const withItems = this.groups.filter((g) => this.liveItems(g).length > 0);
+    const withItems = this.groups.filter((g) => this.liveParts(g).length > 0);
     if (withItems.length === 0) return false;
     return withItems.every((g) => this.groupChartOk(g, settings.divisions));
   }
@@ -371,12 +425,15 @@ export class MagicMoveController {
       maxY = Math.max(maxY, sy);
     };
 
-    const sel = this.paperRenderer.getSelectionFrameScreenBounds(
-      this.allLiveItems(),
-    );
-    if (sel) {
-      includeScreen(sel.x, sel.y);
-      includeScreen(sel.x + sel.width, sel.y + sel.height);
+    const wb = this.renderer.partsBounds(this.partsForOutline(this.allLiveParts()));
+    if (wb) {
+      const corners = [
+        this.camera.worldToScreen(wb.x, wb.y),
+        this.camera.worldToScreen(wb.x + wb.width, wb.y),
+        this.camera.worldToScreen(wb.x, wb.y + wb.height),
+        this.camera.worldToScreen(wb.x + wb.width, wb.y + wb.height),
+      ];
+      for (const c of corners) includeScreen(c.x, c.y);
     }
 
     const includeViewportStroke = (pts: Point[]) => {
@@ -566,9 +623,9 @@ export class MagicMoveController {
     }
     if (this.groups.length > 1) {
       // Drop the newest lasso group; keep earlier ones.
-      this.groups.pop();
+      const dropped = this.groups.pop()!;
+      this.restoreParts(dropped.parts);
       this.selectionNeedsPlacement = this.groups.length > 0;
-      this.pendingExtractionSnapshot = null;
       this.syncSelectionStore();
       this.drawUI();
       this.publishUi();
@@ -580,6 +637,14 @@ export class MagicMoveController {
       this.phase = "select";
       this.drawUI();
       this.publishUi();
+    }
+  }
+
+  /** Put carved parts back on their layers (cancel / leave tool). */
+  private restoreParts(parts: CarvedPart[]): void {
+    for (const p of parts) {
+      this.renderer.stampOntoLayer(p.layerId, p.art, p.instances);
+      p.art.free();
     }
   }
 
@@ -622,7 +687,7 @@ export class MagicMoveController {
     this.documentManager.commitDirtyLayerContent();
 
     const settings = this.readSettings();
-    const bakeGroups = this.groups.filter((g) => this.liveItems(g).length > 0);
+    const bakeGroups = this.groups.filter((g) => this.liveParts(g).length > 0);
     if (bakeGroups.length === 0) {
       return { ok: false, error: "Lasso a selection first." };
     }
@@ -631,15 +696,8 @@ export class MagicMoveController {
     type BakeResult = {
       layerIds: string[];
       lastFrame: number;
-      positionMode: "off" | "relative" | "exact";
-      finalSample: { x: number; y: number };
-      finalRelativeDelta: { x: number; y: number };
-      finalRotateDeg: number;
-      finalScale: number;
-      childIndicesByLayer: Map<string, number[]>;
-      frame1JsonByLayer: Map<string, string>;
-      frame1SizeByLayer: Map<string, number>;
-      scaleEnabled: boolean;
+      finalPose: Affine;
+      parts: CarvedPart[];
     };
     const bakeResults: BakeResult[] = [];
 
@@ -675,7 +733,6 @@ export class MagicMoveController {
     }
 
     this.selectionNeedsPlacement = false;
-    this.pendingExtractionSnapshot = null;
     this.resetGroups();
     this.phase = "select";
 
@@ -695,26 +752,13 @@ export class MagicMoveController {
     settings: MagicMoveSettings,
     options: { publish: boolean },
   ):
-    | {
-        ok: true;
-        layerIds: string[];
-        lastFrame: number;
-        positionMode: "off" | "relative" | "exact";
-        finalSample: { x: number; y: number };
-        finalRelativeDelta: { x: number; y: number };
-        finalRotateDeg: number;
-        finalScale: number;
-        childIndicesByLayer: Map<string, number[]>;
-        frame1JsonByLayer: Map<string, string>;
-        frame1SizeByLayer: Map<string, number>;
-        scaleEnabled: boolean;
-      }
+    | { ok: true; layerIds: string[]; lastFrame: number; finalPose: Affine; parts: CarvedPart[] }
     | { ok: false; error: string } {
     if (!this.documentManager) {
       return { ok: false, error: "Magic Move is not wired up." };
     }
 
-    const selectedItems = this.liveItems(group);
+    const parts = this.liveParts(group);
     const strokes: ChartStroke[] = group.chartStrokesWorldPts.map((points) => ({
       points,
     }));
@@ -741,10 +785,11 @@ export class MagicMoveController {
       this.documentManager.setDuration(lastFrame + 1);
     }
 
-    const bounds = this.paperRenderer.getCombinedBounds(selectedItems);
+    const bounds = this.renderer.partsBounds(this.partsForOutline(parts));
     if (!bounds) {
       return { ok: false, error: "Selection has no bounds." };
     }
+    const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
 
     const sample0 = samples[0];
     const relativeDeltas = samples.map((s) => ({
@@ -760,168 +805,75 @@ export class MagicMoveController {
       ? scalesForSamples(samples, tickScales, settings.divisions)
       : samples.map(() => 1);
 
-    const byLayer = new Map<string, paper.PathItem[]>();
-    for (const item of selectedItems) {
-      if (!item.parent) continue;
-      const layerId = this.paperRenderer.getLayerIdForPathItem(item);
-      if (!layerId) continue;
-      const list = byLayer.get(layerId) ?? [];
-      list.push(item);
-      byLayer.set(layerId, list);
-    }
-    if (byLayer.size === 0) {
-      return { ok: false, error: "Selection is no longer on a layer." };
-    }
-
-    const layerIds = [...byLayer.keys()];
+    const layerIds = [...new Set(parts.map((p) => p.layerId))];
     const firstFrame = frames[0] ?? startFrame;
     const positionMode = settings.position;
-    const exactPosition = positionMode === "exact";
-    const positionEnabled = positionMode !== "off";
     const sampleFrameSet = new Set(frames);
-    const childIndicesByLayer = new Map<string, number[]>();
 
-    const layerBake = new Map<
-      string,
-      {
-        childIndices: number[];
-        /** Artwork at the first Magic Move sample (scale baseline). */
-        frame1Json: string;
-        sourceJson: string;
-        existingInRange: Map<number, string>;
-        frame1Size: number;
-      }
-    >();
-
-    for (const layerId of layerIds) {
-      const layerItems = byLayer.get(layerId) ?? [];
-      const childIndices =
-        this.paperRenderer.getEmfBucketChildIndices(layerItems);
-      childIndicesByLayer.set(layerId, childIndices);
-      const sourceJson = this.documentManager.getLayerContentAtFrame(
-        layerId,
-        startFrame,
-      );
-      const existingInRange = new Map<number, string>();
-      for (const frame of this.documentManager.getKeyframeFramesInRange(
-        layerId,
-        firstFrame,
-        lastFrame,
-      )) {
-        const exact = this.documentManager.getExactKeyframeContentAtFrame(
-          layerId,
-          frame,
-        );
-        if (exact !== null) existingInRange.set(frame, exact);
-      }
-      const frame1Json =
-        existingInRange.get(firstFrame) ??
-        this.documentManager.getExactKeyframeContentAtFrame(
-          layerId,
-          firstFrame,
-        ) ??
-        sourceJson;
-      const frame1Size = this.paperRenderer.getLayerJsonChildrenSize(
-        frame1Json,
-        childIndices,
-      );
-      layerBake.set(layerId, {
-        childIndices,
-        frame1Json,
-        sourceJson,
-        existingInRange,
-        frame1Size,
-      });
-    }
-
-    const positionedJson = (
-      baseJson: string,
-      childIndices: number[],
+    const poseAt = (
       sample: { x: number; y: number },
       relativeDelta: { x: number; y: number },
       rotateDeg: number,
-      tickScale: number,
-      frame1Size: number,
-    ): string => {
-      if (!baseJson) return "";
-      if (childIndices.length === 0) return baseJson;
-      // Tick scale is relative to frame 1: targetSize = frame1Size * tickScale.
-      // Convert to a multiplier on whatever artwork we're transforming now.
-      let scale = tickScale;
-      if (scaleEnabled && frame1Size > 1e-6) {
-        const currentSize = this.paperRenderer.getLayerJsonChildrenSize(
-          baseJson,
-          childIndices,
-        );
-        if (currentSize > 1e-6) {
-          scale = (frame1Size * tickScale) / currentSize;
-        }
+      scale: number,
+    ): Affine =>
+      poseAffine(center, {
+        moveCenterTo: positionMode === "exact" ? sample : undefined,
+        delta: positionMode === "relative" ? relativeDelta : undefined,
+        rotateDeg,
+        scale,
+      });
+
+    // Source content (group artwork already carved out) and existing
+    // keyframes in range, per layer.
+    const sourceByLayer = new Map<string, string>();
+    const existingByLayer = new Map<string, Map<number, string>>();
+    for (const layerId of layerIds) {
+      sourceByLayer.set(layerId, this.documentManager.getLayerContentAtFrame(layerId, startFrame));
+      const existing = new Map<number, string>();
+      for (const frame of this.documentManager.getKeyframeFramesInRange(layerId, firstFrame, lastFrame)) {
+        const exact = this.documentManager.getExactKeyframeContentAtFrame(layerId, frame);
+        if (exact !== null) existing.set(frame, exact);
       }
-      return this.paperRenderer.transformLayerJsonChildren(
-        baseJson,
-        childIndices,
-        !positionEnabled
-          ? { rotateDeg, scale }
-          : exactPosition
-            ? { moveCenterTo: sample, rotateDeg, scale }
-            : { delta: relativeDelta, rotateDeg, scale },
-      );
+      existingByLayer.set(layerId, existing);
+    }
+
+    const writePose = (frame: number, m: Affine) => {
+      for (const layerId of layerIds) {
+        const existing = existingByLayer.get(layerId)!.get(frame);
+        let json = existing !== undefined ? existing : (sourceByLayer.get(layerId) ?? "");
+        for (const part of parts) {
+          if (part.layerId !== layerId) continue;
+          json = mergeContents(json, posedContent(part, m));
+        }
+        this.documentManager!.writeLayerContentAtFrame(layerId, frame, json, { publish: false });
+      }
     };
 
     for (let i = 0; i < samples.length; i++) {
-      const sample = samples[i];
-      const frame = frames[i];
-
-      for (const layerId of layerIds) {
-        const bake = layerBake.get(layerId)!;
-        // Scale is always relative to frame 1 artwork. With scale on, bake from
-        // frame 1 content so later ticks don't compound off other keyframes.
-        // Position-only (scale off) still preserves per-frame existing art.
-        const existing = bake.existingInRange.get(frame);
-        const baseJson = scaleEnabled
-          ? bake.frame1Json
-          : existing !== undefined
-            ? existing
-            : bake.sourceJson;
-        const json = positionedJson(
-          baseJson,
-          bake.childIndices,
-          sample,
-          relativeDeltas[i],
-          orientRotations[i] ?? 0,
-          sampleScales[i] ?? 1,
-          bake.frame1Size,
-        );
-        this.documentManager.writeLayerContentAtFrame(layerId, frame, json, {
-          publish: false,
-        });
-      }
+      writePose(frames[i], poseAt(samples[i], relativeDeltas[i], orientRotations[i] ?? 0, sampleScales[i] ?? 1));
     }
 
+    // Existing keyframes between samples keep their art and get the
+    // interpolated pose of this group.
     for (const layerId of layerIds) {
-      const bake = layerBake.get(layerId)!;
-      for (const [frame, existing] of bake.existingInRange) {
+      for (const frame of existingByLayer.get(layerId)!.keys()) {
         if (sampleFrameSet.has(frame)) continue;
         if (frame < firstFrame || frame > lastFrame) continue;
         const sample = sampleAtFrame(frame, frames, samples);
-        const relativeDelta = {
-          x: sample.x - sample0.x,
-          y: sample.y - sample0.y,
-        };
-        const tickScale = scaleAtFrame(frame, frames, sampleScales);
-        const baseJson = scaleEnabled ? bake.frame1Json : existing;
-        const json = positionedJson(
-          baseJson,
-          bake.childIndices,
+        const relativeDelta = { x: sample.x - sample0.x, y: sample.y - sample0.y };
+        const m = poseAt(
           sample,
           relativeDelta,
           rotationAtFrame(frame, frames, orientRotations),
-          tickScale,
-          bake.frame1Size,
+          scaleAtFrame(frame, frames, sampleScales),
         );
-        this.documentManager.writeLayerContentAtFrame(layerId, frame, json, {
-          publish: false,
-        });
+        const existing = existingByLayer.get(layerId)!.get(frame)!;
+        let json = existing;
+        for (const part of parts) {
+          if (part.layerId !== layerId) continue;
+          json = mergeContents(json, posedContent(part, m));
+        }
+        this.documentManager.writeLayerContentAtFrame(layerId, frame, json, { publish: false });
       }
     }
 
@@ -937,41 +889,23 @@ export class MagicMoveController {
       ok: true,
       layerIds,
       lastFrame,
-      positionMode,
-      finalSample: samples[lastIdx] ?? sample0,
-      finalRelativeDelta: relativeDeltas[lastIdx] ?? { x: 0, y: 0 },
-      finalRotateDeg: orientRotations[lastIdx] ?? 0,
-      finalScale: sampleScales[lastIdx] ?? 1,
-      childIndicesByLayer,
-      frame1JsonByLayer: new Map(
-        [...layerBake.entries()].map(([id, b]) => [id, b.frame1Json]),
+      finalPose: poseAt(
+        samples[lastIdx] ?? sample0,
+        relativeDeltas[lastIdx] ?? { x: 0, y: 0 },
+        orientRotations[lastIdx] ?? 0,
+        sampleScales[lastIdx] ?? 1,
       ),
-      frame1SizeByLayer: new Map(
-        [...layerBake.entries()].map(([id, b]) => [id, b.frame1Size]),
-      ),
-      scaleEnabled,
+      parts,
     };
   }
 
   /**
-   * Keep a shorter lasso’s final pose through `throughFrame`: extend the last
-   * sample’s hold, and patch any later keyframes (e.g. from a longer lasso on
-   * the same layer) so this group’s shapes stay put.
+   * Keep a shorter lasso's final pose through `throughFrame`: extend the last
+   * sample's hold, and patch any later keyframes (e.g. from a longer lasso on
+   * the same layer) so this group's shapes stay put.
    */
   private holdGroupFinalPoseThrough(
-    result: {
-      layerIds: string[];
-      lastFrame: number;
-      positionMode: "off" | "relative" | "exact";
-      finalSample: { x: number; y: number };
-      finalRelativeDelta: { x: number; y: number };
-      finalRotateDeg: number;
-      finalScale: number;
-      childIndicesByLayer: Map<string, number[]>;
-      frame1JsonByLayer: Map<string, string>;
-      frame1SizeByLayer: Map<string, number>;
-      scaleEnabled: boolean;
-    },
+    result: { layerIds: string[]; lastFrame: number; finalPose: Affine; parts: CarvedPart[] },
     throughFrame: number,
   ): void {
     if (!this.documentManager) return;
@@ -984,55 +918,20 @@ export class MagicMoveController {
         { publish: false },
       );
 
-      const childIndices = result.childIndicesByLayer.get(layerId) ?? [];
-      if (childIndices.length === 0) continue;
-
       const laterKeys = this.documentManager.getKeyframeFramesInRange(
         layerId,
         result.lastFrame + 1,
         throughFrame,
       );
       for (const frame of laterKeys) {
-        const existing =
-          this.documentManager.getExactKeyframeContentAtFrame(layerId, frame);
-        if (existing === null || !existing) continue;
-        const frame1Json = result.frame1JsonByLayer.get(layerId) ?? existing;
-        const frame1Size = result.frame1SizeByLayer.get(layerId) ?? 0;
-        const baseJson = result.scaleEnabled ? frame1Json : existing;
-        let scale = result.finalScale;
-        if (result.scaleEnabled && frame1Size > 1e-6) {
-          const currentSize = this.paperRenderer.getLayerJsonChildrenSize(
-            baseJson,
-            childIndices,
-          );
-          if (currentSize > 1e-6) {
-            scale = (frame1Size * result.finalScale) / currentSize;
-          }
+        const existing = this.documentManager.getExactKeyframeContentAtFrame(layerId, frame);
+        if (existing === null) continue;
+        let json = existing;
+        for (const part of result.parts) {
+          if (part.layerId !== layerId) continue;
+          json = mergeContents(json, posedContent(part, result.finalPose));
         }
-        const positionEnabled = result.positionMode !== "off";
-        const json = this.paperRenderer.transformLayerJsonChildren(
-          baseJson,
-          childIndices,
-          !positionEnabled
-            ? {
-                rotateDeg: result.finalRotateDeg,
-                scale,
-              }
-            : result.positionMode === "exact"
-              ? {
-                  moveCenterTo: result.finalSample,
-                  rotateDeg: result.finalRotateDeg,
-                  scale,
-                }
-              : {
-                  delta: result.finalRelativeDelta,
-                  rotateDeg: result.finalRotateDeg,
-                  scale,
-                },
-        );
-        this.documentManager.writeLayerContentAtFrame(layerId, frame, json, {
-          publish: false,
-        });
+        this.documentManager.writeLayerContentAtFrame(layerId, frame, json, { publish: false });
       }
     }
   }
@@ -1046,13 +945,9 @@ export class MagicMoveController {
     const nextColor = groupColorAt(this.groups.length);
 
     for (const group of this.groups) {
-      const items = this.liveItems(group);
-      if (items.length > 0) {
-        this.paperRenderer.drawAccentSelectionOutline(
-          items,
-          this.chromeCtx,
-          group.color,
-        );
+      const parts = this.liveParts(group);
+      if (parts.length > 0) {
+        this.renderer.strokePartsOutline(this.chromeCtx, this.partsForOutline(parts), group.color);
       }
       for (const stroke of group.chartStrokesWorldPts) {
         this.chromeLayer.drawChartStroke(
@@ -1132,26 +1027,42 @@ export class MagicMoveController {
   // ============================================================
 
   private beginGroupFromLasso(lassoViewportPts: Point[]): void {
-    // Commit prior group carves before cutting a new selection.
-    if (this.selectionNeedsPlacement && this.hasSelection()) {
-      this.placeSelection();
-      this.documentManager?.commitDirtyLayerContent();
+    // Earlier groups stay carved until apply / cancel; the document only
+    // sees the carve once we commit dirty layers right before baking.
+    const scope = this.readSettings().scope;
+    const poly = lassoViewportPts.map((p) => {
+      const w = this.camera.screenToWorld(p.x, p.y);
+      return { x: w.x, y: w.y };
+    });
+    const emf = this.documentManager?.isEditMultipleFrames() ?? false;
+    this.renderer.liftInPolygon(poly, scope, emf);
+    // Magic Move bakes faces; symbol instances are left alone (v1).
+    const snapshot = this.renderer.selectionSnapshot();
+    const parts: CarvedPart[] = [];
+    for (const part of snapshot) {
+      if (part.art.isEmpty()) {
+        part.art.free();
+        continue;
+      }
+      parts.push({ layerId: part.layerId, art: part.art, instances: [] });
+    }
+    const liftedInstances = this.renderer.selectionInstances();
+    if (liftedInstances.length > 0) {
+      // Put instances back; only shapes are animated.
+      const byLayer = new Map<string, PlacedInstance[]>();
+      for (const p of this.renderer.getSelection()) {
+        if (p.instances.length === 0) continue;
+        byLayer.set(p.layerId, [...(byLayer.get(p.layerId) ?? []), ...p.instances.map((i) => ({ ...cloneInstance(i), matrix: mulAffine(p.xf, i.matrix) }))]);
+      }
+      this.renderer.deleteSelection();
+      for (const [layerId, insts] of byLayer) {
+        for (const inst of insts) this.renderer.addInstanceToLayer(layerId, inst, { x: 0, y: 0 }, inst.matrix, inst.pivot);
+      }
+    } else {
+      this.renderer.deleteSelection();
     }
 
-    const scope = this.readSettings().scope;
-    this.pendingExtractionSnapshot =
-      this.paperRenderer.captureSelectableLayersSnapshot(scope);
-    // Magic Move bakes path geometry; symbol instances are left alone (v1).
-    const items = pathItemsOf(
-      this.paperRenderer.extractSelectionFromScreenLasso(
-        lassoViewportPts,
-        scope,
-        this.activeFrameItemFilter(),
-      ),
-    );
-
-    if (items.length === 0) {
-      this.pendingExtractionSnapshot = null;
+    if (parts.length === 0) {
       if (this.groups.length === 0) this.phase = "select";
       this.syncSelectionStore();
       return;
@@ -1161,48 +1072,35 @@ export class MagicMoveController {
 
     this.groups.push({
       color,
-      items,
+      parts,
       chartStrokesWorldPts: [],
     });
     this.selectionNeedsPlacement = true;
     this.phase = "chart";
 
-    const layerId = this.paperRenderer.getTopmostSelectedLayerId(items);
+    const layerId = this.topmostLayerId(parts.map((p) => p.layerId));
     if (layerId) {
-      this.paperRenderer.setActiveLayer(layerId);
+      this.renderer.setActiveLayer(layerId);
       layerStore.update((s) => ({ ...s, activeLayerId: layerId }));
     }
     this.syncSelectionStore();
   }
 
-  private resetGroups(): void {
-    this.groups = [];
-    this.selectionNeedsPlacement = false;
-    this.pendingExtractionSnapshot = null;
-    this.liveChartStroke = null;
-    selectionStore.set({ items: [] });
+  private topmostLayerId(ids: string[]): string | null {
+    const order = this.renderer.getLayerIds();
+    let best: string | null = null;
+    for (const id of ids) {
+      if (best === null || order.indexOf(id) > order.indexOf(best)) best = id;
+    }
+    return best;
   }
 
-  /**
-   * While EMF is on, Magic Move may only lasso the active (playhead) frame’s
-   * content — across all layers. Held content covering the playhead counts.
-   */
-  private activeFrameItemFilter():
-    | ((item: paper.Item) => boolean)
-    | undefined {
-    const dm = this.documentManager;
-    const emf = dm?.isEditMultipleFrames() ?? false;
-    const playhead = dm?.getCurrentFrame() ?? 0;
-    return (item) => {
-      if (!isPathItem(item)) return false;
-      if (!emf || !dm) return true;
-      const layerId = this.paperRenderer.getLayerIdForPathItem(item);
-      if (!layerId) return false;
-      const tag = this.paperRenderer.getEmfKeyframeFrame(item) ?? playhead;
-      if (tag === playhead) return true;
-      const covering = dm.getCoveringKeyframeFrame(layerId, playhead);
-      return covering !== null && tag === covering;
-    };
+  private resetGroups(): void {
+    for (const g of this.groups) freeParts(g.parts);
+    this.groups = [];
+    this.selectionNeedsPlacement = false;
+    this.liveChartStroke = null;
+    selectionStore.set(EMPTY_SELECTION);
   }
 
   private readSettings(): MagicMoveSettings {
@@ -1239,20 +1137,16 @@ export class MagicMoveController {
     });
   }
 
+  /** Leaving without applying: artwork goes back where it was. */
   private placeSelection(): void {
-    for (const item of this.allLiveItems()) {
-      if (item.parent) this.paperRenderer.placeSelection(item);
+    for (const g of this.groups) {
+      this.restoreParts(g.parts);
+      g.parts = [];
     }
     this.selectionNeedsPlacement = false;
-    this.pendingExtractionSnapshot = null;
   }
 
   private revertPendingSelection(): void {
-    if (!this.pendingExtractionSnapshot) return;
-    this.paperRenderer.restoreSelectableLayersSnapshot(
-      this.pendingExtractionSnapshot,
-    );
-    this.pendingExtractionSnapshot = null;
-    this.selectionNeedsPlacement = false;
+    this.placeSelection();
   }
 }

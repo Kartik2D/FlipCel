@@ -1,65 +1,65 @@
 /**
  * Magnet Controller
  *
- * Soft-drag brush. On pointer down, every segment anchor and bezier handle tip
- * on the active layer whose screen-space position falls within the brush radius
- * is captured with a distance-based falloff weight (smooth raised cosine: 1 at
- * center, 0 at the edge). Each pointer move translates those points by the
- * pointer's world delta scaled by their individual weights.
+ * Soft-drag brush over the active layer's kernel map. On pointer down, every
+ * vertex and every curved edge's control point whose screen position falls
+ * within the brush radius is captured with a raised-cosine falloff weight
+ * (1 at center, 0 at the edge). Each pointer move translates those points by
+ * the pointer's world delta scaled by their weights, through the kernel's
+ * `moveVertex` / `curveEdge` so the planar map stays valid.
  *
- * Anchors and handle tips are weighted independently from their own screen
- * positions, so curves deform with the field instead of leaving stale handle
- * directions behind (a common “weird curve” failure mode).
- *
- * Unlike direct-select there is no on-screen vertex display; the only visible
- * feedback is the brush ring owned by FeedbackLayer.
+ * There is no on-screen vertex display; the only visible feedback is the
+ * brush ring owned by FeedbackLayer.
  */
 import type { Point, CanvasConfig } from "../geometry/types";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
 import type { Camera } from "../render/camera";
 import { configStore, modifiersStore, toolSettingsStore } from "../state/index";
-import paper from "paper";
 import { pixelToViewport } from "../geometry/coords";
 import { isConstrainMoveModifierHeld } from "../input/shortcuts";
 import { constrainAxisScreenDelta } from "./transform-gizmo";
+import type { KernelEdge, Px, VectorLayer } from "../vector/kernel";
 
-interface CapturedAnchor {
-  item: paper.PathItem;
-  path: paper.Path;
-  segment: paper.Segment;
-  /** Smooth falloff weight in [0, 1]; 1 at pointer center, 0 at radius. */
+interface CapturedVertex {
+  /** Current position (as last handed to the kernel). */
+  at: Px;
   weight: number;
 }
 
-interface CapturedHandle {
-  item: paper.PathItem;
-  path: paper.Path;
-  segment: paper.Segment;
-  side: "in" | "out";
-  /** Falloff from the handle tip’s screen position. */
+interface CapturedCtrl {
+  /** Edge endpoints: kept in sync with vertex moves. */
+  a: Px;
+  b: Px;
+  ctrl: Px;
   weight: number;
+}
+
+const EPS = 1e-6;
+
+function samePoint(p: Px, q: Px): boolean {
+  return Math.abs(p.x - q.x) < EPS && Math.abs(p.y - q.y) < EPS;
 }
 
 export class MagnetController {
   private config: CanvasConfig;
-  private paperRenderer: PaperRenderer;
+  private renderer: StageRenderer;
   private camera: Camera;
   private onSnapshot?: () => void;
   private onLiveEditStart?: () => void;
-  private onReconcile?: (items: paper.PathItem[]) => void;
 
   /** Brush diameter in viewport/screen pixels. */
   private size = 120;
 
-  private capturedAnchors: CapturedAnchor[] = [];
-  private capturedHandles: CapturedHandle[] = [];
-  private affectedItems: Set<paper.PathItem> = new Set();
+  private art: VectorLayer | null = null;
+  private layerId: string | null = null;
+  private vertices: CapturedVertex[] = [];
+  private ctrls: CapturedCtrl[] = [];
   private lastWorldPoint: Point | null = null;
   private didMove = false;
   private isActive = false;
 
-  constructor(paperRenderer: PaperRenderer, camera: Camera) {
-    this.paperRenderer = paperRenderer;
+  constructor(renderer: StageRenderer, camera: Camera) {
+    this.renderer = renderer;
     this.camera = camera;
     this.config = configStore.get();
     configStore.subscribe((config) => {
@@ -72,9 +72,7 @@ export class MagnetController {
         this.size = magnet.size;
       }
     };
-    applyMagnetSettings(
-      toolSettingsStore.get() as unknown as Record<string, unknown>,
-    );
+    applyMagnetSettings(toolSettingsStore.get() as unknown as Record<string, unknown>);
     toolSettingsStore.subscribe((settings) => {
       applyMagnetSettings(settings as unknown as Record<string, unknown>);
     });
@@ -86,12 +84,6 @@ export class MagnetController {
 
   setLiveEditStartCallback(callback: () => void): void {
     this.onLiveEditStart = callback;
-  }
-
-  setReconcileCallback(
-    callback: (items: paper.PathItem[]) => void,
-  ): void {
-    this.onReconcile = callback;
   }
 
   /** Current brush diameter in viewport/screen pixels. */
@@ -114,12 +106,13 @@ export class MagnetController {
     const radius = this.size / 2;
     const r2 = radius * radius;
 
-    this.capturedAnchors = [];
-    this.capturedHandles = [];
-    this.affectedItems = new Set();
+    this.vertices = [];
+    this.ctrls = [];
+    this.layerId = this.renderer.getActiveLayerId();
+    this.art = this.renderer.activeArt();
 
-    const weightAt = (worldX: number, worldY: number): number | null => {
-      const screen = this.camera.worldToScreen(worldX, worldY);
+    const weightAt = (p: Px): number | null => {
+      const screen = this.camera.worldToScreen(p.x, p.y);
       const dx = screen.x - viewportPoint.x;
       const dy = screen.y - viewportPoint.y;
       const d2 = dx * dx + dy * dy;
@@ -129,50 +122,16 @@ export class MagnetController {
       return 0.5 * (1 + Math.cos(Math.PI * t));
     };
 
-    for (const item of this.paperRenderer.getAllPaths()) {
-      const paths = this.paperRenderer.getChildPaths(item);
-      for (const path of paths) {
-        for (const seg of path.segments) {
-          const anchorWeight = weightAt(seg.point.x, seg.point.y);
-          if (anchorWeight !== null) {
-            this.capturedAnchors.push({
-              item,
-              path,
-              segment: seg,
-              weight: anchorWeight,
-            });
-            this.affectedItems.add(item);
-          }
-
-          if (!seg.handleIn.isZero()) {
-            const tip = seg.point.add(seg.handleIn);
-            const handleWeight = weightAt(tip.x, tip.y);
-            if (handleWeight !== null) {
-              this.capturedHandles.push({
-                item,
-                path,
-                segment: seg,
-                side: "in",
-                weight: handleWeight,
-              });
-              this.affectedItems.add(item);
-            }
-          }
-
-          if (!seg.handleOut.isZero()) {
-            const tip = seg.point.add(seg.handleOut);
-            const handleWeight = weightAt(tip.x, tip.y);
-            if (handleWeight !== null) {
-              this.capturedHandles.push({
-                item,
-                path,
-                segment: seg,
-                side: "out",
-                weight: handleWeight,
-              });
-              this.affectedItems.add(item);
-            }
-          }
+    if (this.art) {
+      for (const v of this.art.vertices()) {
+        const w = weightAt(v);
+        if (w !== null && w > 0) this.vertices.push({ at: { ...v }, weight: w });
+      }
+      for (const e of this.art.edges()) {
+        if (!e.ctrl) continue;
+        const w = weightAt(e.ctrl);
+        if (w !== null && w > 0) {
+          this.ctrls.push({ a: { ...e.a }, b: { ...e.b }, ctrl: { ...e.ctrl }, weight: w });
         }
       }
     }
@@ -185,7 +144,8 @@ export class MagnetController {
   handleMove(point: Point): void {
     if (
       !this.isActive ||
-      (this.capturedAnchors.length === 0 && this.capturedHandles.length === 0) ||
+      !this.art ||
+      (this.vertices.length === 0 && this.ctrls.length === 0) ||
       !this.lastWorldPoint
     ) {
       return;
@@ -193,10 +153,7 @@ export class MagnetController {
     const viewportPoint = pixelToViewport(point, this.config);
     const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
 
-    const screenLast = this.camera.worldToScreen(
-      this.lastWorldPoint.x,
-      this.lastWorldPoint.y,
-    );
+    const screenLast = this.camera.worldToScreen(this.lastWorldPoint.x, this.lastWorldPoint.y);
     const screenCur = this.camera.worldToScreen(worldPoint.x, worldPoint.y);
     const constrained = constrainAxisScreenDelta(
       screenCur.x - screenLast.x,
@@ -213,45 +170,38 @@ export class MagnetController {
     const dy = constrainedWorld.y - this.lastWorldPoint.y;
     if (dx === 0 && dy === 0) return;
 
-    // Anchor weights for the same segment — used so handle tips move by their
-    // own weight in absolute space after the anchor has already moved.
-    const anchorWeightBySegment = new Map<paper.Segment, number>();
-    for (const c of this.capturedAnchors) {
-      if (c.weight <= 0) continue;
-      anchorWeightBySegment.set(c.segment, c.weight);
-      c.segment.point = new paper.Point(
-        c.segment.point.x + dx * c.weight,
-        c.segment.point.y + dy * c.weight,
-      );
-    }
+    const art = this.art;
+    let changed = false;
 
-    for (const c of this.capturedHandles) {
-      if (c.weight <= 0) continue;
-      const anchorWeight = anchorWeightBySegment.get(c.segment) ?? 0;
-      // Absolute tip should move by handleWeight * delta. Moving the anchor
-      // already carried the tip by anchorWeight * delta, so adjust relative
-      // handles by the difference.
-      const extra = c.weight - anchorWeight;
-      if (extra === 0) continue;
-      const hx = dx * extra;
-      const hy = dy * extra;
-      if (c.side === "in") {
-        c.segment.handleIn = new paper.Point(
-          c.segment.handleIn.x + hx,
-          c.segment.handleIn.y + hy,
-        );
-      } else {
-        c.segment.handleOut = new paper.Point(
-          c.segment.handleOut.x + hx,
-          c.segment.handleOut.y + hy,
-        );
+    for (const v of this.vertices) {
+      const to = { x: v.at.x + dx * v.weight, y: v.at.y + dy * v.weight };
+      if (art.moveVertex(v.at, to)) {
+        // Keep captured edge endpoints in sync so curveEdge can still find them.
+        for (const c of this.ctrls) {
+          if (samePoint(c.a, v.at)) c.a = { ...to };
+          if (samePoint(c.b, v.at)) c.b = { ...to };
+        }
+        v.at = to;
+        changed = true;
       }
     }
 
-    paper.view.update();
+    for (const c of this.ctrls) {
+      const to = { x: c.ctrl.x + dx * c.weight, y: c.ctrl.y + dy * c.weight };
+      const edge: KernelEdge = { a: c.a, b: c.b, ctrl: c.ctrl };
+      if (art.curveEdge(edge, to)) {
+        c.ctrl = to;
+        changed = true;
+      }
+    }
+
+    if (changed && this.layerId) {
+      this.renderer.markLayerDirty(this.layerId);
+      this.renderer.requestRender();
+    }
 
     this.lastWorldPoint = { x: constrainedWorld.x, y: constrainedWorld.y };
-    if (!this.didMove) {
+    if (changed && !this.didMove) {
       this.didMove = true;
       this.onLiveEditStart?.();
     }
@@ -259,15 +209,7 @@ export class MagnetController {
 
   handleEnd(): void {
     if (!this.isActive) return;
-
-    if (this.didMove && this.onReconcile) {
-      const affected = [...this.affectedItems].filter((item) => item.parent);
-      if (affected.length > 0) this.onReconcile(affected);
-    }
-    if (this.didMove) {
-      this.onSnapshot?.();
-    }
-
+    if (this.didMove) this.onSnapshot?.();
     this.resetStroke();
   }
 
@@ -276,9 +218,10 @@ export class MagnetController {
   }
 
   private resetStroke(): void {
-    this.capturedAnchors = [];
-    this.capturedHandles = [];
-    this.affectedItems = new Set();
+    this.vertices = [];
+    this.ctrls = [];
+    this.art = null;
+    this.layerId = null;
     this.lastWorldPoint = null;
     this.didMove = false;
     this.isActive = false;

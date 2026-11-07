@@ -7,8 +7,11 @@
     "dev": "vite --host",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "check:merge": "node --import ./scripts/ts-resolve.mjs src/render/paper/merge-layer.check.ts",
-    "check:symbols": "node --import ./scripts/ts-resolve.mjs src/render/paper/symbol-instances.check.ts"
+    "build:kernel": "wasm-pack build kernel/wasm --release --target web --out-dir ../../src/vector/pkg --out-name kernel && rm -f src/vector/pkg/.gitignore",
+    "test:kernel": "cargo test --manifest-path kernel/Cargo.toml -p dcel",
+    "check:kernel": "node --import ./scripts/ts-resolve.mjs src/vector/kernel.check.ts",
+    "check:symbols": "node --import ./scripts/ts-resolve.mjs src/vector/symbols.check.ts",
+    "check:refit": "node --import ./scripts/ts-resolve.mjs src/editing/direct-select/refit.check.ts"
   },
   "dependencies": {
     "@visioncortex/vtracer": "^1.0.0-alpha.4",

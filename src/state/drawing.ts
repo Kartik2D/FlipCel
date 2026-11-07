@@ -4,6 +4,7 @@
 import type { CanvasConfig, Modifiers } from "../geometry/types";
 import { type ToolId, type AllToolSettings, buildDefaultSettings } from "../tools/registry";
 import { Store } from "./store";
+import type { PlacedInstance } from "../vector/content";
 
 export const colorStore = new Store<string>("#037ffc");
 export const prevColorStore = new Store<string>("#000000");
@@ -39,35 +40,24 @@ export function paintSizeScale(zoom: number, toolId: ToolId = toolStore.get()): 
   return Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
 }
 
-/**
- * Select-tool selection: merge shapes (`Path` / `CompoundPath`) and symbol
- * instance groups. Path-only consumers filter with `pathItemsOf`.
- */
+/** Select-tool selection summary (renderer owns the floating geometry). */
 export interface SelectionState {
-  items: paper.Item[];
+  /** Lifted vector parts (non-empty) + instances. */
+  count: number;
+  /** At least one lifted part has fill geometry. */
+  hasShapes: boolean;
+  instances: PlacedInstance[];
+  layerIds: string[];
 }
 
-export const selectionStore = new Store<SelectionState>({
-  items: [],
-});
+export const EMPTY_SELECTION: SelectionState = {
+  count: 0,
+  hasShapes: false,
+  instances: [],
+  layerIds: [],
+};
 
-export function isPathItem(item: paper.Item | null | undefined): item is paper.PathItem {
-  return !!item && (item.className === "Path" || item.className === "CompoundPath");
-}
-
-/** Merge shapes in a selection (symbol instances excluded). */
-export function pathItemsOf(items: readonly paper.Item[]): paper.PathItem[] {
-  return items.filter(isPathItem);
-}
-
-/** Symbol instance groups in a selection. */
-export function instanceItemsOf(items: readonly paper.Item[]): paper.Group[] {
-  return items.filter(
-    (item): item is paper.Group =>
-      item.className === "Group" &&
-      typeof (item.data as { symbol?: unknown } | null)?.symbol === "string",
-  );
-}
+export const selectionStore = new Store<SelectionState>(EMPTY_SELECTION);
 
 /** Magic Move panel: Apply availability + floating Apply popup. */
 export interface MagicMoveUiState {

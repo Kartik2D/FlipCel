@@ -2,11 +2,10 @@
  * Godot 4 spritesheet + AnimatedSprite2D scene export.
  *
  * Builds stage- (or crop-) sized cell grid PNGs and a .tscn with SpriteFrames
- * (one animation per frame tag). Offscreen PaperScope — does not seek the
+ * (one animation per frame tag). Offscreen render — does not seek the
  * live playhead.
  */
-import paper from "paper";
-import { hydrateLayer } from "../render/paper/symbol-instances";
+import { isImageContent } from "../vector/content";
 import type { DocumentManager, FrameTag } from "../document/document";
 import type { StageSettings } from "../state/document-ui";
 import {
@@ -159,8 +158,8 @@ function uniqueFileBases(names: string[]): string[] {
 }
 
 /**
- * Rasterize one timeline frame into a stage-sized canvas.
- * Uses an isolated PaperScope so the live project is untouched.
+ * Rasterize one timeline frame into a stage-sized canvas via the stage
+ * renderer's offscreen path (live view untouched).
  */
 function rasterizeFrame(
   documentManager: DocumentManager,
@@ -171,37 +170,7 @@ function rasterizeFrame(
 ): HTMLCanvasElement {
   const w = Math.max(1, Math.round(stage.width));
   const h = Math.max(1, Math.round(stage.height));
-
-  const paperCanvas = document.createElement("canvas");
-  // Paper.js HiDPI multiplies backing-store size by devicePixelRatio unless
-  // hidpi is off. Without this, copying w×h pixels crops to the top-left of
-  // the stage (centered art lands on cell edges / looks "sliced").
-  paperCanvas.setAttribute("hidpi", "off");
-  paperCanvas.width = w;
-  paperCanvas.height = h;
-
-  const mainScope = paper;
-  const scope = new paper.PaperScope();
-  try {
-    scope.setup(paperCanvas);
-    scope.view.viewSize = new scope.Size(w, h);
-    scope.view.matrix.reset();
-    scope.settings.applyMatrix = true;
-
-    scope.project.clear();
-    for (const layerId of trackIds) {
-      const json = documentManager.getLayerContentAtFrame(layerId, frame);
-      if (!json) continue;
-      const layer = new scope.Layer();
-      layer.importJSON(json);
-      // Symbol instances are stored as empty groups: resolve their artwork.
-      const start = documentManager.getCoveringKeyframeFrame(layerId, frame) ?? frame;
-      hydrateLayer(layer, documentManager.symbolResolver, frame - start, scope);
-    }
-    scope.view.update();
-  } finally {
-    mainScope.activate();
-  }
+  const renderer = documentManager.getRenderer();
 
   const out = document.createElement("canvas");
   out.width = w;
@@ -212,12 +181,13 @@ function rasterizeFrame(
     ctx.fillStyle = stage.color || "#ffffff";
     ctx.fillRect(0, 0, w, h);
   }
-  ctx.drawImage(paperCanvas, 0, 0, w, h);
-
-  scope.activate();
-  scope.project.clear();
-  mainScope.activate();
-
+  for (const layerId of trackIds) {
+    const json = documentManager.getLayerContentAtFrame(layerId, frame);
+    if (!json || isImageContent(json)) continue;
+    const start = documentManager.getCoveringKeyframeFrame(layerId, frame) ?? frame;
+    renderer.drawContent(ctx, json, [1, 0, 0, 1, 0, 0], frame - start, 0, 1);
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   return out;
 }
 

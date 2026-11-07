@@ -76,7 +76,7 @@ export class HistoryManager {
     if (this.isRestoring) return;
 
     // Pull the live editing state into the document model first:
-    // layer list changes, then dirty Paper layer content.
+    // layer list changes, then dirty stage layer content.
     const layerState = layerStore.get();
     this.doc.syncFromLayerStore(layerState);
     this.doc.commitDirtyLayerContent();

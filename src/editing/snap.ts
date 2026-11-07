@@ -7,7 +7,8 @@
  * for single-point drags (vertex, handle, create-points, shape corner).
  */
 import type { Point } from "../geometry/types";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
+import type { KernelEdge } from "../vector/kernel";
 import {
   snapStore,
   viewOverlayStore,
@@ -17,7 +18,6 @@ import {
 } from "../state/index";
 
 export type { SnapSettings };
-import paper from "paper";
 
 export interface SnapSpace {
   worldToScreen(x: number, y: number): Point;
@@ -77,22 +77,7 @@ export function setSnapGuides(guides: SnapGuide[]): void {
   snapGuidesStore.set(guides);
 }
 
-const NODE_CAP = 64;
 const IGNORE_EPS = 1e-3;
-
-/** Path, compound, or symbol group → leaf paths. */
-function pathsOf(item: paper.Item): paper.Path[] {
-  if (item instanceof paper.Path) return [item];
-  const out: paper.Path[] = [];
-  for (const child of item.children ?? []) out.push(...pathsOf(child));
-  return out;
-}
-
-/** Segment space → project space. Identity for layer paths; instance matrix for symbols. */
-function worldOf(path: paper.Path, local: paper.Point): Point {
-  const g = path.localToGlobal(local);
-  return { x: g.x, y: g.y };
-}
 
 function isIgnored(p: Point, ignore: Point[]): boolean {
   for (const i of ignore) {
@@ -131,26 +116,8 @@ export function sourcesFromBounds(
   };
 }
 
-export function itemNodes(
-  renderer: PaperRenderer,
-  items: paper.PathItem[],
-  cap = NODE_CAP,
-): Point[] {
-  const out: Point[] = [];
-  for (const item of items) {
-    for (const path of renderer.getChildPaths(item)) {
-      for (const seg of path.segments) {
-        out.push({ x: seg.point.x, y: seg.point.y });
-        if (out.length >= cap) return out;
-      }
-    }
-  }
-  return out;
-}
-
 export function collectTargets(
-  renderer: PaperRenderer,
-  excludeIds: Set<number>,
+  renderer: StageRenderer,
   settings: SnapSettings,
   extras: { gridSpacing: number; stageWidth: number; stageHeight: number },
   ignorePoints: Point[] = [],
@@ -158,7 +125,7 @@ export function collectTargets(
   const xs: AxisTarget[] = [];
   const ys: AxisTarget[] = [];
   const points: Point[] = [];
-  const paths: paper.Path[] = [];
+  const edges: KernelEdge[] = [];
 
   const addX = (value: number, lo?: number, hi?: number) => {
     xs.push({ value, lo, hi });
@@ -167,11 +134,10 @@ export function collectTargets(
     ys.push({ value, lo, hi });
   };
 
-  const addGeometry = (item: paper.Item) => {
-    for (const path of pathsOf(item)) {
-      paths.push(path);
-      for (const seg of path.segments) {
-        const p = worldOf(path, seg.point);
+  const addGeometry = (layerId: string) => {
+    for (const e of renderer.snapEdges(layerId)) {
+      edges.push(e);
+      for (const p of [e.a, e.b]) {
         if (isIgnored(p, ignorePoints)) continue;
         points.push(p);
         addX(p.x, p.y, p.y);
@@ -192,13 +158,10 @@ export function collectTargets(
   }
 
   if (settings.bounds || settings.geometry) {
-    for (const item of renderer.getSelectableItems("all")) {
-      if (excludeIds.has(item.id)) {
-        if (settings.selfGeometry && settings.geometry) addGeometry(item);
-        continue;
-      }
+    for (const layerId of renderer.snapLayerIds()) {
       if (settings.bounds) {
-        const b = item.bounds;
+        const b = renderer.getLayerBounds(layerId);
+        if (!b) continue;
         const x0 = b.x;
         const x1 = b.x + b.width;
         const y0 = b.y;
@@ -212,7 +175,7 @@ export function collectTargets(
           addY(y0 + b.height / 2, x0, x1);
         }
       }
-      if (settings.geometry) addGeometry(item);
+      if (settings.geometry) addGeometry(layerId);
     }
   }
 
@@ -222,29 +185,48 @@ export function collectTargets(
     points,
     gridSpacing: settings.grid ? extras.gridSpacing : 0,
     nearestOnPaths:
-      settings.geometry && paths.length > 0
-        ? (p) => nearestOnPaths(paths, p, ignorePoints)
+      settings.geometry && edges.length > 0
+        ? (p) => nearestOnEdges(edges, p, ignorePoints)
         : undefined,
   };
 }
 
-function nearestOnPaths(
-  paths: paper.Path[],
-  p: Point,
-  ignore: Point[] = [],
-): Point | null {
+function nearestOnSegment(a: Point, b: Point, p: Point): Point {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return a;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return { x: a.x + dx * t, y: a.y + dy * t };
+}
+
+function nearestOnEdges(edges: KernelEdge[], p: Point, ignore: Point[] = []): Point | null {
   let best: Point | null = null;
   let bestD = Infinity;
-  const query = new paper.Point(p.x, p.y);
-  for (const path of paths) {
-    const n = path.getNearestPoint(path.globalToLocal(query));
-    if (!n) continue;
-    const w = worldOf(path, n);
-    if (isIgnored(w, ignore)) continue;
+  const consider = (w: Point) => {
+    if (isIgnored(w, ignore)) return;
     const d = (w.x - p.x) * (w.x - p.x) + (w.y - p.y) * (w.y - p.y);
     if (d < bestD) {
       bestD = d;
       best = w;
+    }
+  };
+  for (const e of edges) {
+    if (!e.ctrl) {
+      consider(nearestOnSegment(e.a, e.b, p));
+      continue;
+    }
+    // Quadratic: sample the polyline.
+    let prev = e.a;
+    for (let i = 1; i <= 8; i++) {
+      const t = i / 8;
+      const u = 1 - t;
+      const q = {
+        x: u * u * e.a.x + 2 * u * t * e.ctrl.x + t * t * e.b.x,
+        y: u * u * e.a.y + 2 * u * t * e.ctrl.y + t * t * e.b.y,
+      };
+      consider(nearestOnSegment(prev, q, p));
+      prev = q;
     }
   }
   return best;
@@ -517,8 +499,7 @@ export function snapPoint(
 }
 
 export function collectLiveTargets(
-  renderer: PaperRenderer,
-  excludeIds: Set<number>,
+  renderer: StageRenderer,
   ignorePoints: Point[] = [],
   allowSelf = true,
 ): { settings: SnapSettings; targets: SnapTargets } | null {
@@ -530,7 +511,6 @@ export function collectLiveTargets(
     settings,
     targets: collectTargets(
       renderer,
-      excludeIds,
       allowSelf ? settings : { ...settings, selfGeometry: false },
       {
         gridSpacing: overlay.gridSpacing,
@@ -549,13 +529,12 @@ export function offsetPoints(points: Point[], delta: Point): Point[] {
 export function snapWorldPoint(
   world: Point,
   space: SnapSpace,
-  renderer: PaperRenderer,
-  excludeIds: Set<number>,
+  renderer: StageRenderer,
   lock?: SnapLock,
   ignorePoints: Point[] = [],
   allowSelf = true,
 ): SnapResult {
-  const live = collectLiveTargets(renderer, excludeIds, ignorePoints, allowSelf);
+  const live = collectLiveTargets(renderer, ignorePoints, allowSelf);
   if (!live) return emptySnapResult(world.x, world.y);
   return snapPoint(world, live.targets, space, live.settings, lock);
 }
@@ -564,13 +543,12 @@ export function snapWorldTranslation(
   sources: SnapSource,
   desired: Point,
   space: SnapSpace,
-  renderer: PaperRenderer,
-  excludeIds: Set<number>,
+  renderer: StageRenderer,
   lock?: SnapLock,
   ignorePoints: Point[] = [],
   allowSelf = true,
 ): SnapResult {
-  const live = collectLiveTargets(renderer, excludeIds, ignorePoints, allowSelf);
+  const live = collectLiveTargets(renderer, ignorePoints, allowSelf);
   if (!live) {
     return { x: desired.x, y: desired.y, dx: desired.x, dy: desired.y, guides: [] };
   }
@@ -580,8 +558,7 @@ export function snapWorldTranslation(
 export function snapScreenPoint(
   screen: Point,
   space: SnapSpace,
-  renderer: PaperRenderer,
-  excludeIds: Set<number>,
+  renderer: StageRenderer,
   lock?: SnapLock,
   ignorePoints: Point[] = [],
   allowSelf = true,
@@ -591,7 +568,6 @@ export function snapScreenPoint(
     world,
     space,
     renderer,
-    excludeIds,
     lock,
     ignorePoints,
     allowSelf,

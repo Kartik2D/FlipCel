@@ -1,18 +1,19 @@
 /**
- * Selection Controller
+ * Selection Controller (object select).
  *
- * Manages the selection tool state and interactions.
- * Click a shape or symbol to select it. Drag marquees (rect/lasso).
- * Click-drag on an already selected item moves / transforms it.
+ * Click a face or symbol instance to lift it out of the kernel into the
+ * renderer's floating selection; drag marquees (rect / lasso) lift every
+ * face inside. Dragging a selected item moves it; handles scale / rotate.
+ * Releasing or switching tools stamps the selection back (`placeSelection`).
  * Touch drag before the gesture starts pans.
  */
 import type { Point, CanvasConfig } from "../geometry/types";
 import type {
-  PaperRenderer,
+  StageRenderer,
   SelectLayerScope,
   SelectionHandleId,
   SelectionHandle,
-} from "../render/paper-renderer";
+} from "../render/stage-renderer";
 import type { Camera } from "../render/camera";
 import type { ChromeLayer } from "../render/chrome-layer";
 import {
@@ -28,10 +29,6 @@ import {
 import { pixelToViewport } from "../geometry/coords";
 import { LassoQuickShapeSession } from "../geometry/quick-shape";
 import { MarqueeTracker } from "./marquee";
-import {
-  isSymbolInstance,
-  type SymbolInstanceGroup,
-} from "../render/paper/symbol-instances";
 import {
   isAddToSelectionModifierHeld,
   isConstrainMoveModifierHeld,
@@ -51,6 +48,28 @@ import {
   type SnapGuide,
   type SnapSource,
 } from "./snap";
+import {
+  invertAffine,
+  mulAffine,
+  rotateAbout,
+  scaleAbout,
+  translation,
+  type Affine,
+  type Px,
+} from "../vector/kernel";
+import type { PlacedInstance } from "../vector/content";
+
+/** Publish the renderer's floating selection to the shared store. */
+export function publishSelection(renderer: StageRenderer): void {
+  const parts = renderer.getSelection();
+  const instances = renderer.selectionInstances();
+  selectionStore.set({
+    count: parts.reduce((n, p) => n + (p.base.isEmpty() ? 0 : 1), 0) + instances.length,
+    hasShapes: parts.some((p) => !p.base.isEmpty()),
+    instances,
+    layerIds: [...new Set(parts.map((p) => p.layerId))],
+  });
+}
 
 export class SelectionController {
   /** Ignore sub-pixel jitter: only count drags after this many viewport px from pointer-down. */
@@ -58,15 +77,8 @@ export class SelectionController {
   private dragPointerOrigin: Point | null = null;
   private dragPastThreshold = false;
 
-  /**
-   * Last click that selected a symbol instance. A second press within
-   * `doubleClickWindowMs` / `doubleClickDistanceSq` edits it in place.
-   */
-  private lastShapeClick: {
-    timestampMs: number;
-    point: Point;
-    itemId: number;
-  } | null = null;
+  /** Last click that selected a symbol instance; a second press enters it. */
+  private lastShapeClick: { timestampMs: number; point: Point; iid: string } | null = null;
   private readonly doubleClickWindowMs = 350;
   private readonly doubleClickDistanceSq = 6 * 6;
 
@@ -74,67 +86,42 @@ export class SelectionController {
   private layerScope: SelectLayerScope = "all";
   private hideGizmoWhileMoving = false;
   private lassoQuickShape = new LassoQuickShapeSession();
-  private selectedItems: paper.Item[] = [];
-  private pendingExtractionSnapshot: Map<string, paper.Item[]> | null = null;
   private isDragging = false;
   private dragStartPoint: Point | null = null;
   private lastAppliedWorld: Point = { x: 0, y: 0 };
   private snapSources: SnapSource | null = null;
   private snapGuides: SnapGuide[] = [];
   private didMove = false;
-  private selectionNeedsPlacement = false;
   private config: CanvasConfig;
   private onSnapshot?: () => void;
   private onLiveEditStart?: () => void;
   private onActivateLayer?: (layerId: string) => void;
-  private onEnterInstance?: (instance: SymbolInstanceGroup) => void;
+  private onEnterInstance?: (instance: PlacedInstance, worldMatrix: Affine, layerId: string) => void;
 
-  private paperRenderer: PaperRenderer;
+  private renderer: StageRenderer;
   private camera: Camera;
   private chromeLayer: ChromeLayer;
   private chromeCtx: CanvasRenderingContext2D;
 
-  // Transform handle state
   private handles: SelectionHandle[] = [];
   private marquee = new MarqueeTracker();
   private transformGizmo: TransformGizmoController;
-  /** Symbol instance whose pivot handle is being dragged. */
-  private pivotDragItem: paper.Item | null = null;
-
-  // Current cursor in viewport space (for rotation visual feedback)
+  private pivotDragging = false;
   private lastViewportPoint: Point | null = null;
 
-  constructor(
-    paperRenderer: PaperRenderer,
-    camera: Camera,
-    chromeLayer: ChromeLayer,
-  ) {
-    this.paperRenderer = paperRenderer;
+  constructor(renderer: StageRenderer, camera: Camera, chromeLayer: ChromeLayer) {
+    this.renderer = renderer;
     this.camera = camera;
     this.chromeLayer = chromeLayer;
     this.chromeCtx = chromeLayer.getContext();
     this.transformGizmo = new TransformGizmoController({
-      getScreenBounds: () =>
-        this.paperRenderer.getSelectionFrameScreenBounds(this.selectedItems),
-      getRotatePivotWorld: () => {
-        if (!this.hasSelection()) return null;
-        if (this.selectedItems.length === 1) {
-          const pos = this.selectedItems[0].position;
-          return { x: pos.x, y: pos.y };
-        }
-        const bounds = this.paperRenderer.getCombinedBounds(this.selectedItems);
-        if (!bounds) return null;
-        return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
-      },
+      getScreenBounds: () => this.renderer.selectionScreenBounds(),
+      getRotatePivotWorld: () => this.renderer.selectionPivotWorld(),
       applyScale: (incSX, incSY, worldAnchor) => {
-        for (const item of this.selectedItems) {
-          this.paperRenderer.scalePathInViewSpace(item, incSX, incSY, worldAnchor);
-        }
+        this.renderer.transformSelection(this.viewScale(incSX, incSY, worldAnchor));
       },
       applyRotate: (degrees, worldPivot) => {
-        for (const item of this.selectedItems) {
-          this.paperRenderer.rotatePath(item, degrees, worldPivot);
-        }
+        this.renderer.transformSelection(rotateAbout(degrees, worldPivot));
       },
     });
     this.config = configStore.get();
@@ -160,10 +147,16 @@ export class SelectionController {
     quickShapeHoldMsStore.subscribe(() => this.syncLassoQuickShapePrefs());
   }
 
+  /** Scale about a world anchor along the *screen* axes (camera may be rotated). */
+  private viewScale(sx: number, sy: number, worldAnchor: Px): Affine {
+    const cam = this.camera.getTransformMatrix();
+    const anchorScreen = this.camera.worldToScreen(worldAnchor.x, worldAnchor.y);
+    const inScreen = scaleAbout(sx, sy, anchorScreen);
+    return mulAffine(invertAffine(cam), mulAffine(inScreen, cam));
+  }
+
   private syncLassoQuickShapePrefs(): void {
-    this.lassoQuickShape.setEnabled(
-      quickShapeEnabledStore.get() && this.selectionShape === "lasso",
-    );
+    this.lassoQuickShape.setEnabled(quickShapeEnabledStore.get() && this.selectionShape === "lasso");
     this.lassoQuickShape.setCurveStyle(quickShapeCurveStyleStore.get());
     this.lassoQuickShape.setAllowShapes(quickShapeShapesEnabledStore.get());
     this.lassoQuickShape.setHoldMs(quickShapeHoldMsStore.get());
@@ -183,145 +176,103 @@ export class SelectionController {
   }
 
   /** Double-tap on a selected symbol instance (edit in place). */
-  setEnterInstanceCallback(callback: (instance: SymbolInstanceGroup) => void): void {
+  setEnterInstanceCallback(
+    callback: (instance: PlacedInstance, worldMatrix: Affine, layerId: string) => void,
+  ): void {
     this.onEnterInstance = callback;
   }
 
-  getSelectedItem(): paper.Item | null {
-    return this.selectedItems[0] ?? null;
-  }
-
-  getSelectedItems(): paper.Item[] {
-    return [...this.selectedItems];
-  }
-
-  setSelectedItems(
-    items: paper.Item[],
-    options?: { needsPlacement?: boolean; didMove?: boolean },
-  ): void {
-    this.selectedItems = [...items];
-    this.selectionNeedsPlacement = options?.needsPlacement ?? false;
-    this.didMove = false;
-    if (options?.didMove) this.noteLiveEditStarted();
-    this.handles = [];
-    selectionStore.set({ items: [...this.selectedItems] });
-    this.drawUI();
-  }
-
-  /**
-   * Clone the current selection, rejoin the originals, then select the clones.
-   * Clones are parked off-layer during place so merge can't eat them, and
-   * selectionStore never pulses empty (that cancels the functions-panel drag).
-   */
-  duplicateSelection(offsetX: number, offsetY: number): paper.Item[] {
-    const sources = this.selectedItems.filter((item) => item.parent);
-    if (sources.length === 0) return [];
-
-    const parked: { clone: paper.Item; parent: paper.Item }[] = [];
-    for (const item of sources) {
-      const clone = this.paperRenderer.duplicateItem(item, offsetX, offsetY);
-      if (!clone?.parent) continue;
-      const parent = clone.parent;
-      clone.remove();
-      parked.push({ clone, parent });
-    }
-    if (parked.length === 0) return [];
-
-    if (this.selectionNeedsPlacement || this.didMove) {
-      for (const item of sources) {
-        if (!item.parent) continue;
-        this.paperRenderer.placeSelection(item);
-      }
-      if (this.didMove) this.onSnapshot?.();
-    }
-    this.pendingExtractionSnapshot = null;
-
-    const duplicates: paper.Item[] = [];
-    for (const { clone, parent } of parked) {
-      parent.addChild(clone);
-      duplicates.push(clone);
-    }
-
-    this.selectedItems = duplicates;
-    this.selectionNeedsPlacement = false;
-    this.didMove = false;
-    this.noteLiveEditStarted();
-    this.handles = [];
-    selectionStore.set({ items: [...duplicates] });
-    this.drawUI();
-    return duplicates;
-  }
-
   hasSelection(): boolean {
-    return this.selectedItems.length > 0;
+    return this.renderer.hasSelection();
   }
 
   hasTransientUI(): boolean {
     return this.hasSelection() || this.marquee.isTracking();
   }
 
-  placeSelection(): void {
-    if (this.selectedItems.length > 0 && (this.selectionNeedsPlacement || this.didMove)) {
-      for (const item of this.selectedItems) {
-        if (!item.parent) continue;
-        this.paperRenderer.placeSelection(item);
-      }
-      if (this.didMove) {
-        this.onSnapshot?.();
-      }
-    }
-    this.pendingExtractionSnapshot = null;
-    this.selectedItems = [];
-    this.selectionNeedsPlacement = false;
-    this.didMove = false;
-    this.handles = [];
-    selectionStore.set({ items: [] });
+  getLayerScope(): SelectLayerScope {
+    return this.layerScope;
   }
 
-  /**
-   * Always place a pending extraction / moved selection (never revert), then
-   * clear drag/gizmo chrome. Used when leaving the frame so edits stick.
-   */
+  /** Lift everything on selectable layers. */
+  selectAll(): void {
+    this.placeSelection();
+    this.renderer.liftAll(this.layerScope);
+    this.afterSelectionChanged();
+  }
+
+  /** Select by world point (programmatic; used by contextual actions). */
+  selectAtWorld(world: Px): boolean {
+    this.placeSelection();
+    const hit = this.renderer.liftAt(world, this.layerScope);
+    this.afterSelectionChanged();
+    return !!hit;
+  }
+
+  /** Clone the current selection and select the clones. */
+  duplicateSelection(offsetX: number, offsetY: number): boolean {
+    if (!this.hasSelection()) return false;
+    if (this.didMove) this.onSnapshot?.();
+    this.renderer.duplicateSelection(offsetX, offsetY);
+    this.didMove = false;
+    this.noteLiveEditStarted();
+    this.afterSelectionChanged();
+    return true;
+  }
+
+  /** Mirror the selection about its screen-space center. */
+  flipSelection(axis: "horizontal" | "vertical"): void {
+    const b = this.renderer.selectionBounds();
+    if (!b) return;
+    const center = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    const m = axis === "horizontal" ? this.viewScale(-1, 1, center) : this.viewScale(1, -1, center);
+    this.renderer.transformSelection(m);
+    this.markSelectionAsModified();
+  }
+
+  /** Stamp the selection back; snapshot history if it moved. */
+  placeSelection(): void {
+    if (this.hasSelection()) {
+      this.renderer.placeSelection();
+      if (this.didMove) this.onSnapshot?.();
+    }
+    this.didMove = false;
+    this.handles = [];
+    publishSelection(this.renderer);
+  }
+
+  /** Always place (never revert), then clear drag/gizmo chrome. */
   confirmAndClearSelection(): void {
     this.placeSelection();
-    this.isDragging = false;
-    this.dragStartPoint = null;
-    this.resetDragThreshold();
-    this.lassoQuickShape.reset();
-    this.marquee.reset();
-    this.clearTransformState();
+    this.resetGesture();
     this.drawUI();
   }
 
   clearSelection(): void {
-    if (this.selectionNeedsPlacement && !this.didMove) {
-      this.revertPendingSelection();
-    } else {
-      this.placeSelection();
-    }
-    this.isDragging = false;
-    this.dragStartPoint = null;
-    this.resetDragThreshold();
-    this.lassoQuickShape.reset();
-    this.marquee.reset();
-    this.clearTransformState();
+    this.placeSelection();
+    this.resetGesture();
     this.drawUI();
   }
 
-  discardSelection(): void {
-    this.pendingExtractionSnapshot = null;
-    this.selectedItems = [];
-    this.selectionNeedsPlacement = false;
+  /** Delete the selection outright. */
+  deleteSelection(): boolean {
+    if (!this.hasSelection()) return false;
+    this.renderer.deleteSelection();
     this.didMove = false;
-    this.handles = [];
-    this.isDragging = false;
-    this.dragStartPoint = null;
-    this.resetDragThreshold();
-    this.lassoQuickShape.reset();
-    this.marquee.reset();
+    this.resetGesture();
+    publishSelection(this.renderer);
+    this.drawUI();
+    this.onSnapshot?.();
+    return true;
+  }
+
+  discardSelection(): void {
+    // Content already reloaded by the document: drop floating state.
+    if (this.hasSelection()) this.renderer.placeSelection();
+    this.didMove = false;
+    this.resetGesture();
     this.lastShapeClick = null;
-    this.clearTransformState();
-    selectionStore.set({ items: [] });
+    publishSelection(this.renderer);
     this.drawUI();
   }
 
@@ -334,26 +285,38 @@ export class SelectionController {
   markSelectionAsModified(): void {
     if (!this.hasSelection()) return;
     this.noteLiveEditStarted();
-    selectionStore.set({ items: [...this.selectedItems] });
+    publishSelection(this.renderer);
     this.drawUI();
   }
 
-  /** Keep selection, but drop marquee-revert state (geometry already relocated). */
   releasePendingExtraction(): void {
-    this.pendingExtractionSnapshot = null;
-    this.selectionNeedsPlacement = false;
+    // No pending-extraction state with kernel lifts.
+  }
+
+  private resetGesture(): void {
+    this.isDragging = false;
+    this.dragStartPoint = null;
+    this.resetDragThreshold();
+    this.lassoQuickShape.reset();
+    this.marquee.reset();
+    this.clearTransformState();
+  }
+
+  private afterSelectionChanged(): void {
+    this.handles = [];
+    publishSelection(this.renderer);
+    this.drawUI();
   }
 
   handleStart(point: Point): void {
     const viewportPoint = pixelToViewport(point, this.config);
+    const world = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
 
-    // Check transform handles on existing selection first
     if (this.hasSelection() && this.handles.length > 0) {
       const hitHandle = this.hitTestHandle(viewportPoint);
       if (hitHandle === "pivot") {
-        // Symbol instance pivot: drag relocates the transform origin only.
         this.lastShapeClick = null;
-        this.pivotDragItem = this.selectedItems[0] ?? null;
+        this.pivotDragging = true;
         this.isDragging = true;
         this.dragStartPoint = viewportPoint;
         this.beginDragThreshold(viewportPoint);
@@ -370,44 +333,32 @@ export class SelectionController {
       }
     }
 
-    const initialHitItem = this.paperRenderer.resolveSelectableItem(
-      this.paperRenderer.hitTestSelectable(viewportPoint, this.layerScope),
-    );
-
     // Already-selected shape: click-drag moves the selection.
-    if (initialHitItem && this.isSelectedItem(initialHitItem)) {
-      // Double-tap a selected symbol instance: edit it in place.
-      if (this.onEnterInstance && isSymbolInstance(initialHitItem)) {
+    if (this.hasSelection() && this.renderer.selectionContains(world)) {
+      const single = this.renderer.singleSelectedInstance();
+      if (single && this.onEnterInstance) {
         const now = performance.now();
-        if (this.isDoubleClickOnShape(viewportPoint, initialHitItem.id, now)) {
+        if (this.isDoubleClickOnShape(viewportPoint, single.instance.iid, now)) {
           this.lastShapeClick = null;
-          this.onEnterInstance(initialHitItem);
+          const m = mulAffine(single.part.xf, single.instance.matrix);
+          const layerId = single.part.layerId;
+          this.onEnterInstance(single.instance, m, layerId);
           return;
         }
-        this.lastShapeClick = {
-          timestampMs: now,
-          point: { ...viewportPoint },
-          itemId: initialHitItem.id,
-        };
+        this.lastShapeClick = { timestampMs: now, point: { ...viewportPoint }, iid: single.instance.iid };
       } else {
         this.lastShapeClick = null;
       }
-      this.activateLayerForItem(initialHitItem);
       this.isDragging = true;
       this.dragStartPoint = viewportPoint;
       this.beginDragThreshold(viewportPoint);
       this.didMove = false;
-      this.bringSelectionToFront();
       this.drawUI();
       return;
     }
 
-    if (!initialHitItem) this.lastShapeClick = null;
-
     // Press on empty space or an unselected shape: marquee until release.
     // A tap (no drag) selects on pointer-up. A drag stays a marquee.
-    // Defer placing/clearing the current selection until pointer-up so a tap
-    // outside can deselect without a tiny jitter re-extracting the same shapes.
     this.startMarquee(viewportPoint);
     this.drawUI();
   }
@@ -442,40 +393,22 @@ export class SelectionController {
       return;
     }
 
-    if (this.pivotDragItem) {
-      const snapped = snapScreenPoint(
-        viewportPoint,
-        this.camera,
-        this.paperRenderer,
-        new Set<number>(),
-        undefined,
-        [],
-        false,
-      );
+    if (this.pivotDragging) {
+      const snapped = snapScreenPoint(viewportPoint, this.camera, this.renderer, undefined, [], false);
       this.snapGuides = snapped.guides;
       const world = this.camera.screenToWorld(snapped.screen.x, snapped.screen.y);
-      this.paperRenderer.setInstancePivotWorld(this.pivotDragItem, world);
+      this.renderer.setInstancePivotWorld(world);
       this.noteLiveEditStarted();
     } else if (this.transformGizmo.isTransforming()) {
       let vp = viewportPoint;
       if (this.transformGizmo.getActiveHandle() !== "rotate") {
-        const snapped = snapScreenPoint(
-          viewportPoint,
-          this.camera,
-          this.paperRenderer,
-          this.snapExcludeIds(),
-          undefined,
-          [],
-          false,
-        );
+        const snapped = snapScreenPoint(viewportPoint, this.camera, this.renderer, undefined, [], false);
         vp = snapped.screen;
         this.snapGuides = snapped.guides;
       } else {
         this.snapGuides = [];
       }
-      if (this.transformGizmo.update(vp, this.camera)) {
-        this.noteLiveEditStarted();
-      }
+      if (this.transformGizmo.update(vp, this.camera)) this.noteLiveEditStarted();
     } else {
       this.handleTranslateMove(viewportPoint);
     }
@@ -494,85 +427,56 @@ export class SelectionController {
         this.drawUI();
         return;
       }
+      const add = isAddToSelectionModifierHeld(modifiersStore.get());
       if (this.hasActiveMarquee()) {
-        const add = isAddToSelectionModifierHeld(modifiersStore.get());
-        let kept: paper.Item[] = [];
-        if (add && this.selectedItems.length > 0) {
-          // Commit prior selection but keep survivors so the new extract unions in.
-          if (this.selectionNeedsPlacement || this.didMove) {
-            kept = this.paperRenderer.placeItemsAsSelection(this.selectedItems);
-            this.pendingExtractionSnapshot = null;
-            this.selectionNeedsPlacement = false;
-            this.didMove = false;
-          } else {
-            kept = this.selectedItems.filter((item) => !!item.parent);
-          }
-          this.selectedItems = [];
-          this.handles = [];
+        if (!add) this.placeSelection();
+        else if (this.didMove) {
+          // Commit the moved selection, then keep lifting into it.
+          this.onSnapshot?.();
+          this.didMove = false;
+        }
+        const toWorld = (p: Point) => this.camera.screenToWorld(p.x, p.y);
+        if (this.selectionShape === "lasso") {
+          const poly = lassoPoints.map(toWorld);
+          if (poly.length >= 3) this.renderer.liftInPolygon(poly, this.layerScope);
         } else {
-          // Commit/clear whatever was selected before extracting a new range.
-          this.resolvePendingSelectionForNewGesture();
+          const a = toWorld(marqueeStartPoint);
+          const b = toWorld(marqueeCurrentPoint);
+          const c = toWorld({ x: marqueeCurrentPoint.x, y: marqueeStartPoint.y });
+          const d = toWorld({ x: marqueeStartPoint.x, y: marqueeCurrentPoint.y });
+          this.renderer.liftInPolygon([a, c, b, d], this.layerScope);
         }
-        this.pendingExtractionSnapshot =
-          this.paperRenderer.captureSelectableLayersSnapshot(this.layerScope);
-        const keptIds = new Set(kept.map((item) => item.id));
-        const itemFilter =
-          keptIds.size > 0
-            ? (item: paper.Item) => !keptIds.has(item.id)
-            : undefined;
-        const extracted =
-          this.selectionShape === "lasso"
-            ? this.paperRenderer.extractSelectionFromScreenLasso(
-                lassoPoints,
-                this.layerScope,
-                itemFilter,
-              )
-            : this.paperRenderer.extractSelectionFromScreenRect(
-                marqueeStartPoint,
-                marqueeCurrentPoint,
-                this.layerScope,
-                itemFilter,
-              );
-        const byId = new Map<number, paper.Item>();
-        for (const item of kept) byId.set(item.id, item);
-        for (const item of extracted) byId.set(item.id, item);
-        this.selectedItems = [...byId.values()];
-        this.selectionNeedsPlacement = extracted.length > 0;
-        if (!this.selectionNeedsPlacement) {
-          this.pendingExtractionSnapshot = null;
-        } else if (this.layerScope === "all") {
-          this.activateTopmostSelectedLayer();
-        }
-        selectionStore.set({ items: [...this.selectedItems] });
+        if (this.layerScope === "all") this.activateTopmostSelectedLayer();
+        publishSelection(this.renderer);
       } else {
         // Tap: select the shape or symbol under the pointer. Empty space deselects.
-        // Shift-click adds. A drag never reaches here — that stays a marquee.
-        const hitItem = this.paperRenderer.resolveSelectableItem(
-          this.paperRenderer.hitTestSelectable(marqueeStartPoint, this.layerScope),
-        );
+        const world = this.camera.screenToWorld(marqueeStartPoint.x, marqueeStartPoint.y);
         this.lassoQuickShape.reset();
         this.marquee.reset();
         this.isDragging = false;
         this.dragStartPoint = null;
         this.resetDragThreshold();
         this.clearTransformState();
-        const add = isAddToSelectionModifierHeld(modifiersStore.get());
-        if (hitItem) {
-          this.activateLayerForItem(hitItem);
-          if (add) this.addItemToSelection(hitItem);
-          else {
-            this.resolvePendingSelectionForNewGesture();
-            this.setSelectedItems([hitItem]);
+        const probe = this.renderer.hitTest(world, this.layerScope);
+        if (probe) {
+          if (!add) this.placeSelection();
+          else if (this.didMove) {
+            this.onSnapshot?.();
+            this.didMove = false;
           }
-          if (this.onEnterInstance && isSymbolInstance(hitItem)) {
+          const hit = this.renderer.liftAt(world, this.layerScope);
+          if (hit) this.onActivateLayer?.(hit.layerId);
+          if (hit?.instance && this.onEnterInstance) {
             this.lastShapeClick = {
               timestampMs: performance.now(),
               point: { ...marqueeStartPoint },
-              itemId: hitItem.id,
+              iid: hit.instance.iid,
             };
           } else {
             this.lastShapeClick = null;
           }
+          this.handles = [];
+          publishSelection(this.renderer);
           this.drawUI();
         } else if (!add) {
           this.clearSelection();
@@ -599,23 +503,13 @@ export class SelectionController {
   }
 
   handleCancel(): void {
-    if (this.selectionNeedsPlacement) {
-      this.revertPendingSelection();
-    }
-    this.isDragging = false;
-    this.dragStartPoint = null;
-    this.resetDragThreshold();
-    this.lassoQuickShape.reset();
-    this.marquee.reset();
-    this.clearTransformState();
+    this.resetGesture();
     this.drawUI();
   }
 
   drawUI(): void {
     this.chromeLayer.clear();
 
-    // While marqueeing, hide the prior selection chrome so a tap-outside
-    // deselect doesn't flash the old frame beside the new marquee.
     if (this.hasSelection() && !this.marquee.isTracking()) {
       const hideChrome =
         this.hideGizmoWhileMoving &&
@@ -623,19 +517,11 @@ export class SelectionController {
         (this.didMove || this.transformGizmo.isTransforming());
       if (hideChrome) {
         this.handles = [];
-        // Input lands on ui-canvas (chrome is pointer-events: none).
         const ui = document.getElementById("ui-canvas");
         if (ui) ui.style.cursor = "none";
       } else {
-        const rotating = this.transformGizmo.getRotationOverlay(
-          this.camera,
-          this.lastViewportPoint,
-        );
-        this.handles = this.paperRenderer.drawSelection(
-          this.selectedItems,
-          this.chromeCtx,
-          rotating,
-        );
+        const rotating = this.transformGizmo.getRotationOverlay(this.camera, this.lastViewportPoint);
+        this.handles = this.renderer.drawSelection(this.chromeCtx, rotating);
       }
     } else {
       this.handles = [];
@@ -657,35 +543,25 @@ export class SelectionController {
     setSnapGuides(this.snapGuides);
   }
 
-  // ============================================================
-  // Private: Handle hit testing
-  // ============================================================
+  // ------------------------------------------------------------
+  // Private
+  // ------------------------------------------------------------
 
   private hitTestHandle(viewportPoint: Point): SelectionHandleId | null {
     const hitRadiusSq = 12 * 12;
-
     for (const handle of this.handles) {
       const dx = viewportPoint.x - handle.x;
       const dy = viewportPoint.y - handle.y;
-      if (dx * dx + dy * dy <= hitRadiusSq) {
-        return handle.id;
-      }
+      if (dx * dx + dy * dy <= hitRadiusSq) return handle.id;
     }
     return null;
   }
-
-  // ============================================================
-  // Private: Transform initialization
-  // ============================================================
 
   private handleTranslateMove(viewportPoint: Point): void {
     const origin = this.dragPointerOrigin ?? this.dragStartPoint;
     if (!origin) return;
 
-    const total = {
-      x: viewportPoint.x - origin.x,
-      y: viewportPoint.y - origin.y,
-    };
+    const total = { x: viewportPoint.x - origin.x, y: viewportPoint.y - origin.y };
     const constrain = isConstrainMoveModifierHeld(modifiersStore.get());
     const constrained = constrainAxisScreenDelta(total.x, total.y, constrain);
     const desired = this.camera.screenDeltaToWorld(constrained.x, constrained.y);
@@ -694,37 +570,25 @@ export class SelectionController {
       sources,
       desired,
       this.camera,
-      this.paperRenderer,
-      this.snapExcludeIds(),
+      this.renderer,
       snapLockFromConstrain(constrained, constrain),
       offsetPoints(sources.points, this.lastAppliedWorld),
       false,
     );
     this.snapGuides = snapped.guides;
 
-    const apply = {
-      x: snapped.dx - this.lastAppliedWorld.x,
-      y: snapped.dy - this.lastAppliedWorld.y,
-    };
+    const apply = { x: snapped.dx - this.lastAppliedWorld.x, y: snapped.dy - this.lastAppliedWorld.y };
     if (apply.x !== 0 || apply.y !== 0) {
-      for (const item of this.selectedItems) {
-        this.paperRenderer.movePath(item, apply);
-      }
+      this.renderer.transformSelection(translation(apply.x, apply.y));
       this.lastAppliedWorld = { x: snapped.dx, y: snapped.dy };
       this.dragStartPoint = viewportPoint;
       this.noteLiveEditStarted();
     }
   }
 
-  private snapExcludeIds(): Set<number> {
-    return new Set(this.selectedItems.map((item) => item.id));
-  }
-
   private captureSnapSources(): void {
-    const bounds = this.paperRenderer.getSelectionFrameBounds(this.selectedItems);
-    this.snapSources = bounds
-      ? sourcesFromBounds(bounds)
-      : { xs: [], ys: [], points: [] };
+    const bounds = this.renderer.selectionBounds();
+    this.snapSources = bounds ? sourcesFromBounds(bounds) : { xs: [], ys: [], points: [] };
   }
 
   /** Mark the selection as dirty and refresh onion once on the first edit. */
@@ -734,13 +598,9 @@ export class SelectionController {
     this.onLiveEditStart?.();
   }
 
-  // ============================================================
-  // Private: Utilities
-  // ============================================================
-
   private clearTransformState(): void {
     this.transformGizmo.reset();
-    this.pivotDragItem = null;
+    this.pivotDragging = false;
     this.lastViewportPoint = null;
   }
 
@@ -761,7 +621,6 @@ export class SelectionController {
     setSnapGuides([]);
   }
 
-  /** Returns true once pointer has moved at least dragMoveThresholdSq from origin. */
   private pastDragThreshold(viewportPoint: Point): boolean {
     if (this.dragPastThreshold) return true;
     if (!this.dragPointerOrigin) return true;
@@ -794,79 +653,24 @@ export class SelectionController {
     }
   }
 
-  private isDoubleClickOnShape(
-    viewportPoint: Point,
-    itemId: number,
-    nowMs: number,
-  ): boolean {
+  private isDoubleClickOnShape(viewportPoint: Point, iid: string, nowMs: number): boolean {
     const last = this.lastShapeClick;
-    if (!last) return false;
-    if (last.itemId !== itemId) return false;
+    if (!last || last.iid !== iid) return false;
     if (nowMs - last.timestampMs > this.doubleClickWindowMs) return false;
     const dx = viewportPoint.x - last.point.x;
     const dy = viewportPoint.y - last.point.y;
     return dx * dx + dy * dy <= this.doubleClickDistanceSq;
   }
 
-  private resolvePendingSelectionForNewGesture(): void {
-    if (this.selectionNeedsPlacement && !this.didMove) {
-      this.revertPendingSelection();
-    } else {
-      this.placeSelection();
-    }
-  }
-
-  /** Union `item` into the current selection, committing any pending extract first. */
-  private addItemToSelection(item: paper.Item): void {
-    let kept: paper.Item[] = [];
-    if (this.selectedItems.length > 0) {
-      if (this.selectionNeedsPlacement || this.didMove) {
-        kept = this.paperRenderer.placeItemsAsSelection(this.selectedItems);
-        this.pendingExtractionSnapshot = null;
-        this.selectionNeedsPlacement = false;
-        this.didMove = false;
-      } else {
-        kept = this.selectedItems.filter((existing) => !!existing.parent);
-      }
-    }
-    if (!kept.some((existing) => existing.id === item.id)) {
-      kept = [...kept, item];
-    }
-    this.setSelectedItems(kept);
-  }
-
-  private revertPendingSelection(): void {
-    if (this.pendingExtractionSnapshot) {
-      this.paperRenderer.restoreSelectableLayersSnapshot(
-        this.pendingExtractionSnapshot,
-      );
-    }
-    this.pendingExtractionSnapshot = null;
-    this.selectedItems = [];
-    this.selectionNeedsPlacement = false;
-    this.didMove = false;
-    this.handles = [];
-    selectionStore.set({ items: [] });
-  }
-
-  private activateLayerForItem(item: paper.Item): void {
-    const layerId = this.paperRenderer.getLayerIdForPathItem(item);
-    if (layerId) this.onActivateLayer?.(layerId);
-  }
-
   private activateTopmostSelectedLayer(): void {
-    const layerId = this.paperRenderer.getTopmostSelectedLayerId(this.selectedItems);
-    if (layerId) this.onActivateLayer?.(layerId);
-  }
-
-  private isSelectedItem(item: paper.Item): boolean {
-    return this.selectedItems.some((selected) => selected.id === item.id);
-  }
-
-  private bringSelectionToFront(): void {
-    for (const item of this.selectedItems) {
-      this.paperRenderer.bringToFront(item);
+    const ids = this.renderer.getSelectionLayerIds();
+    if (ids.length === 0) return;
+    const order = this.renderer.getLayerIds();
+    let best: string | null = null;
+    for (const id of ids) {
+      if (best === null || order.indexOf(id) > order.indexOf(best)) best = id;
     }
+    if (best) this.onActivateLayer?.(best);
   }
 
   private hasActiveMarquee(): boolean {

@@ -27,3 +27,6 @@ skills-lock.json
 *.njsproj
 *.sln
 *.sw?
+
+# Rust kernel build output
+kernel/target

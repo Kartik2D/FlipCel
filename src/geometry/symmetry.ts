@@ -2,13 +2,11 @@
  * Symmetry mode — world-space axis / radial center, source-side classification,
  * and clip-region / transform helpers used when expanding tool commit results.
  */
-import paper from "paper";
 import type { SymmetrySettings } from "../state/index";
 
 /** Half-plane side (±1) or radial sector index (0..n-1). */
 export type SymmetrySide = number;
 
-const CLIP_EXTENT = 1e5;
 const HANDLE_HIT_RADIUS_PX = 18;
 
 /** Active gesture source side — set on pointer-down, used at commit. */
@@ -61,78 +59,6 @@ export function classifySymmetrySide(
   return Math.min(count - 1, Math.max(0, sector));
 }
 
-/**
- * Build an uninserted clip path covering the source region in world space.
- * Caller must remove() when done.
- */
-export function buildSourceClipRegion(
-  settings: SymmetrySettings,
-  sourceSide: SymmetrySide,
-): paper.Path {
-  const { originX, originY, mode, radialCount } = settings;
-  const ox = originX;
-  const oy = originY;
-  const R = CLIP_EXTENT;
-
-  if (mode === "vertical") {
-    // +1 = right of axis, -1 = left
-    const rect =
-      sourceSide >= 0
-        ? new paper.Rectangle(ox, oy - R, R, R * 2)
-        : new paper.Rectangle(ox - R, oy - R, R, R * 2);
-    return new paper.Path.Rectangle({ rectangle: rect, insert: false });
-  }
-
-  if (mode === "horizontal") {
-    // +1 = below axis (+y), -1 = above
-    const rect =
-      sourceSide >= 0
-        ? new paper.Rectangle(ox - R, oy, R * 2, R)
-        : new paper.Rectangle(ox - R, oy - R, R * 2, R);
-    return new paper.Path.Rectangle({ rectangle: rect, insert: false });
-  }
-
-  const count = Math.max(2, radialCount);
-  const sector = ((sourceSide % count) + count) % count;
-  const a0 = (sector / count) * Math.PI * 2;
-  const a1 = ((sector + 1) / count) * Math.PI * 2;
-  const path = new paper.Path({ insert: false });
-  path.add(new paper.Point(ox, oy));
-  path.add(new paper.Point(ox + Math.cos(a0) * R, oy + Math.sin(a0) * R));
-  path.add(new paper.Point(ox + Math.cos(a1) * R, oy + Math.sin(a1) * R));
-  path.closePath();
-  return path;
-}
-
-/**
- * Transforms that map the source piece onto every other symmetry region.
- * Empty when symmetry is off or only one copy exists.
- */
-export function buildMirrorTransforms(
-  settings: SymmetrySettings,
-): paper.Matrix[] {
-  const { originX, originY, mode, radialCount } = settings;
-  const origin = new paper.Point(originX, originY);
-
-  if (mode === "vertical") {
-    // x' = 2*ox - x, y' = y
-    return [new paper.Matrix(-1, 0, 0, 1, 2 * originX, 0)];
-  }
-
-  if (mode === "horizontal") {
-    // x' = x, y' = 2*oy - y
-    return [new paper.Matrix(1, 0, 0, -1, 0, 2 * originY)];
-  }
-
-  const count = Math.max(2, radialCount);
-  const transforms: paper.Matrix[] = [];
-  for (let k = 1; k < count; k++) {
-    const degrees = (k * 360) / count;
-    transforms.push(new paper.Matrix().rotate(degrees, origin));
-  }
-  return transforms;
-}
-
 export function hitTestSymmetryHandle(
   screenX: number,
   screenY: number,
@@ -144,43 +70,4 @@ export function hitTestSymmetryHandle(
   const dx = screenX - p.x;
   const dy = screenY - p.y;
   return dx * dx + dy * dy <= HANDLE_HIT_RADIUS_PX * HANDLE_HIT_RADIUS_PX;
-}
-
-/** World-space epsilon for welding verts onto the symmetry axis / origin. */
-const AXIS_SNAP_EPS = 0.75;
-
-/**
- * Snap segment points that lie near the symmetry axis (or radial origin)
- * onto that axis so mirrored halves share exact centerline verts before unite.
- */
-export function snapPathItemToSymmetryAxis(
-  item: paper.PathItem,
-  settings: SymmetrySettings,
-  epsilon: number = AXIS_SNAP_EPS,
-): void {
-  const { originX, originY, mode } = settings;
-  const paths: paper.Path[] =
-    item instanceof paper.Path
-      ? [item]
-      : item instanceof paper.CompoundPath
-        ? item.children.filter((c): c is paper.Path => c instanceof paper.Path)
-        : [];
-
-  for (const path of paths) {
-    for (const seg of path.segments) {
-      const p = seg.point;
-      if (mode === "vertical") {
-        if (Math.abs(p.x - originX) <= epsilon) p.x = originX;
-      } else if (mode === "horizontal") {
-        if (Math.abs(p.y - originY) <= epsilon) p.y = originY;
-      } else {
-        const dx = p.x - originX;
-        const dy = p.y - originY;
-        if (dx * dx + dy * dy <= epsilon * epsilon) {
-          p.x = originX;
-          p.y = originY;
-        }
-      }
-    }
-  }
 }

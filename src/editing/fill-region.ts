@@ -12,12 +12,13 @@
  *
  * Commit: empty → tuck + paint-behind; colored → 1px outset + inside boolean.
  */
-import paper from "paper";
 import type { Camera } from "../render/camera";
-import type { PaperRenderer, SelectLayerScope } from "../render/paper-renderer";
+import type { StageRenderer, SelectLayerScope } from "../render/stage-renderer";
 import type { Tracer } from "../tracing/potrace-tracer";
 import type { CanvasConfig } from "../geometry/types";
-import { fillPocketAt } from "./fill-pocket";
+import { PaintMode, mulAffine } from "../vector/kernel";
+import { cssToHex } from "../vector/palette";
+import { tracedSvgToWorldRings } from "../vector/paint";
 
 const FILL_MASK_MAX_SIDE = 768;
 const MATERIAL_ALPHA = 127;
@@ -42,7 +43,7 @@ const DISTANCE_INFINITE = 0xffff;
 const SPREAD_TOLERANCE = 1.0;
 
 export interface FillRegionDeps {
-  paperRenderer: PaperRenderer;
+  renderer: StageRenderer;
   tracer: Tracer;
   camera: Camera;
   getConfig: () => CanvasConfig;
@@ -78,24 +79,17 @@ function maskSize(viewportWidth: number, viewportHeight: number): {
   return { maskW, maskH };
 }
 
-function paperColorToCss(color: paper.Color | null | undefined): string | null {
-  if (!color || color.alpha <= 0) return null;
-  return color.toCSS(true);
-}
-
 /**
- * Rasterize fill-scope paths with real fill colors into RGBA ImageData.
- * `layers` is top-first; draw bottom → top so later fills composite on top.
+ * Rasterize fill-scope layers with real fill colors into RGBA ImageData.
  */
 function rasterizeLayersRgba(
+  renderer: StageRenderer,
   camera: Camera,
   config: CanvasConfig,
   maskW: number,
   maskH: number,
-  layers: paper.Layer[],
+  scope: SelectLayerScope,
 ): ImageData | null {
-  if (layers.length === 0) return null;
-
   const canvas = document.createElement("canvas");
   canvas.width = maskW;
   canvas.height = maskH;
@@ -107,36 +101,8 @@ function rasterizeLayersRgba(
 
   const sx = maskW / Math.max(config.viewportWidth, 1);
   const sy = maskH / Math.max(config.viewportHeight, 1);
-  const [a, b, c, d, tx, ty] = camera.getTransformMatrix();
-  ctx.setTransform(a * sx, b * sy, c * sx, d * sy, tx * sx, ty * sy);
-
-  for (let i = layers.length - 1; i >= 0; i--) {
-    for (const child of layers[i].children) {
-      if (!(child instanceof paper.Path || child instanceof paper.CompoundPath)) {
-        continue;
-      }
-      const css = paperColorToCss(child.fillColor as paper.Color | null);
-      if (!css) continue;
-      let pathData: string;
-      try {
-        pathData = child.pathData;
-      } catch {
-        continue;
-      }
-      if (!pathData) continue;
-      try {
-        ctx.fillStyle = css;
-        // Compounds keep evenodd holes; simple paths use nonzero so overlaps
-        // stay solid walls (evenodd on a lone self-overlapping stroke can punch holes).
-        const rule =
-          child instanceof paper.CompoundPath ? "evenodd" : "nonzero";
-        ctx.fill(new Path2D(pathData), rule);
-      } catch {
-        /* skip unparseable path data */
-      }
-    }
-  }
-
+  const view = mulAffine([sx, 0, 0, sy, 0, 0], camera.getTransformMatrix());
+  renderer.drawFillScope(ctx, view, scope);
   return ctx.getImageData(0, 0, maskW, maskH);
 }
 
@@ -827,13 +793,31 @@ function regionHasPixels(region: Uint8Array): boolean {
 }
 
 function colorsEqualCss(a: string, b: string): boolean {
-  const ca = new paper.Color(a);
-  const cb = new paper.Color(b);
-  return (
-    Math.round(ca.red * 255) === Math.round(cb.red * 255) &&
-    Math.round(ca.green * 255) === Math.round(cb.green * 255) &&
-    Math.round(ca.blue * 255) === Math.round(cb.blue * 255)
-  );
+  return cssToHex(a) === cssToHex(b);
+}
+
+/**
+ * Vector pocket fill: the kernel face under the pointer. Filled faces are
+ * recolored; enclosed empty faces are filled. Returns null when the click
+ * lands in the unbounded face (caller falls back to raster).
+ */
+function fillPocketAt(
+  deps: FillRegionDeps,
+  viewportPoint: { x: number; y: number },
+  color: string,
+  scope: SelectLayerScope,
+): boolean | null {
+  const world = deps.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
+  const fill = deps.renderer.getPalette().fillFor(color);
+  const hit = deps.renderer.hitTest(world, scope);
+  if (hit && hit.kind === "face") {
+    if (hit.fill === fill) return false;
+    return deps.renderer.fillFaceAt(world, fill, hit.layerId);
+  }
+  // Empty under the pointer: an enclosed pocket on the active layer fills.
+  const active = deps.renderer.getActiveLayerId();
+  if (active && deps.renderer.fillFaceAt(world, fill, active)) return true;
+  return null;
 }
 
 /**
@@ -849,10 +833,10 @@ export async function fillAt(
 ): Promise<boolean> {
   const gapPx = options.gapPx ?? 0;
   const scope: SelectLayerScope = options.scope === "active" ? "active" : "all";
-  if (gapPx <= 0) {
-    return fillPocketAt(deps, viewportPoint, color, 0, scope);
-  }
-  return fillGasAt(deps, viewportPoint, color, { ...options, scope });
+  const pocket = fillPocketAt(deps, viewportPoint, color, scope);
+  if (pocket !== null) return pocket;
+  // Unbounded empty space: raster chamber fill (gap 0 still seals AA pinholes).
+  return fillGasAt(deps, viewportPoint, color, { ...options, gapPx: Math.max(1, gapPx), scope });
 }
 
 /** Gas-pressure chamber fill. */
@@ -865,13 +849,7 @@ async function fillGasAt(
   const config = deps.getConfig();
   const { maskW, maskH } = maskSize(config.viewportWidth, config.viewportHeight);
   const scope = options.scope === "active" ? "active" : "all";
-  const image = rasterizeLayersRgba(
-    deps.camera,
-    config,
-    maskW,
-    maskH,
-    deps.paperRenderer.getFillRasterLayers(scope),
-  );
+  const image = rasterizeLayersRgba(deps.renderer, deps.camera, config, maskW, maskH, scope);
   if (!image) return false;
 
   const seedX = Math.min(
@@ -971,23 +949,24 @@ async function fillGasAt(
   const canvas = regionToCanvas(commitRegion, maskW, maskH);
   const svg = await deps.tracer.trace(canvas);
   if (!svg) return false;
+  // The mask canvas is `maskW × maskH` over the full viewport.
+  const rings = tracedSvgToWorldRings(
+    svg,
+    { ...config, pixelWidth: maskW, pixelHeight: maskH },
+    deps.camera,
+  );
+  if (rings.length === 0) return false;
+  const fill = deps.renderer.getPalette().fillFor(color);
+  const world = deps.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
 
   if (!seed.empty) {
-    const hit =
-      scope === "all"
-        ? deps.paperRenderer.hitTestSelectable(viewportPoint, "all")
-        : deps.paperRenderer.hitTest(viewportPoint);
-    const clip = deps.paperRenderer.hitToClipPathItem(hit);
-    if (clip) {
-      // Outset ∩ original shape; mergeAdd cuts the old seed color underneath.
-      await deps.paperRenderer.addPathIntersectClip(svg, color, clip);
-    } else {
-      await deps.paperRenderer.subtractPath(svg);
-      await deps.paperRenderer.addPath(svg, color, true);
+    const hit = deps.renderer.hitTest(world, scope);
+    if (hit && hit.kind === "face") {
+      // Outset ∩ original shape.
+      return deps.renderer.paintInside(rings, fill, world, hit.layerId);
     }
-  } else {
-    // Paint behind existing ink so tuck does not cover strokes.
-    await deps.paperRenderer.addPathIntersectClip(svg, color, null);
+    return deps.renderer.paint(rings, fill, PaintMode.Over);
   }
-  return true;
+  // Paint behind existing ink so the tuck does not cover strokes.
+  return deps.renderer.paintBehind(rings, fill);
 }

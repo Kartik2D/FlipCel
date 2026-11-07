@@ -1,9 +1,11 @@
 /**
  * Direct SVG import helpers (no tracer). Strokes are expanded to filled outlines.
  */
-import paper from "paper";
 import { nearestDocumentColor } from "./image-import";
-import { tryBooleanOp } from "../render/paper/path-geometry";
+import type { StageRenderer } from "../render/stage-renderer";
+import { PaintMode, ringBounds, transformRing, type Affine, type Bounds, type Ring } from "../vector/kernel";
+import { parseSvgShapes } from "../vector/rings";
+import { cssToHex } from "../vector/palette";
 
 export type SvgImportOptions = {
   snapToDocumentColors: boolean;
@@ -118,221 +120,60 @@ export function fileToSvgText(file: File): Promise<string> {
 }
 
 /**
- * Replace stroke geometry with filled outlines. Keeps existing fills.
- * Returns the new path list (originals are removed).
+ * Import an SVG onto the renderer's active layer in stage/world space.
+ * Shapes are painted bottom → top (painter's order) through the kernel;
+ * strokes become filled outlines (FlipCel is fill-only). The artwork is
+ * fitted and centered on the stage. Returns false when nothing was drawn.
  */
-export function convertStrokesToFills(paths: paper.PathItem[]): paper.PathItem[] {
-  const out: paper.PathItem[] = [];
-  for (const item of paths) {
-    if (item instanceof paper.CompoundPath) {
-      out.push(...convertCompoundStrokesToFills(item));
-      continue;
+export function importSvgOntoActiveLayer(
+  renderer: StageRenderer,
+  svg: string,
+  options: {
+    stageWidth: number;
+    stageHeight: number;
+    snapColors?: string[];
+    fillOverride?: string | null;
+  },
+): boolean {
+  const palette = renderer.getPalette();
+  const layerId = renderer.getActiveLayerId();
+  if (!palette || !layerId) return false;
+
+  // Fitted to the stage below, so the SVG's own viewBox / size do not matter.
+  const shapes = parseSvgShapes(svg).filter((s) => s.fill != null);
+  if (shapes.length === 0) return false;
+
+  let bounds: Bounds | null = null;
+  for (const s of shapes) bounds = unionBounds(bounds, ringBounds(s.rings));
+  if (!bounds || bounds.width <= 0 || bounds.height <= 0) return false;
+
+  const scale = Math.min(options.stageWidth / bounds.width, options.stageHeight / bounds.height);
+  const cx = bounds.x + bounds.width / 2;
+  const cy = bounds.y + bounds.height / 2;
+  const tx = options.stageWidth / 2 - cx * scale;
+  const ty = options.stageHeight / 2 - cy * scale;
+  const fit: Affine = [scale, 0, 0, scale, tx, ty];
+
+  let painted = false;
+  for (const shape of shapes) {
+    let hex = options.fillOverride ?? cssToHex(shape.fill!);
+    if (!hex) continue;
+    if (options.snapColors && options.snapColors.length > 0) {
+      hex = nearestDocumentColor(hex, options.snapColors);
     }
-    if (item instanceof paper.Path) {
-      out.push(...convertPathStrokesToFills(item));
-      continue;
-    }
-    out.push(item);
+    const rings: Ring[] = shape.rings.map((r) => transformRing(r, fit));
+    renderer.paint(rings, palette.fillFor(hex), PaintMode.Over, 0, layerId);
+    painted = true;
   }
-  return out;
+  return painted;
 }
 
-function convertCompoundStrokesToFills(compound: paper.CompoundPath): paper.PathItem[] {
-  const strokeColor = compound.strokeColor;
-  const strokeWidth = compound.strokeWidth;
-  const hasStroke = !!(strokeColor && strokeWidth > 0);
-  const fillColor = compound.fillColor;
-  const parent = compound.parent;
-  const index = compound.index;
-
-  // Clone before remove — CompoundPath.remove() takes children with it.
-  const childClones = [...compound.children]
-    .filter((c): c is paper.Path => c instanceof paper.Path)
-    .map((c) => c.clone({ insert: false }) as paper.Path);
-  compound.remove();
-
-  const out: paper.PathItem[] = [];
-
-  if (fillColor && childClones.length > 0) {
-    const fillClone = new paper.CompoundPath({
-      children: childClones.map((c) => c.clone({ insert: false })),
-      insert: false,
-      fillColor,
-      strokeWidth: 0,
-      strokeColor: null,
-    });
-    if (parent) parent.insertChild(index, fillClone);
-    out.push(fillClone);
-  }
-
-  if (hasStroke) {
-    for (const child of childClones) {
-      child.strokeColor = strokeColor;
-      child.strokeWidth = strokeWidth;
-      child.strokeCap = "round";
-      child.strokeJoin = "round";
-      const expanded = expandStrokePath(child);
-      if (expanded) {
-        if (parent) parent.addChild(expanded);
-        out.push(expanded);
-      }
-    }
-  }
-
-  return out;
-}
-
-function convertPathStrokesToFills(path: paper.Path): paper.PathItem[] {
-  const fillColor = path.fillColor;
-  const hasStroke = !!(path.strokeColor && path.strokeWidth > 0);
-
-  if (!hasStroke) {
-    path.strokeWidth = 0;
-    path.strokeColor = null;
-    if (fillColor) return [path];
-    path.remove();
-    return [];
-  }
-
-  const out: paper.PathItem[] = [];
-  const parent = path.parent;
-  const index = path.index;
-
-  if (fillColor) {
-    const fillOnly = path.clone({ insert: false }) as paper.Path;
-    fillOnly.strokeWidth = 0;
-    fillOnly.strokeColor = null;
-    fillOnly.fillColor = fillColor;
-    if (parent) parent.insertChild(index, fillOnly);
-    out.push(fillOnly);
-  }
-
-  const expanded = expandStrokePath(path);
-  if (expanded) {
-    if (parent) parent.addChild(expanded);
-    out.push(expanded);
-  }
-
-  path.remove();
-  return out;
-}
-
-/** Expand a stroked centerline into a filled outline (round caps). */
-function expandStrokePath(path: paper.Path): paper.PathItem | null {
-  const color = path.strokeColor;
-  const width = path.strokeWidth;
-  if (!color || !(width > 0)) return null;
-
-  const len = path.length;
-  if (!(len > 1e-6)) {
-    // Degenerate: just a dot.
-    const pt = path.firstSegment?.point ?? path.bounds.center;
-    const dot = new paper.Path.Circle({
-      center: pt,
-      radius: width / 2,
-      insert: false,
-      fillColor: color,
-      strokeWidth: 0,
-    });
-    return dot;
-  }
-
-  const half = width / 2;
-  const step = Math.max(0.35, Math.min(3, half * 0.45));
-  const steps = Math.max(path.closed ? 12 : 8, Math.ceil(len / step));
-
-  if (path.closed) {
-    return expandClosedStroke(path, half, color, steps);
-  }
-  return expandOpenStroke(path, half, color, steps, len);
-}
-
-function expandClosedStroke(
-  path: paper.Path,
-  half: number,
-  color: paper.Color,
-  steps: number,
-): paper.PathItem | null {
-  const len = path.length;
-  const outer = new paper.Path({ insert: false });
-  const inner = new paper.Path({ insert: false });
-  for (let i = 0; i < steps; i++) {
-    const loc = path.getLocationAt((i / steps) * len);
-    if (!loc) continue;
-    outer.add(loc.point.add(loc.normal.multiply(half)));
-    inner.add(loc.point.add(loc.normal.multiply(-half)));
-  }
-  outer.closed = true;
-  inner.closed = true;
-  outer.fillColor = color;
-  inner.fillColor = color;
-
-  let ring = tryBooleanOp(outer, inner, "subtract");
-  if (!ring) ring = tryBooleanOp(inner, outer, "subtract");
-  outer.remove();
-  inner.remove();
-  if (!ring) return null;
-  ring.fillColor = color;
-  ring.strokeWidth = 0;
-  ring.strokeColor = null;
-  if (ring.parent) ring.remove();
-  return ring;
-}
-
-function expandOpenStroke(
-  path: paper.Path,
-  half: number,
-  color: paper.Color,
-  steps: number,
-  len: number,
-): paper.PathItem | null {
-  const left: paper.Point[] = [];
-  const right: paper.Point[] = [];
-  for (let i = 0; i <= steps; i++) {
-    const loc = path.getLocationAt((i / steps) * len);
-    if (!loc) continue;
-    left.push(loc.point.add(loc.normal.multiply(half)));
-    right.push(loc.point.add(loc.normal.multiply(-half)));
-  }
-  if (left.length < 2) return null;
-
-  const outline = new paper.Path({ insert: false });
-  for (const p of left) outline.add(p);
-  for (let i = right.length - 1; i >= 0; i--) outline.add(right[i]);
-  outline.closed = true;
-  outline.fillColor = color;
-  outline.strokeWidth = 0;
-
-  const start = path.getPointAt(0);
-  const end = path.getPointAt(len);
-  const c1 = new paper.Path.Circle({
-    center: start,
-    radius: half,
-    insert: false,
-    fillColor: color,
-  });
-  const c2 = new paper.Path.Circle({
-    center: end,
-    radius: half,
-    insert: false,
-    fillColor: color,
-  });
-
-  let united = tryBooleanOp(outline, c1, "unite");
-  c1.remove();
-  if (united) outline.remove();
-  else united = outline;
-
-  const result = tryBooleanOp(united, c2, "unite");
-  c2.remove();
-  if (result) {
-    if (result !== united) united.remove();
-    united = result;
-  }
-
-  united.fillColor = color;
-  united.strokeWidth = 0;
-  united.strokeColor = null;
-  if (united.parent) united.remove();
-  return united;
+function unionBounds(a: Bounds | null, b: Bounds | null): Bounds | null {
+  if (!a) return b;
+  if (!b) return a;
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const r = Math.max(a.x + a.width, b.x + b.width);
+  const bt = Math.max(a.y + a.height, b.y + b.height);
+  return { x, y, width: r - x, height: bt - y };
 }

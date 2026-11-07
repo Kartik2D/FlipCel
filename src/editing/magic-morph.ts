@@ -5,7 +5,7 @@
  * (pose A) toward the next keyframe (pose B) at Dedouze chart ratios.
  */
 import type { Point, CanvasConfig } from "../geometry/types";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
 import type { Camera } from "../render/camera";
 import type { ChromeLayer } from "../render/chrome-layer";
 import type { DocumentManager } from "../document/document";
@@ -23,7 +23,9 @@ import {
   evenFramesBetween,
   type ChartStroke,
 } from "./magic-move-graph";
-import { morphLayerJson } from "./magic-morph-blend";
+import { morphLayerJson, type MorphOptions } from "./magic-morph-blend";
+import { contentToPaperLayerJson, paperLayerJsonToContent } from "../vector/paper-adapter";
+import { isVectorContent } from "../vector/content";
 import { timelineStore, layerJsonEquals } from "../document/document";
 
 interface Settings {
@@ -76,7 +78,7 @@ function thinRatios(ratios: number[], keep: number): number[] {
 
 export class MagicMorphController {
   private config: CanvasConfig;
-  private paperRenderer: PaperRenderer;
+  private renderer: StageRenderer;
   private camera: Camera;
   private chromeLayer: ChromeLayer;
   private documentManager: DocumentManager | null = null;
@@ -86,11 +88,11 @@ export class MagicMorphController {
   private liveChartStroke: Point[] | null = null;
 
   constructor(
-    paperRenderer: PaperRenderer,
+    renderer: StageRenderer,
     camera: Camera,
     chromeLayer: ChromeLayer,
   ) {
-    this.paperRenderer = paperRenderer;
+    this.renderer = renderer;
     this.camera = camera;
     this.chromeLayer = chromeLayer;
     this.config = configStore.get();
@@ -239,12 +241,7 @@ export class MagicMorphController {
       const span = spans[li];
       const publish = li === spans.length - 1;
       for (let i = 0; i < frames.length; i++) {
-        const json = morphLayerJson(
-          span.startJson,
-          span.endJson,
-          ratios[i] ?? 0,
-          morphOpts,
-        );
+        const json = this.morphContent(span.startJson, span.endJson, ratios[i] ?? 0, morphOpts);
         if (!json) continue;
         this.documentManager.writeLayerContentAtFrame(span.layerId, frames[i], json, {
           publish: false,
@@ -329,12 +326,7 @@ export class MagicMorphController {
         if (frames.length === 0) continue;
 
         for (let i = 0; i < frames.length; i++) {
-          const json = morphLayerJson(
-            span.startJson,
-            span.endJson,
-            ratios[i] ?? 0,
-            morphOpts,
-          );
+          const json = this.morphContent(span.startJson, span.endJson, ratios[i] ?? 0, morphOpts);
           if (!json) continue;
           this.documentManager.writeLayerContentAtFrame(
             layerId,
@@ -406,10 +398,32 @@ export class MagicMorphController {
     if (!this.documentManager) return [];
     if (this.readSettings().scope === "active") {
       const id =
-        this.paperRenderer.getActiveLayerId() ?? layerStore.get().activeLayerId;
+        this.renderer.getActiveLayerId() ?? layerStore.get().activeLayerId;
       return id ? [id] : [];
     }
     return this.documentManager.getSelectableLayerIds();
+  }
+
+  /**
+   * Morph two kernel content strings through the Paper-based solver.
+   * Instances ride along from the start pose (not interpolated).
+   */
+  private morphContent(
+    aJson: string,
+    bJson: string,
+    t: number,
+    opts: Partial<MorphOptions>,
+  ): string {
+    if (!aJson || !isVectorContent(aJson)) return "";
+    if (t <= 0) return aJson;
+    if (t >= 1) return bJson || aJson;
+    const palette = this.renderer.getPalette();
+    if (!palette) return "";
+    const a = contentToPaperLayerJson(aJson, palette);
+    const b = contentToPaperLayerJson(bJson, palette);
+    const morphed = morphLayerJson(a.layerJson, b.layerJson, t, opts);
+    if (!morphed) return "";
+    return paperLayerJsonToContent(morphed, palette, a.instances);
   }
 
   private toViewport(points: Point[]): Point[] {

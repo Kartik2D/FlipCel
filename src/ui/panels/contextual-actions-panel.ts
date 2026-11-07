@@ -6,6 +6,9 @@ import type { ContextualActionMenuItem } from "../../editing/contextual-actions"
 // Functions Panel (appears on selection)
 // ============================================================
 
+/** Drags that set a single amount (distance only), as opposed to placing something. */
+const INTENSITY_DRAGS = new Set(["simplify"]);
+
 @customElement("flipcel-functions-panel")
 export class FlipCelFunctionsPanel extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false;
@@ -271,7 +274,7 @@ export class FlipCelFunctionsPanel extends LitElement {
                 type="button"
                 class="fn-btn ${fn.negative ? "negative" : ""} ${fn.draggable ? "draggable" : ""}"
                 title=${fn.draggable
-                  ? fn.id === "round-corners"
+                  ? INTENSITY_DRAGS.has(fn.id)
                     ? `${fn.name} (drag for intensity)`
                     : `${fn.name} (drag to place)`
                   : fn.name}
@@ -285,7 +288,7 @@ export class FlipCelFunctionsPanel extends LitElement {
                 <span>${fn.name}</span>
                 ${fn.draggable
                   ? html`<span class="fn-drag-hint" aria-hidden="true">${
-                      fn.id === "round-corners" ? "↔" : "↔↕"
+                      INTENSITY_DRAGS.has(fn.id) ? "↔" : "↔↕"
                     }</span>`
                   : nothing}
               </button>

@@ -1,10 +1,10 @@
 /**
  * SVG document export with options (auto-crop, stage fill, split layers, frame range).
- * Multi-frame export uses an offscreen PaperScope — does not seek the live playhead.
+ * Builds SVG straight from stored kernel content — does not seek the live playhead.
  */
-import paper from "paper";
-import { hydrateLayer } from "../render/paper/symbol-instances";
 import type { DocumentManager } from "../document/document";
+import { contentToSvgPaths, wrapSvg } from "../vector/svg";
+import { isImageContent } from "../vector/content";
 import type { StageSettings } from "../state/document-ui";
 import {
   isLayerEffectivelyVisible,
@@ -95,7 +95,7 @@ function frameFileLabel(frame0: number, duration: number): string {
 }
 
 /**
- * Build one SVG for a timeline frame from stored layer JSON (isolated PaperScope).
+ * Build one SVG for a timeline frame from stored layer content.
  */
 function exportFrameSvgString(opts: {
   documentManager: DocumentManager;
@@ -107,71 +107,27 @@ function exportFrameSvgString(opts: {
 }): string {
   const w = Math.max(1, Math.round(opts.stage.width));
   const h = Math.max(1, Math.round(opts.stage.height));
+  const dm = opts.documentManager;
+  const palette = dm.palette;
+  const resolver = dm.symbolResolver;
+  const renderer = dm.getRenderer();
 
-  const paperCanvas = document.createElement("canvas");
-  paperCanvas.setAttribute("hidpi", "off");
-  paperCanvas.width = w;
-  paperCanvas.height = h;
-
-  const mainScope = paper;
-  const scope = new paper.PaperScope();
-  try {
-    scope.setup(paperCanvas);
-    scope.view.viewSize = new scope.Size(w, h);
-    scope.view.matrix.reset();
-    scope.settings.applyMatrix = true;
-    scope.project.clear();
-
-    for (const layerId of opts.trackIds) {
-      const json = opts.documentManager.getLayerContentAtFrame(
-        layerId,
-        opts.frame,
-      );
-      if (!json) continue;
-      const layer = new scope.Layer();
-      layer.importJSON(json);
-      // Symbol instances are stored as empty groups: resolve their artwork.
-      const start =
-        opts.documentManager.getCoveringKeyframeFrame(layerId, opts.frame) ?? opts.frame;
-      hydrateLayer(layer, opts.documentManager.symbolResolver, opts.frame - start, scope);
-    }
-
-    let bg: paper.Path | null = null;
-    const stageBox = new scope.Rectangle(0, 0, w, h);
-    let bounds: "content" | paper.Rectangle = opts.autoCrop
-      ? "content"
-      : stageBox;
-
-    if (opts.stageFill) {
-      let box: paper.Rectangle | null = opts.autoCrop ? null : stageBox;
-      if (!box) {
-        for (const layer of scope.project.layers) {
-          if (!layer.visible) continue;
-          const b = layer.bounds;
-          if (!b || (b.width <= 0 && b.height <= 0)) continue;
-          box = box ? box.unite(b) : b.clone();
-        }
-      }
-      if (box && box.width > 0 && box.height > 0) {
-        bg = new scope.Path.Rectangle(box);
-        bg.fillColor = new scope.Color(opts.stageFill);
-        bg.strokeColor = null;
-        const host = scope.project.layers[0] ?? new scope.Layer();
-        host.insertChild(0, bg);
-      }
-    }
-
-    scope.view.update();
-    return scope.project.exportSVG({
-      bounds,
-      matrix: new scope.Matrix(),
-      asString: true,
-      precision: 4,
-    }) as string;
-  } finally {
-    scope.project.clear();
-    mainScope.activate();
+  const body: string[] = [];
+  const jsons: string[] = [];
+  for (const layerId of opts.trackIds) {
+    const json = dm.getLayerContentAtFrame(layerId, opts.frame);
+    if (!json || isImageContent(json)) continue;
+    const start = dm.getCoveringKeyframeFrame(layerId, opts.frame) ?? opts.frame;
+    body.push(contentToSvgPaths(json, palette, resolver, null, opts.frame - start));
+    jsons.push(json);
   }
+
+  let viewBox: [number, number, number, number] = [0, 0, w, h];
+  if (opts.autoCrop) {
+    const b = renderer.contentBounds(jsons);
+    if (b && b.width > 0 && b.height > 0) viewBox = [b.x, b.y, b.width, b.height];
+  }
+  return wrapSvg(body.join(""), viewBox[2], viewBox[3], { background: opts.stageFill, viewBox });
 }
 
 /**

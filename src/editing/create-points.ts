@@ -1,14 +1,16 @@
 /**
  * Create Points — Moho-style click-to-place vertices.
  * Click places points; click near the first (≥3) closes a shape.
- * Fill commits a native Paper path; stroke rasters to the pixel canvas
+ * Fill commits a kernel ring; stroke rasters to the pixel canvas
  * (traced like brush/lasso). Curve is per vertex (dock / Ctrl). Shift
  * constrains the rubber-band to H/V.
  */
-import paper from "paper";
 import type { Point, CanvasConfig } from "../geometry/types";
 import { pixelToViewport, viewportToPixel } from "../geometry/coords";
-import type { PaperRenderer } from "../render/paper-renderer";
+import type { StageRenderer } from "../render/stage-renderer";
+import type { Px, Ring } from "../vector/kernel";
+import { flattenRing } from "../vector/rings";
+import { commitPaint, viewportToWorldAffine, worldRings } from "../vector/paint";
 import type { ChromeLayer } from "../render/chrome-layer";
 import type { Camera } from "../render/camera";
 import {
@@ -37,7 +39,7 @@ interface DraftVertex {
 
 export class CreatePointsController {
   private config: CanvasConfig;
-  private paperRenderer: PaperRenderer;
+  private renderer: StageRenderer;
   private camera: Camera;
   private chromeLayer: ChromeLayer;
   private onSnapshot?: () => void;
@@ -45,7 +47,7 @@ export class CreatePointsController {
   private onRasterStroke?: (
     pixelPoints: Point[],
     paint: PaintMode,
-    insideClip: paper.PathItem | null | undefined,
+    insideClip: Px | null | undefined,
   ) => void;
 
   /** Draft vertices in world space, each with its own curve kind. */
@@ -53,14 +55,14 @@ export class CreatePointsController {
   private hoverWorld: Point | null = null;
   private snapGuides: SnapGuide[] = [];
   /** Inside mode: clip target captured on the first click. */
-  private insideClip: paper.PathItem | null | undefined = undefined;
+  private insideClip: Px | null | undefined = undefined;
 
   constructor(
-    paperRenderer: PaperRenderer,
+    renderer: StageRenderer,
     camera: Camera,
     chromeLayer: ChromeLayer,
   ) {
-    this.paperRenderer = paperRenderer;
+    this.renderer = renderer;
     this.camera = camera;
     this.chromeLayer = chromeLayer;
     this.config = configStore.get();
@@ -89,7 +91,7 @@ export class CreatePointsController {
     callback: (
       pixelPoints: Point[],
       paint: PaintMode,
-      insideClip: paper.PathItem | null | undefined,
+      insideClip: Px | null | undefined,
     ) => void,
   ): void {
     this.onRasterStroke = callback;
@@ -112,9 +114,9 @@ export class CreatePointsController {
 
     if (this.points.length === 0 && this.paintMode() === "inside") {
       const vp = pixelToViewport(point, this.config);
-      this.insideClip = this.paperRenderer.hitToClipPathItem(
-        this.paperRenderer.hitTest(vp),
-      );
+      const w = this.camera.screenToWorld(vp.x, vp.y);
+      const hit = this.renderer.hitTest(w, "active");
+      this.insideClip = hit && hit.kind === "face" ? w : null;
     }
 
     const mode = this.effectiveCurveMode();
@@ -322,12 +324,7 @@ export class CreatePointsController {
   }
 
   private snapDraftPoint(world: Point): Point {
-    const snapped = snapWorldPoint(
-      world,
-      this.camera,
-      this.paperRenderer,
-      new Set(),
-    );
+    const snapped = snapWorldPoint(world, this.camera, this.renderer);
     this.snapGuides = snapped.guides;
     return { x: snapped.x, y: snapped.y };
   }
@@ -371,7 +368,7 @@ export class CreatePointsController {
       return;
     }
 
-    void this.commitFillPath(screenVerts, paint);
+    this.commitFillPath(screenVerts, paint);
     this.points = [];
     this.snapGuides = [];
     setSnapGuides([]);
@@ -380,57 +377,55 @@ export class CreatePointsController {
     this.chromeLayer.clear();
   }
 
-  private async commitFillPath(
-    screenVerts: DraftVertex[],
-    paint: PaintMode,
-  ): Promise<void> {
-    const path = buildMixedPath(screenVerts, true);
-    const color = colorStore.get();
-    const clip = this.insideClip;
-    if (paint === "subtract") {
-      await this.paperRenderer.subtractShape(path);
-      this.onSnapshot?.();
-    } else if (paint === "inside") {
-      await this.paperRenderer.addShapeIntersectClip(path, color, clip ?? null);
-      this.onSnapshot?.();
+  private commitFillPath(screenVerts: DraftVertex[], paint: PaintMode): void {
+    const ring = buildMixedRing(screenVerts);
+    if (!ring) return;
+    const rings = worldRings([ring], viewportToWorldAffine(this.camera));
+    const changed = commitPaint(this.renderer, rings, paint, colorStore.get(), this.insideClip ?? null);
+    if (changed) this.onSnapshot?.();
+  }
+}
+
+/** Closed ring: Catmull-Rom cubics through smooth verts, straight lines at sharp verts. */
+function buildMixedRing(verts: DraftVertex[]): Ring | null {
+  const n = verts.length;
+  if (n < 3) return null;
+  const smooth = verts.some((v) => v.curve === "smooth");
+  if (!smooth) {
+    return { start: { x: verts[0].x, y: verts[0].y }, segs: verts.slice(1).map((v) => ({ kind: "L" as const, to: { x: v.x, y: v.y } })) };
+  }
+  const tangent = (i: number): Px => {
+    if (verts[i].curve !== "smooth") return { x: 0, y: 0 };
+    const prev = verts[(i - 1 + n) % n];
+    const next = verts[(i + 1) % n];
+    return { x: (next.x - prev.x) / 6, y: (next.y - prev.y) / 6 };
+  };
+  const segs: Ring["segs"] = [];
+  for (let i = 0; i < n; i++) {
+    const a = verts[i];
+    const b = verts[(i + 1) % n];
+    const ta = tangent(i);
+    const tb = tangent((i + 1) % n);
+    if (ta.x === 0 && ta.y === 0 && tb.x === 0 && tb.y === 0) {
+      segs.push({ kind: "L", to: { x: b.x, y: b.y } });
     } else {
-      this.paperRenderer.addShape(path, color);
+      segs.push({
+        kind: "C",
+        c1: { x: a.x + ta.x, y: a.y + ta.y },
+        c2: { x: b.x - tb.x, y: b.y - tb.y },
+        to: { x: b.x, y: b.y },
+      });
     }
   }
+  return { start: { x: verts[0].x, y: verts[0].y }, segs };
 }
 
-/** Smooth all, then zero handles on straight verts so corners stay sharp. */
-function buildMixedPath(verts: DraftVertex[], closed: boolean): paper.Path {
-  const path = new paper.Path({
-    segments: verts.map((p) => new paper.Point(p.x, p.y)),
-    closed,
-    insert: false,
-  });
-  if (verts.some((v) => v.curve === "smooth")) {
-    path.smooth({ type: "continuous" });
-    for (let i = 0; i < verts.length; i++) {
-      if (verts[i].curve === "straight") {
-        path.segments[i].handleIn = new paper.Point(0, 0);
-        path.segments[i].handleOut = new paper.Point(0, 0);
-      }
-    }
-  }
-  return path;
-}
-
-function sampleMixedPath(verts: DraftVertex[], closed: boolean): Point[] {
+function sampleMixedPath(verts: DraftVertex[], _closed: boolean): Point[] {
   if (!verts.some((v) => v.curve === "smooth") || verts.length < 3) {
     return verts.map((v) => ({ x: v.x, y: v.y }));
   }
-  const path = buildMixedPath(verts, closed);
-  const len = path.length;
-  if (len <= 0) return verts.map((v) => ({ x: v.x, y: v.y }));
-  const step = Math.max(2, len / 48);
-  const out: Point[] = [];
-  for (let d = 0; d <= len; d += step) {
-    const p = path.getPointAt(d);
-    out.push({ x: p.x, y: p.y });
-  }
-  path.remove();
-  return out.length >= 2 ? out : verts.map((v) => ({ x: v.x, y: v.y }));
+  const ring = buildMixedRing(verts);
+  if (!ring) return verts.map((v) => ({ x: v.x, y: v.y }));
+  const pts = flattenRing(ring, 10);
+  return pts.length >= 2 ? pts : verts.map((v) => ({ x: v.x, y: v.y }));
 }

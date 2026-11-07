@@ -6,6 +6,7 @@
  */
 import paper from "paper";
 import type { Point } from "../geometry/types";
+import { ensurePaperScope } from "../vector/paper-adapter";
 
 export interface ChartStroke {
   /** World/stage-space points. */
@@ -66,6 +67,7 @@ export function parseTimingChart(
   strokes: ChartStroke[],
   steps: number,
 ): GraphParseResult {
+  ensurePaperScope();
   const usable = strokes.filter((s) => s.points.length >= 2);
   if (usable.length < 2) {
     return {

@@ -1,76 +1,45 @@
 /**
- * Direct Select Controller
+ * Direct Select Controller (kernel edition)
  *
- * Simple model:
+ * Edits the active layer's planar map vertex by vertex:
  *
- *   Anchor visibility is per-shape and gated on two states:
- *     1. The shape owns at least one PICKED anchor (real selection), or
- *     2. The shape is EXPOSED — single-clicked by the user as a peek-only
- *        gesture that reveals its anchors + outline without picking
- *        anything (so color-picker / functions panel stay empty).
- *   Shapes that are neither picked-into nor exposed render no chrome.
+ *   - Click a vertex → pick it (add-modifier extends). Dragging previews the
+ *     move in the chrome layer; on release every picked vertex goes through
+ *     the kernel's `moveVertex` once, so merge semantics (welding, splitting)
+ *     apply only to the final position.
+ *   - Click an edge → drag bends it: on release the edge becomes a quadratic
+ *     whose curve passes through the pointer (`curveEdge`).
+ *   - Drag a control handle (shown for curves at picked vertices) to place
+ *     the control directly. Moving a vertex carries its controls along.
+ *   - Marquee (rect / lasso) picks vertices inside.
+ *   - Click empty space → clear.
  *
- *   Click semantics on a shape's interior fill:
- *     - Single click → expose that shape (replaces any prior exposure;
- *                      clears picks). Verts are shown, not picked.
- *     - Click (or click-drag) an already-exposed shape → pick every
- *                      anchor. Click-drag also moves the shape.
+ * Vertex / corner operations on the picked set:
+ *   - delete     : collapse each picked vertex onto a neighbour (removes it).
+ *   - simplify   : refit each picked run with as few cubics as fit within a
+ *                  world-pixel tolerance (drops redundant vertices); drag
+ *                  further for a looser fit and fewer vertices.
+ *   - smooth     : refit each picked run as a Catmull-Rom cubic spline
+ *                  (vertices stay, every edge becomes a curve).
  *
- *   Peek lifetime: a peek-exposure stays in place across every gesture
- *   that targets a shape (anchor click, edge click, marquee drag,
- *   vertex deletion, anchor moves, handle drags, etc.). The ONLY things
- *   that clear it are:
- *     - A click outside any shape (empty-area tap → "deselect"),
- *     - A single click on a different shape (peek shifts to that shape),
- *     - A clearSelection() call (tool switch / undo / layer change),
- *     - The exposed item disappearing from the layer entirely.
- *
- *   Hit-testing and marquee still see every anchor on the layer, so the
- *   user can pick into a "blank" shape by clicking its edge or marqueeing
- *   across it.
- *
- *   The only state the tool holds is:
- *     pickedAnchors  : Set<AnchorKey>  — anchors the user picked (anchor
- *                                        click / marquee / lasso / click
- *                                        on an exposed shape). Drag moves these.
- *     exposedItemIds : Set<number>     — shapes shown via single-click
- *                                        peek; not part of the published
- *                                        selection.
- *     anchorHandles  : AnchorHandle[]  — cached per-frame, one handle per
- *                                        anchor of every active-layer item;
- *                                        used for hit-testing and marquee
- *                                        regardless of visibility state.
- *
- *   What gets published to the shared selectionStore:
- *     items owning any picked anchor. Exposed-only shapes are NOT
- *     published (single-click is purely visual).
+ * Identity is positional: a picked vertex is its current world position.
  */
 import type { Point, CanvasConfig } from "../../geometry/types";
-import type { PaperRenderer } from "../../render/paper-renderer";
-import type { SelectionHandle, SelectionHandleId } from "../../render/paper-renderer";
+import type { StageRenderer } from "../../render/stage-renderer";
 import type { Camera } from "../../render/camera";
 import type { ChromeLayer } from "../../render/chrome-layer";
 import {
   configStore,
   toolSettingsStore,
   selectionStore,
+  EMPTY_SELECTION,
   quickShapeEnabledStore,
   quickShapeCurveStyleStore,
   quickShapeShapesEnabledStore,
   quickShapeHoldMsStore,
   modifiersStore,
 } from "../../state/index";
-import paper from "paper";
 import { pixelToViewport } from "../../geometry/coords";
-import {
-  cubicsToAnchors,
-  findSharpCornerIndicesFromPoints,
-  simplifyCubics,
-  simplifyPolyline,
-  turnDegreesAt,
-  type CubicSpan,
-  type FittedAnchor,
-} from "../../geometry/curve-fit";
 import { LassoQuickShapeSession } from "../../geometry/quick-shape";
 import { MarqueeTracker } from "../marquee";
 import {
@@ -78,193 +47,114 @@ import {
   isConstrainMoveModifierHeld,
   isConstrainScaleModifierHeld,
 } from "../../input/shortcuts";
-import {
-  TransformGizmoController,
-  constrainAxisScreenDelta,
-} from "../transform-gizmo";
+import { constrainAxisScreenDelta } from "../transform-gizmo";
 import {
   snapLockFromConstrain,
-  snapScreenPoint,
   snapWorldTranslation,
-  offsetPoints,
   setSnapGuides,
   type SnapGuide,
-  type SnapSource,
 } from "../snap";
+import { pointInPolygon } from "./geometry";
+import { rekeyPicks, simplifyChains, smoothChains, vertexKey as key } from "./refit";
+import type { KernelEdge, Px, Seg, VectorLayer } from "../../vector/kernel";
 
-import {
-  type AnchorKey,
-  type AnchorHandle,
-  anchorKey,
-  parseAnchorKey,
-} from "./anchors";
-import {
-  pointInPolygon,
-  applyHandleModeToSegment,
-  type AnchorHandleMode,
-} from "./geometry";
-import {
-  hitTestBezierHandle,
-  dragBezierHandleTo as applyBezierHandleDrag,
-  drawBezierHandlesForSoloPick,
-  keepMirroredOpposite,
-  type HandleLinkage,
-} from "./bezier-handles";
-import { sanitizePathItemTopology } from "../../render/paper/path-geometry";
+type PathEditKind = "simplify";
 
-export type { AnchorHandle, AnchorKey } from "./anchors";
+const ANCHOR_HIT_PX = 10;
+const EDGE_HIT_PX = 8;
+const ANCHOR_SIZE = 8;
+const DOUBLE_CLICK_MS = 350;
+const DOUBLE_CLICK_PX = 6;
+/**
+ * Kernel positions sit on a 0.05px twip grid, but `vertices()`/`edges()`
+ * come back as f32 while `nearestVertex()` is f64, so the same vertex can
+ * differ by ~1e-5. Compare well above that and well below half a twip.
+ */
+const EPS = 1e-3;
+
+/** Simplify fits to within this many world pixels (1.5px = 30 twips). */
+const SIMPLIFY_TOL_PX = 1.5;
+const SIMPLIFY_TOL_MIN = 0.25;
+const SIMPLIFY_TOL_MAX = 25;
+/** Smooth handle length as a fraction of the edge chord. */
+const SMOOTH_DEFAULT = 1 / 3;
+
+const same = (a: Px, b: Px): boolean => Math.abs(a.x - b.x) < EPS && Math.abs(a.y - b.y) < EPS;
+const sameEdgeEnds = (e: KernelEdge, f: KernelEdge): boolean =>
+  (same(e.a, f.a) && same(e.b, f.b)) || (same(e.a, f.b) && same(e.b, f.a));
+
+interface EdgeDrag {
+  edge: KernelEdge;
+  /** Pending control point; applied on release. */
+  ctrl: Px | null;
+  /** True when the control handle itself is being dragged (pointer = control). */
+  handle: boolean;
+}
+
+/** A vertex drag in flight: the kernel is untouched until release. */
+interface VertexDrag {
+  /** Picked positions when the drag began. */
+  starts: Px[];
+  /** Edges touching any picked vertex, as they were at drag start. */
+  edges: KernelEdge[];
+  /** Current (snapped) world offset. */
+  offset: Px;
+}
 
 export class DirectSelectController {
-  /** Ignore sub-pixel jitter: only apply drags after this many viewport px from pointer-down. */
   private readonly dragMoveThresholdSq = 5 * 5;
   private dragPointerOrigin: Point | null = null;
   private dragPastThreshold = false;
 
   private config: CanvasConfig;
-  private paperRenderer: PaperRenderer;
+  private renderer: StageRenderer;
   private camera: Camera;
   private chromeLayer: ChromeLayer;
   private chromeCtx: CanvasRenderingContext2D;
   private onSnapshot?: () => void;
   private onLiveEditStart?: () => void;
   private onActivateLayer?: (layerId: string) => void;
-  private onReconcile?: (items: paper.PathItem[]) => void;
 
   private selectionShape: "rect" | "lasso" = "rect";
   private lassoQuickShape = new LassoQuickShapeSession();
-
-  private pickedAnchors: Set<AnchorKey> = new Set();
-  private anchorHandles: AnchorHandle[] = [];
-
-  /**
-   * Shapes the user single-clicked to expose. Exposed shapes show their
-   * anchors + outline like picked shapes, but no anchors are actually
-   * picked (selectionStore is not populated). Replaced (not augmented) by
-   * each new single-click; cleared by any pick-changing gesture.
-   */
-  private exposedItemIds: Set<number> = new Set();
-
-  /**
-   * Last edge-interior click. Used to detect a double-click on the same
-   * curve segment of the same path: a second `handleStart` within
-   * `doubleClickWindowMs` and within `doubleClickEdgeDistanceSq`
-   * viewport-pixels² of the first inserts a new vertex on that edge.
-   */
-  private lastEdgeClick: {
-    timestampMs: number;
-    point: Point;
-    itemId: number;
-    childIndex: number;
-    curveIndex: number;
-  } | null = null;
-  private readonly doubleClickWindowMs = 350;
-  /** Slightly larger window for edges since the cursor target is a thin line. */
-  private readonly doubleClickEdgeDistanceSq = 10 * 10;
-
-  /**
-   * True when the in-flight marquee was armed by a shape-interior tap
-   * (peek). On finalize, a tap that never crossed the marquee threshold
-   * keeps the peek-exposure visible; an empty-area tap clears it instead.
-   */
-  private marqueeFromShapePeek = false;
-
-  private isDraggingAnchor = false;
-  private dragStartPoint: Point | null = null;
-  private lastAppliedWorld: Point = { x: 0, y: 0 };
-  private snapSources: SnapSource | null = null;
-  private snapGuides: SnapGuide[] = [];
-  private didMoveAnchor = false;
-
-  /**
-   * Active bezier-handle drag. Only populated while exactly one anchor is
-   * picked and the user pointerdown'd on one of that anchor's tangent knobs.
-   */
-  /**
-   * Explicit Sharp / Mirrored / Independent mode per anchor (from the popup).
-   * Defaults to independent — never inferred from handle angles.
-   */
-  private anchorHandleModes = new Map<AnchorKey, AnchorHandleMode>();
-  private handleDrag: {
-    kind: "in" | "out";
-    segmentKey: AnchorKey;
-    /** From the popup mode only — "mirrored" links the opposite handle. */
-    linkage: HandleLinkage;
-  } | null = null;
-  private didMoveHandle = false;
-  private edgeDrag: {
-    itemId: number;
-    childIndex: number;
-    startSegmentIndex: number;
-    endSegmentIndex: number;
-    startLinkage: HandleLinkage;
-    endLinkage: HandleLinkage;
-  } | null = null;
-  private didMoveEdge = false;
-
   private marquee = new MarqueeTracker();
 
-  /**
-   * Multi-pick transform-gizmo state. Populated only while at least two
-   * anchors are picked so the user can scale/rotate the picked cluster via
-   * the same bbox handles as the select tool.
-   */
-  private transformHandles: SelectionHandle[] = [];
-  private didTransformAnchors = false;
-  private lastViewportPoint: Point | null = null;
-  private transformGizmo: TransformGizmoController;
+  /** Picked vertices, keyed by position. */
+  private picked = new Map<string, Px>();
+  private layerId: string | null = null;
 
+  private isDragging = false;
+  private dragStartWorld: Point | null = null;
+  private didMove = false;
+  private snapGuides: SnapGuide[] = [];
+  private edgeDrag: EdgeDrag | null = null;
+  private vertexDrag: VertexDrag | null = null;
   private lastSelectionViewport: Point | null = null;
-  private selectionChangeCallback?: (hasSelection: boolean) => void;
+  /** Previous edge click, for double-click-to-add-vertex. */
+  private lastEdgeClick: { at: Point; timeMs: number; edge: KernelEdge } | null = null;
 
-  /** Consecutive Simplify clicks on the same shapes. Each click loosens the fit. */
-  private simplifyPasses = 0;
-  private simplifyItemKey = "";
-
-  /** Live simplify/smooth/round drag from the functions panel; geometry restored each move. */
   private pathEditDragSession: {
     kind: PathEditKind;
-    pickKeys: AnchorKey[];
-    paths: Array<{
-      item: paper.PathItem;
-      path: paper.Path;
-      selectedIndices: number[];
-      original: SegmentSnapshot[];
-    }>;
+    picks: Px[];
+    bytes: Uint8Array;
   } | null = null;
 
-  constructor(
-    paperRenderer: PaperRenderer,
-    camera: Camera,
-    chromeLayer: ChromeLayer,
-  ) {
-    this.paperRenderer = paperRenderer;
+  constructor(renderer: StageRenderer, camera: Camera, chromeLayer: ChromeLayer) {
+    this.renderer = renderer;
     this.camera = camera;
     this.chromeLayer = chromeLayer;
     this.chromeCtx = chromeLayer.getContext();
-    this.transformGizmo = new TransformGizmoController({
-      getScreenBounds: () => this.getPickedAnchorScreenBounds(),
-      getRotatePivotWorld: () => this.getPickedAnchorCentroidWorld(),
-      applyScale: (incSX, incSY, worldAnchor) => {
-        this.scalePickedAnchorsInViewSpace(incSX, incSY, worldAnchor);
-      },
-      applyRotate: (degrees, worldPivot) => {
-        this.rotatePickedAnchors(degrees, worldPivot);
-      },
-    });
     this.config = configStore.get();
     configStore.subscribe((config) => {
       this.config = config;
     });
-    const applyDirectSelectSettings = () => {
-      const directSelectSettings = toolSettingsStore.get()["direct-select"] as {
-        shape?: unknown;
-      };
-      this.selectionShape =
-        directSelectSettings.shape === "lasso" ? "lasso" : "rect";
+    const applySettings = () => {
+      const s = toolSettingsStore.get()["direct-select"] as { shape?: unknown } | undefined;
+      this.selectionShape = s?.shape === "lasso" ? "lasso" : "rect";
       this.syncLassoQuickShapePrefs();
     };
-    applyDirectSelectSettings();
-    toolSettingsStore.subscribe(() => applyDirectSelectSettings());
+    applySettings();
+    toolSettingsStore.subscribe(applySettings);
     quickShapeEnabledStore.subscribe(() => this.syncLassoQuickShapePrefs());
     quickShapeCurveStyleStore.subscribe(() => this.syncLassoQuickShapePrefs());
     quickShapeShapesEnabledStore.subscribe(() => this.syncLassoQuickShapePrefs());
@@ -272,9 +162,7 @@ export class DirectSelectController {
   }
 
   private syncLassoQuickShapePrefs(): void {
-    this.lassoQuickShape.setEnabled(
-      quickShapeEnabledStore.get() && this.selectionShape === "lasso",
-    );
+    this.lassoQuickShape.setEnabled(quickShapeEnabledStore.get() && this.selectionShape === "lasso");
     this.lassoQuickShape.setCurveStyle(quickShapeCurveStyleStore.get());
     this.lassoQuickShape.setAllowShapes(quickShapeShapesEnabledStore.get());
     this.lassoQuickShape.setHoldMs(quickShapeHoldMsStore.get());
@@ -292,705 +180,248 @@ export class DirectSelectController {
     this.onActivateLayer = callback;
   }
 
-  setReconcileCallback(callback: (items: paper.PathItem[]) => void): void {
-    this.onReconcile = callback;
-  }
+  // ------------------------------------------------------------
+  // Queries
+  // ------------------------------------------------------------
 
-  onSelectionChange(callback: (hasSelection: boolean) => void): void {
-    this.selectionChangeCallback = callback;
-  }
-
-  // ============================================================
-  // Public API
-  // ============================================================
-
-  /** True when the user has picked at least one anchor. */
   hasSelection(): boolean {
-    return this.pickedAnchors.size > 0;
+    return this.picked.size > 0;
   }
 
-  /**
-   * True when the tool currently has anything to draw — a pick, an
-   * exposed shape, an in-flight drag, or a marquee. The tool no longer
-   * has a "baseline" draw state; without one of these flags the chrome
-   * canvas is fully empty.
-   */
-  hasTransientUI(): boolean {
-    return (
-      this.hasSelection() ||
-      this.exposedItemIds.size > 0 ||
-      this.marquee.isTracking() ||
-      this.isDraggingAnchor ||
-      this.handleDrag !== null ||
-      this.transformGizmo.isTransforming()
-    );
+  getPickedAnchorCount(): number {
+    return this.picked.size;
   }
 
   getLastSelectionViewport(): Point | null {
     return this.lastSelectionViewport;
   }
 
-  getPickedAnchorCount(): number {
-    return this.pickedAnchors.size;
-  }
-
-  getSelectionScreenBounds():
-    | { x: number; y: number; width: number; height: number }
-    | null {
-    return this.getPickedAnchorScreenBounds();
+  getSelectionScreenBounds(): { x: number; y: number; width: number; height: number } | null {
+    if (this.picked.size < 2) return null;
+    return this.pickedScreenBounds();
   }
 
   getSinglePickedAnchorViewport(): Point | null {
-    if (this.pickedAnchors.size !== 1) return null;
-
-    const key = this.pickedAnchors.values().next().value as AnchorKey | undefined;
-    if (!key) return null;
-
-    const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-    const item = this.paperRenderer.getPathById(itemId);
-    if (!item) return null;
-
-    const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
-    if (!seg) return null;
-
-    return this.camera.worldToScreen(seg.point.x, seg.point.y);
+    if (this.picked.size !== 1) return null;
+    const p = this.picked.values().next().value as Px;
+    return this.camera.worldToScreen(p.x, p.y);
   }
 
-  getSinglePickedAnchorScreenBounds():
-    | { x: number; y: number; width: number; height: number }
-    | null {
-    if (this.pickedAnchors.size !== 1) return null;
+  getSinglePickedAnchorScreenBounds(): { x: number; y: number; width: number; height: number } | null {
+    const p = this.getSinglePickedAnchorViewport();
+    if (!p) return null;
+    return { x: p.x - ANCHOR_SIZE, y: p.y - ANCHOR_SIZE, width: ANCHOR_SIZE * 2, height: ANCHOR_SIZE * 2 };
+  }
 
-    const key = this.pickedAnchors.values().next().value as AnchorKey | undefined;
-    if (!key) return null;
-
-    const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-    const item = this.paperRenderer.getPathById(itemId);
-    if (!item) return null;
-
-    const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
-    if (!seg) return null;
-
-    const points = [this.camera.worldToScreen(seg.point.x, seg.point.y)];
-    if (!seg.handleIn.isZero()) {
-      const tip = seg.point.add(seg.handleIn);
-      points.push(this.camera.worldToScreen(tip.x, tip.y));
+  private pickedScreenBounds(): { x: number; y: number; width: number; height: number } | null {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of this.picked.values()) {
+      const s = this.camera.worldToScreen(p.x, p.y);
+      minX = Math.min(minX, s.x); minY = Math.min(minY, s.y);
+      maxX = Math.max(maxX, s.x); maxY = Math.max(maxY, s.y);
     }
-    if (!seg.handleOut.isZero()) {
-      const tip = seg.point.add(seg.handleOut);
-      points.push(this.camera.worldToScreen(tip.x, tip.y));
-    }
-
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const point of points) {
-      if (point.x < minX) minX = point.x;
-      if (point.y < minY) minY = point.y;
-      if (point.x > maxX) maxX = point.x;
-      if (point.y > maxY) maxY = point.y;
-    }
-
-    const pad = 10;
-    return {
-      x: minX - pad,
-      y: minY - pad,
-      width: maxX - minX + pad * 2,
-      height: maxY - minY + pad * 2,
-    };
+    if (!Number.isFinite(minX)) return null;
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
   }
 
-  /**
-   * One simplify step. Another click on the same shapes allows more deviation,
-   * so repeated clicks keep simplifying. Switching shapes starts over.
-   */
-  simplifyPickedVertices(): boolean {
-    if (this.pickedAnchors.size === 0) return false;
-    const key = this.pickedItemIdsKey();
-    if (key !== this.simplifyItemKey) {
-      this.simplifyItemKey = key;
-      this.simplifyPasses = 0;
-    }
-    this.simplifyPasses += 1;
-
-    let size = 1;
-    for (const target of this.collectPickedPathTargets()) {
-      size = Math.max(size, target.path.bounds.width, target.path.bounds.height);
-    }
-    const tolerance = Math.max(1.25, size * 0.02) * this.simplifyPasses;
-    const applied = this.applyPickedPathEdit("simplify", tolerance);
-    if (!applied) this.simplifyPasses = Math.max(0, this.simplifyPasses - 1);
-    return applied;
+  private art(): VectorLayer | null {
+    return this.renderer.activeArt();
   }
 
-  private pickedItemIdsKey(): string {
-    const ids = new Set<number>();
-    for (const key of this.pickedAnchors) ids.add(parseAnchorKey(key).itemId);
-    return [...ids].sort((a, b) => a - b).join(",");
-  }
-
-  /** One-shot Paper smooth of picked verts (geometric factor default 0.4). */
-  smoothPickedVertices(factor = 0.4): boolean {
-    return this.applyPickedPathEdit("smooth", factor);
-  }
-
-  /** One-shot circular fillet of picked sharp corners (world-space radius). */
-  roundPickedCorners(radius = 8): boolean {
-    return this.applyPickedPathEdit("round-corners", radius);
-  }
-
-  /** Start a drag-to-intensity simplify/smooth/round preview. */
-  beginPathEditDrag(kind: PathEditKind): boolean {
-    if (this.pickedAnchors.size === 0 || this.pathEditDragSession) return false;
-    const targets = this.collectPickedPathTargets();
-    if (targets.length === 0) return false;
-    this.onLiveEditStart?.();
-    this.pathEditDragSession = {
-      kind,
-      pickKeys: [...this.pickedAnchors],
-      paths: targets.map((t) => ({
-        item: t.item,
-        path: t.path,
-        selectedIndices: t.selectedIndices,
-        original: snapshotSegments(t.path),
-      })),
-    };
-    return true;
-  }
-
-  /** Re-apply the drag edit from the drag-start geometry. */
-  updatePathEditDrag(amount: number): void {
-    const session = this.pathEditDragSession;
-    if (!session) return;
-    this.pickedAnchors = new Set(session.pickKeys);
-    for (const entry of session.paths) {
-      if (!entry.path.parent) continue;
-      restoreSegments(entry.path, entry.original);
-      applyPathEditToSelected(session.kind, entry.path, entry.selectedIndices, amount);
-    }
-    paper.view.update();
-    this.rebuildAnchorHandles();
-    this.publishPickedItems();
-    this.drawUI();
-  }
-
-  /** Commit the in-progress simplify/smooth drag. */
-  endPathEditDrag(): void {
-    const session = this.pathEditDragSession;
-    if (!session) return;
-    this.pathEditDragSession = null;
-    const items = session.paths.map((p) => p.item).filter((item) => item.parent);
-    this.finishPickedPathEdit(items);
-  }
-
-  isPathEditDragActive(): boolean {
-    return this.pathEditDragSession !== null;
-  }
-
-  private applyPickedPathEdit(kind: PathEditKind, amount: number): boolean {
-    if (this.pickedAnchors.size === 0) return false;
-    if (kind !== "simplify") {
-      this.simplifyPasses = 0;
-      this.simplifyItemKey = "";
-    }
-    this.onLiveEditStart?.();
-    const targets = this.collectPickedPathTargets();
-    if (targets.length === 0) return false;
-    const reselect: typeof targets = [];
-    for (const target of targets) {
-      const wasFull = target.selectedIndices.length >= target.path.segments.length;
-      applyPathEditToSelected(kind, target.path, target.selectedIndices, amount);
-      if (kind === "simplify" && wasFull) reselect.push(target);
-    }
-    const applied = this.finishPickedPathEdit(targets.map((t) => t.item));
-    this.reselectSimplifiedPaths(reselect);
-    return applied;
-  }
-
-  /** A fully selected path stays fully selected after its anchor count changes. */
-  private reselectSimplifiedPaths(
-    targets: Array<{ item: paper.PathItem; path: paper.Path }>,
-  ): void {
-    if (targets.length === 0) return;
-    let added = false;
-    for (const target of targets) {
-      if (!target.path.parent) continue;
-      const childIndex = this.paperRenderer.getChildPaths(target.item).indexOf(target.path);
-      if (childIndex < 0) continue;
-      for (let si = 0; si < target.path.segments.length; si++) {
-        const key = anchorKey(target.item.id, childIndex, si);
-        if (this.pickedAnchors.has(key)) continue;
-        this.pickedAnchors.add(key);
-        added = true;
-      }
-    }
-    if (!added) return;
-    this.rebuildAnchorHandles();
-    this.publishPickedItems();
-    this.drawUI();
-  }
-
-  private collectPickedPathTargets(): Array<{
-    item: paper.PathItem;
-    path: paper.Path;
-    selectedIndices: number[];
-  }> {
-    const byPath = new Map<string, {
-      item: paper.PathItem;
-      path: paper.Path;
-      selected: Set<number>;
-    }>();
-    for (const key of this.pickedAnchors) {
-      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item?.parent) continue;
-      const path = this.paperRenderer.getChildPaths(item)[childIndex];
-      if (!path) continue;
-      const mapKey = `${itemId}:${childIndex}`;
-      let entry = byPath.get(mapKey);
-      if (!entry) {
-        entry = { item, path, selected: new Set() };
-        byPath.set(mapKey, entry);
-      }
-      entry.selected.add(segmentIndex);
-    }
-    return [...byPath.values()].map((e) => ({
-      item: e.item,
-      path: e.path,
-      selectedIndices: [...e.selected].sort((a, b) => a - b),
-    }));
-  }
-
-  private finishPickedPathEdit(items: paper.PathItem[]): boolean {
-    if (items.length === 0) {
-      this.rebuildAnchorHandles();
-      this.publishPickedItems();
-      this.drawUI();
-      return false;
-    }
-    const liveItems = items.filter((item) => item.parent);
-    for (const item of liveItems) {
-      sanitizePathItemTopology(item);
-    }
-    if (this.onReconcile) {
-      this.onReconcile(liveItems.filter((item) => item.parent));
-    }
-    paper.view.update();
-    this.rebuildAnchorHandles();
-    this.onSnapshot?.();
-    this.publishPickedItems();
-    this.drawUI();
-    return true;
-  }
-
-  deletePickedVertices(): boolean {
-    if (this.pickedAnchors.size === 0) return false;
-
-    const removalsByItem = new Map<number, Map<number, number[]>>();
-    for (const key of this.pickedAnchors) {
-      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      if (!removalsByItem.has(itemId)) removalsByItem.set(itemId, new Map());
-      const childMap = removalsByItem.get(itemId)!;
-      if (!childMap.has(childIndex)) childMap.set(childIndex, []);
-      childMap.get(childIndex)!.push(segmentIndex);
-    }
-
-    const affectedItems: paper.PathItem[] = [];
-    for (const [itemId, childMap] of removalsByItem) {
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item?.parent) continue;
-
-      const childPaths = this.paperRenderer.getChildPaths(item);
-      for (const [childIndex, rawIndices] of childMap) {
-        const path = childPaths[childIndex];
-        if (!path) continue;
-
-        const indices = [...new Set(rawIndices)].sort((a, b) => b - a);
-        for (const index of indices) {
-          if (index < 0 || index >= path.segments.length) continue;
-          path.removeSegment(index);
-        }
-
-        const minSegments = path.closed ? 3 : 2;
-        if (path.segments.length < minSegments) {
-          path.remove();
-        }
-      }
-
-      if (item instanceof paper.CompoundPath) {
-        const survivingChildren = item.children.filter(
-          (child): child is paper.Path => child instanceof paper.Path,
-        );
-        if (survivingChildren.length === 0) {
-          item.remove();
-          continue;
-        }
-      } else if (item instanceof paper.Path) {
-        const minSegments = item.closed ? 3 : 2;
-        if (item.segments.length < minSegments) {
-          item.remove();
-          continue;
-        }
-      }
-
-      affectedItems.push(item);
-    }
-
-    if (this.onReconcile && affectedItems.length > 0) {
-      this.onReconcile(affectedItems.filter((item) => item.parent));
-    }
-
-    paper.view.update();
-    for (const key of this.pickedAnchors) this.anchorHandleModes.delete(key);
-    this.pickedAnchors.clear();
-    this.onSnapshot?.();
-    this.publishPickedItems();
-    this.drawUI();
-    return true;
-  }
-
-  setPickedAnchorHandleMode(mode: AnchorHandleMode): boolean {
-    if (this.pickedAnchors.size === 0) return false;
-
-    for (const key of this.pickedAnchors) {
-      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item) continue;
-      const path = this.paperRenderer.getChildPaths(item)[childIndex];
-      const seg = path?.segments[segmentIndex];
-      if (!path || !seg) continue;
-
-      applyHandleModeToSegment(path, segmentIndex, seg, mode);
-      this.anchorHandleModes.set(key, mode);
-    }
-
-    paper.view.update();
-    // Tangents only — skip reconcile/merge. Running it here can mis-classify
-    // compound holes (containment false-negatives) and union them away.
-    this.onSnapshot?.();
-    this.publishPickedItems();
-    this.drawUI();
-    return true;
-  }
-
-  /**
-   * Handle drag linkage. Explicit Mirrored/Independent from the popup wins;
-   * unmarked anchors with opposite handles drag as mirrored so moving a
-   * vert (or reconcile remapping) doesn't force the user to re-press Mirrored.
-   */
-  private handleLinkageFor(key: AnchorKey): HandleLinkage {
-    const mode = this.anchorHandleModes.get(key);
-    if (mode === "mirrored") return "mirrored";
-    if (mode === "independent" || mode === "sharp") return "independent";
-    return this.segmentHandlesAreOpposite(key) ? "mirrored" : "independent";
-  }
-
-  private segmentHandlesAreOpposite(key: AnchorKey): boolean {
-    const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-    const item = this.paperRenderer.getPathById(itemId);
-    const seg = item
-      ? this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex]
-      : undefined;
-    if (!seg) return false;
-    if (seg.handleIn.isZero() || seg.handleOut.isZero()) return false;
-    // Opposite direction only — mirrored keeps independent lengths.
-    return seg.handleIn.normalize().dot(seg.handleOut.normalize()) < -0.98;
-  }
-
-  /** Move a stored handle mode from `from` to `to` when reconcile remaps picks. */
-  private remapHandleMode(from: AnchorKey, to: AnchorKey): void {
-    if (from === to) return;
-    const mode = this.anchorHandleModes.get(from);
-    if (!mode) return;
-    this.anchorHandleModes.delete(from);
-    this.anchorHandleModes.set(to, mode);
-  }
+  // ------------------------------------------------------------
+  // Selection lifecycle
+  // ------------------------------------------------------------
 
   clearSelection(): void {
-    if (this.pathEditDragSession) {
-      for (const entry of this.pathEditDragSession.paths) {
-        if (entry.path.parent) restoreSegments(entry.path, entry.original);
-      }
-      this.pathEditDragSession = null;
-      paper.view.update();
-    }
-    this.pickedAnchors.clear();
-    // Keep modes so Mirrored / Independent survive deselect/reselect.
-    this.exposedItemIds.clear();
-    this.lastEdgeClick = null;
-    this.resetDragState();
-    this.resetMarqueeState();
-    this.resetTransformState();
-    this.lastSelectionViewport = null;
-    selectionStore.set({ items: [] });
+    this.picked.clear();
+    this.layerId = null;
+    this.edgeDrag = null;
+    this.vertexDrag = null;
+    this.pathEditDragSession = null;
+    this.resetGesture();
+    selectionStore.set(EMPTY_SELECTION);
     this.drawUI();
   }
 
-  /**
-   * Finalize any in-progress anchor/handle/transform edit, then clear picks
-   * and chrome. Used when leaving the frame (playhead move) so edits commit
-   * to the frame they were made on.
-   */
   confirmAndClearSelection(): void {
-    if (this.transformGizmo.isTransforming() && this.didTransformAnchors) {
-      this.finalizeAnchorMove();
-    } else if (this.handleDrag && this.didMoveHandle) {
-      this.finalizeHandleMove();
-    } else if (this.edgeDrag && this.didMoveEdge) {
-      this.finalizeEdgeMove();
-    } else if (this.isDraggingAnchor && this.didMoveAnchor) {
-      this.finalizeAnchorMove();
-    }
     this.clearSelection();
   }
 
-  // ============================================================
+  private resetGesture(): void {
+    this.isDragging = false;
+    this.dragStartWorld = null;
+    this.dragPointerOrigin = null;
+    this.dragPastThreshold = false;
+    this.snapGuides = [];
+    this.lassoQuickShape.reset();
+    this.marquee.reset();
+    setSnapGuides([]);
+  }
+
+  private publish(): void {
+    const n = this.picked.size;
+    selectionStore.set(
+      n > 0
+        ? { count: 1, hasShapes: true, instances: [], layerIds: this.layerId ? [this.layerId] : [] }
+        : EMPTY_SELECTION,
+    );
+  }
+
+  /** Drop picks that no longer exist in the map (after kernel edits). */
+  private prunePicks(): void {
+    const art = this.art();
+    if (!art) {
+      this.picked.clear();
+      return;
+    }
+    const live = new Set(art.vertices().map(key));
+    for (const k of [...this.picked.keys()]) if (!live.has(k)) this.picked.delete(k);
+  }
+
+  // ------------------------------------------------------------
   // Pointer events
-  // ============================================================
+  // ------------------------------------------------------------
 
   handleStart(point: Point): void {
-    const viewportPoint = pixelToViewport(point, this.config);
-    this.rebuildAnchorHandles();
+    const vp = pixelToViewport(point, this.config);
+    const world = this.camera.screenToWorld(vp.x, vp.y);
+    const art = this.art();
+    const add = isAddToSelectionModifierHeld(modifiersStore.get());
+    this.lastSelectionViewport = vp;
 
-    // Transform gizmo (bbox + handles) is shown whenever >=2 anchors are
-    // picked. Hit test those handles first so the user can scale/rotate
-    // the cluster even when a handle sits near an anchor square.
-    if (this.pickedAnchors.size >= 2 && this.transformHandles.length > 0) {
-      const hitTransform = this.hitTestTransformHandle(viewportPoint);
-      if (hitTransform && this.transformGizmo.begin(hitTransform, viewportPoint, this.camera)) {
-        this.didTransformAnchors = false;
-        this.dragStartPoint = viewportPoint;
-        this.beginDragThreshold(viewportPoint);
+    if (art) {
+      const tol = ANCHOR_HIT_PX / this.camera.zoom;
+      // Control handles are shown for edges touching picked vertices; grab those first.
+      const handleEdge = this.picked.size > 0 ? this.controlHandleAt(art, world, tol) : null;
+      if (handleEdge) {
+        this.layerId = this.renderer.getActiveLayerId();
+        this.edgeDrag = { edge: handleEdge, ctrl: handleEdge.ctrl, handle: true };
+        this.beginDrag(vp, world);
         this.drawUI();
         return;
       }
-    }
-
-    // Bezier handle drag takes priority over anchor hit testing when a
-    // single anchor is picked (its handles are visible and hit-testable).
-    const handleHit = hitTestBezierHandle(viewportPoint, this.pickedAnchors, this.paperRenderer, this.camera);
-    if (handleHit) {
-      this.handleDrag = {
-        ...handleHit,
-        linkage: this.handleLinkageFor(handleHit.segmentKey),
-      };
-      this.dragStartPoint = viewportPoint;
-      this.beginDragThreshold(viewportPoint);
-      this.didMoveHandle = false;
-      this.lastEdgeClick = null;
-      this.drawUI();
-      return;
-    }
-
-    const hitIdx = this.hitTestAnchor(viewportPoint);
-    if (hitIdx !== null) {
-      const hit = this.anchorHandles[hitIdx];
-      if (!this.pickedAnchors.has(hit.key)) {
-        if (isAddToSelectionModifierHeld(modifiersStore.get())) {
-          this.pickedAnchors = new Set([...this.pickedAnchors, hit.key]);
-        } else {
-          this.pickedAnchors = new Set([hit.key]);
-        }
-      }
-      // Anchor click is "on a shape" — leave peek intact.
-      this.lastEdgeClick = null;
-      this.isDraggingAnchor = true;
-      this.dragStartPoint = viewportPoint;
-      this.beginDragThreshold(viewportPoint);
-      this.didMoveAnchor = false;
-      this.bringInteractedItemsToFront();
-      this.publishPickedItems();
-      this.drawUI();
-      return;
-    }
-
-    const edgeHit = this.hitTestEdge(viewportPoint);
-    if (edgeHit) {
-      const now = performance.now();
-      const isDoubleClickEdge = this.isDoubleClickOnEdge(viewportPoint, edgeHit, now);
-
-      if (isDoubleClickEdge) {
-        const inserted = this.insertVertexOnEdge(viewportPoint, edgeHit);
-        if (inserted) {
-          // Pick the freshly inserted anchor and arm an anchor-drag so
-          // the user can immediately reposition it without lifting
-          // the pointer.
-          const newKey = anchorKey(
-            edgeHit.itemId,
-            edgeHit.childIndex,
-            inserted.newSegmentIndex,
-          );
-          this.pickedAnchors = new Set([newKey]);
-          this.lastEdgeClick = null;
-          this.isDraggingAnchor = true;
-          this.dragStartPoint = viewportPoint;
-          this.beginDragThreshold(viewportPoint);
-          this.didMoveAnchor = false;
-          this.bringInteractedItemsToFront();
-          // Snapshot the insertion now so undo always recovers the
-          // pre-insert state, even if the user never drags.
-          this.onSnapshot?.();
-          this.rebuildAnchorHandles();
-          this.publishPickedItems();
+      const v = art.nearestVertex(world, tol);
+      if (v) {
+        const k = key(v);
+        if (!this.picked.has(k)) {
+          if (!add) this.picked.clear();
+          this.picked.set(k, v);
+        } else if (add) {
+          this.picked.delete(k);
+          this.publish();
           this.drawUI();
           return;
         }
-      }
-
-      // Edge drag edits curvature only — do not pick the endpoint verts.
-      if (!isAddToSelectionModifierHeld(modifiersStore.get())) {
-        this.pickedAnchors = new Set();
-      }
-      this.exposedItemIds = new Set([edgeHit.itemId]);
-      // Edge click is "on a shape" — record it so a quick second tap on the
-      // same curve can promote into a vertex-insert.
-      this.lastEdgeClick = {
-        timestampMs: now,
-        point: viewportPoint,
-        itemId: edgeHit.itemId,
-        childIndex: edgeHit.childIndex,
-        curveIndex: edgeHit.startSegmentIndex,
-      };
-      this.edgeDrag = {
-        ...edgeHit,
-        startLinkage: this.handleLinkageFor(
-          anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.startSegmentIndex),
-        ),
-        endLinkage: this.handleLinkageFor(
-          anchorKey(edgeHit.itemId, edgeHit.childIndex, edgeHit.endSegmentIndex),
-        ),
-      };
-      this.dragStartPoint = viewportPoint;
-      this.beginDragThreshold(viewportPoint);
-      this.didMoveEdge = false;
-      this.bringInteractedItemsToFront();
-      this.publishPickedItems();
-      this.drawUI();
-      return;
-    }
-
-    const shapeHit = this.paperRenderer.resolveSelectablePath(
-      this.paperRenderer.hitTestSelectable(viewportPoint),
-    );
-    if (shapeHit) {
-      const layerId = this.paperRenderer.getLayerIdForPathItem(shapeHit);
-      if (layerId) this.onActivateLayer?.(layerId);
-
-      // Add-to-selection: keep existing picks and union this shape's anchors.
-      if (isAddToSelectionModifierHeld(modifiersStore.get())) {
-        this.pickAllAnchorsOfItem(shapeHit, true);
-        this.exposedItemIds = new Set([...this.exposedItemIds, shapeHit.id]);
-        this.lastEdgeClick = null;
-        this.marqueeFromShapePeek = true;
-        this.beginMarquee(viewportPoint);
-        this.bringInteractedItemsToFront();
-        this.publishPickedItems();
+        this.layerId = this.renderer.getActiveLayerId();
+        this.beginDrag(vp, world);
+        const starts = [...this.picked.values()];
+        this.vertexDrag = {
+          starts,
+          edges: art.edges().filter((e) => starts.some((p) => same(e.a, p) || same(e.b, p))),
+          offset: { x: 0, y: 0 },
+        };
+        this.publish();
         this.drawUI();
         return;
       }
 
-      // Already soft-selected: pick every vert. Click-drag also moves the shape.
-      if (this.exposedItemIds.has(shapeHit.id)) {
-        this.pickAllAnchorsOfItem(shapeHit, false);
-        this.lastEdgeClick = null;
-        this.isDraggingAnchor = true;
-        this.dragStartPoint = viewportPoint;
-        this.beginDragThreshold(viewportPoint);
-        this.didMoveAnchor = false;
-        this.bringInteractedItemsToFront();
-        this.publishPickedItems();
+      const e = art.nearestEdge(world, EDGE_HIT_PX / this.camera.zoom);
+      if (e) {
+        const now = performance.now();
+        const last = this.lastEdgeClick;
+        const isDouble =
+          !!last &&
+          now - last.timeMs <= DOUBLE_CLICK_MS &&
+          sameEdgeEnds(last.edge, e) &&
+          Math.hypot(vp.x - last.at.x, vp.y - last.at.y) <= DOUBLE_CLICK_PX;
+        this.lastEdgeClick = isDouble ? null : { at: vp, timeMs: now, edge: e };
+        if (isDouble) {
+          this.layerId = this.renderer.getActiveLayerId();
+          this.addVertexOnEdge(art, e, world);
+          return;
+        }
+        if (!add) this.picked.clear();
+        this.layerId = this.renderer.getActiveLayerId();
+        this.edgeDrag = { edge: e, ctrl: e.ctrl, handle: false };
+        this.beginDrag(vp, world);
+        this.publish();
         this.drawUI();
         return;
       }
-
-      // First click: peek-only (show verts, don't pick). Drag from here
-      // still promotes into a marquee. A tap leaves the exposure in place.
-      this.pickedAnchors.clear();
-      this.exposedItemIds = new Set([shapeHit.id]);
-      this.lastEdgeClick = null;
-      this.marqueeFromShapePeek = true;
-      this.beginMarquee(viewportPoint);
-      this.bringInteractedItemsToFront();
-      this.publishPickedItems();
-      this.drawUI();
-      return;
     }
 
-    this.lastEdgeClick = null;
-    this.marqueeFromShapePeek = false;
-    this.beginMarquee(viewportPoint);
+    // Empty space: marquee (tap clears unless adding).
+    this.marquee.start(vp);
+    if (this.selectionShape === "lasso") {
+      this.syncLassoQuickShapePrefs();
+      this.lassoQuickShape.begin(
+        vp,
+        () => this.marquee.getLassoPoints(),
+        (path) => {
+          this.marquee.setLassoPoints(path);
+          this.drawUI();
+        },
+      );
+    }
     this.drawUI();
   }
 
-  /**
-   * Treat the current `handleStart` as a double-click on the SAME edge
-   * iff the previous click landed on the same item/child/curve, recent
-   * (< doubleClickWindowMs ago), and within doubleClickEdgeDistanceSq
-   * viewport-pixels² of the first.
-   */
-  private isDoubleClickOnEdge(
-    viewportPoint: Point,
-    edgeHit: { itemId: number; childIndex: number; startSegmentIndex: number },
-    nowMs: number,
-  ): boolean {
-    const last = this.lastEdgeClick;
-    if (!last) return false;
-    if (last.itemId !== edgeHit.itemId) return false;
-    if (last.childIndex !== edgeHit.childIndex) return false;
-    if (last.curveIndex !== edgeHit.startSegmentIndex) return false;
-    if (nowMs - last.timestampMs > this.doubleClickWindowMs) return false;
-    const dx = viewportPoint.x - last.point.x;
-    const dy = viewportPoint.y - last.point.y;
-    return dx * dx + dy * dy <= this.doubleClickEdgeDistanceSq;
+  /** Edges whose control handles are visible (curved, touching a picked vertex). */
+  private handleEdges(art: VectorLayer): KernelEdge[] {
+    return art.edges().filter((e) => e.ctrl && (this.picked.has(key(e.a)) || this.picked.has(key(e.b))));
   }
 
-  /**
-   * Insert a new segment on the curve identified by `edgeHit` at the
-   * point closest to `viewportPoint`. Uses Paper.js's `Curve#divideAt`,
-   * which subdivides the curve in-place via De Casteljau so the path
-   * shape is preserved (the two resulting curves get correctly adjusted
-   * handles).
-   *
-   * Returns the inserted segment's index in `path.segments`, or null if
-   * the location was too close to an existing endpoint to safely split
-   * (which would create a duplicate segment).
-   */
-  private insertVertexOnEdge(
-    viewportPoint: Point,
-    edgeHit: { itemId: number; childIndex: number; startSegmentIndex: number },
-  ): { newSegmentIndex: number } | null {
-    const item = this.paperRenderer.getPathById(edgeHit.itemId);
-    if (!item) return null;
-    const path = this.paperRenderer.getChildPaths(item)[edgeHit.childIndex];
-    if (!path) return null;
-    const curve = path.curves[edgeHit.startSegmentIndex];
-    if (!curve) return null;
+  private controlHandleAt(art: VectorLayer, world: Px, tol: number): KernelEdge | null {
+    let best: KernelEdge | null = null;
+    let bestD = tol;
+    for (const e of this.handleEdges(art)) {
+      const d = Math.hypot(e.ctrl!.x - world.x, e.ctrl!.y - world.y);
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
+    }
+    return best;
+  }
 
-    const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
-    const queryPoint = new paper.Point(worldPoint.x, worldPoint.y);
-    const location = curve.getNearestLocation(queryPoint);
-    if (!location) return null;
+  /** Split `e` at the point nearest `world`, keeping its shape, and pick the new vertex. */
+  private addVertexOnEdge(art: VectorLayer, e: KernelEdge, world: Px): void {
+    const t = nearestT(e, world);
+    if (t <= 0.02 || t >= 0.98) return;
+    const lerp = (p: Px, q: Px): Px => ({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
+    let mid: Px;
+    let segs: Seg[];
+    if (e.ctrl) {
+      // de Casteljau: both halves stay on the original curve.
+      const c1 = lerp(e.a, e.ctrl);
+      const c2 = lerp(e.ctrl, e.b);
+      mid = lerp(c1, c2);
+      segs = [{ kind: "Q", c: c1, to: mid }, { kind: "Q", c: c2, to: e.b }];
+    } else {
+      mid = lerp(e.a, e.b);
+      segs = [{ kind: "L", to: mid }, { kind: "L", to: e.b }];
+    }
+    if (!art.replaceChain([e.a, e.b], segs)) return;
+    this.picked = rekeyPicks(art, [mid]);
+    this.commitEdit();
+    this.publish();
+    this.drawUI();
+  }
 
-    // Don't split if we're effectively on top of an endpoint — that
-    // would just clone an existing segment in place.
-    const epsilon = 1e-3;
-    if (location.time <= epsilon || location.time >= 1 - epsilon) return null;
-
-    const newCurve = curve.divideAt(location);
-    if (!newCurve) return null;
-
-    paper.view.update();
-    return { newSegmentIndex: edgeHit.startSegmentIndex + 1 };
+  private beginDrag(vp: Point, world: Point): void {
+    this.isDragging = true;
+    this.dragStartWorld = world;
+    this.dragPointerOrigin = vp;
+    this.dragPastThreshold = false;
+    this.didMove = false;
   }
 
   handleMove(point: Point): void {
-    const viewportPoint = pixelToViewport(point, this.config);
-    this.lastViewportPoint = viewportPoint;
+    const vp = pixelToViewport(point, this.config);
 
     if (this.marquee.isTracking()) {
       if (this.selectionShape === "lasso") {
-        const mode = this.lassoQuickShape.noteMove(viewportPoint);
+        const mode = this.lassoQuickShape.noteMove(vp);
         if (mode === "adjust") {
           const path = this.lassoQuickShape.getPath();
           if (path) this.marquee.setLassoPoints(path);
@@ -998,1374 +429,407 @@ export class DirectSelectController {
           return;
         }
       }
-      this.marquee.update(
-        viewportPoint,
-        this.selectionShape,
-        isConstrainScaleModifierHeld(modifiersStore.get()),
-      );
+      this.marquee.update(vp, this.selectionShape, isConstrainScaleModifierHeld(modifiersStore.get()));
       this.drawUI();
       return;
     }
 
-    if (this.transformGizmo.isTransforming()) {
-      if (this.pastDragThreshold(viewportPoint)) {
-        let vp = viewportPoint;
-        if (this.transformGizmo.getActiveHandle() !== "rotate") {
-          const snapped = snapScreenPoint(
-            viewportPoint,
-            this.camera,
-            this.paperRenderer,
-            this.snapExcludeIds(),
-          );
-          vp = snapped.screen;
-          this.snapGuides = snapped.guides;
-        } else {
-          this.snapGuides = [];
-        }
-        if (this.transformGizmo.update(vp, this.camera)) {
-          this.noteLiveEditStarted("transform");
-        }
-      }
-      this.drawUI();
-      return;
+    if (!this.isDragging || !this.dragStartWorld || !this.dragPointerOrigin) return;
+    if (!this.dragPastThreshold) {
+      const dx = vp.x - this.dragPointerOrigin.x;
+      const dy = vp.y - this.dragPointerOrigin.y;
+      if (dx * dx + dy * dy < this.dragMoveThresholdSq) return;
+      this.dragPastThreshold = true;
     }
 
-    if (this.handleDrag) {
-      if (this.pastDragThreshold(viewportPoint)) {
-        const hostId = parseAnchorKey(this.handleDrag.segmentKey).itemId;
-        const snapped = snapScreenPoint(
-          viewportPoint,
-          this.camera,
-          this.paperRenderer,
-          new Set([hostId]),
-        );
-        this.snapGuides = snapped.guides;
-        this.dragBezierHandleTo(snapped.screen);
-      }
-      return;
-    }
+    const art = this.art();
+    if (!art) return;
+    const world = this.camera.screenToWorld(vp.x, vp.y);
 
     if (this.edgeDrag) {
-      if (this.pastDragThreshold(viewportPoint)) {
-        this.dragBezierEdgeTo(viewportPoint);
-      }
-      return;
-    }
-
-    if (!this.isDraggingAnchor || !this.dragStartPoint) return;
-
-    if (!this.pastDragThreshold(viewportPoint)) {
+      // Preview only; the kernel edge is bent on release. Dragging the handle
+      // places the control at the pointer; dragging the edge body puts the
+      // curve through the pointer at t = 0.5: ctrl = 2P - (A + B) / 2.
+      const { a, b } = this.edgeDrag.edge;
+      this.edgeDrag.ctrl = this.edgeDrag.handle
+        ? world
+        : { x: 2 * world.x - (a.x + b.x) / 2, y: 2 * world.y - (a.y + b.y) / 2 };
+      this.noteEdit();
       this.drawUI();
       return;
     }
 
-    const origin = this.dragPointerOrigin ?? this.dragStartPoint;
+    const drag = this.vertexDrag;
+    if (!drag || drag.starts.length === 0) return;
     const total = {
-      x: viewportPoint.x - origin.x,
-      y: viewportPoint.y - origin.y,
+      x: vp.x - this.dragPointerOrigin.x,
+      y: vp.y - this.dragPointerOrigin.y,
     };
     const constrain = isConstrainMoveModifierHeld(modifiersStore.get());
     const constrained = constrainAxisScreenDelta(total.x, total.y, constrain);
     const desired = this.camera.screenDeltaToWorld(constrained.x, constrained.y);
-    const sources = this.snapSources ?? { xs: [], ys: [], points: [] };
     const snapped = snapWorldTranslation(
-      sources,
+      { xs: [], ys: [], points: drag.starts },
       desired,
       this.camera,
-      this.paperRenderer,
-      this.snapExcludeIds(),
+      this.renderer,
       snapLockFromConstrain(constrained, constrain),
-      offsetPoints(sources.points, this.lastAppliedWorld),
+      drag.starts,
+      false,
     );
     this.snapGuides = snapped.guides;
-
-    const apply = {
-      x: snapped.dx - this.lastAppliedWorld.x,
-      y: snapped.dy - this.lastAppliedWorld.y,
-    };
-    if (apply.x !== 0 || apply.y !== 0) {
-      this.noteLiveEditStarted("anchor");
-      this.moveSelectedAnchors(apply.x, apply.y);
-      this.lastAppliedWorld = { x: snapped.dx, y: snapped.dy };
-      this.dragStartPoint = viewportPoint;
+    if (snapped.dx !== drag.offset.x || snapped.dy !== drag.offset.y) {
+      drag.offset = { x: snapped.dx, y: snapped.dy };
+      this.noteEdit();
     }
     this.drawUI();
+  }
+
+  /** Commit the in-flight drag to the kernel (once, on release). */
+  private applyDrag(art: VectorLayer): boolean {
+    if (this.edgeDrag) {
+      const { edge, ctrl } = this.edgeDrag;
+      if (!ctrl || (edge.ctrl && same(edge.ctrl, ctrl))) return false;
+      return art.curveEdge(edge, ctrl);
+    }
+    const drag = this.vertexDrag;
+    if (!drag || (drag.offset.x === 0 && drag.offset.y === 0)) return false;
+    const moves = drag.starts.map((p) => ({ from: p, to: { x: p.x + drag.offset.x, y: p.y + drag.offset.y } }));
+    if (!art.moveVertices(moves)) return false;
+    this.picked = new Map(moves.map((m) => [key(m.to), m.to]));
+    return true;
   }
 
   handleEnd(): void {
     if (this.marquee.isTracking()) {
-      this.finalizeMarquee();
-      this.resetMarqueeState();
+      const start = this.marquee.getStartPoint();
+      const cur = this.marquee.getCurrentPoint();
+      const lasso = this.marquee.getLassoPoints();
+      const add = isAddToSelectionModifierHeld(modifiersStore.get());
+      const active = this.marquee.hasActiveMarquee(this.selectionShape);
+      this.lassoQuickShape.reset();
+      this.marquee.reset();
+      if (!start || !cur) {
+        this.drawUI();
+        return;
+      }
+      if (!add) this.picked.clear();
+      if (active) {
+        const art = this.art();
+        if (art) {
+          const toWorld = (p: Point) => this.camera.screenToWorld(p.x, p.y);
+          const poly =
+            this.selectionShape === "lasso"
+              ? lasso.map(toWorld)
+              : [toWorld(start), toWorld({ x: cur.x, y: start.y }), toWorld(cur), toWorld({ x: start.x, y: cur.y })];
+          if (poly.length >= 3) {
+            for (const v of art.vertices()) {
+              if (pointInPolygon(v, poly)) this.picked.set(key(v), v);
+            }
+          }
+          if (this.picked.size > 0) {
+            this.layerId = this.renderer.getActiveLayerId();
+            if (this.layerId) this.onActivateLayer?.(this.layerId);
+          }
+        }
+      }
+      this.publish();
       this.drawUI();
       return;
     }
 
-    if (this.transformGizmo.isTransforming()) {
-      if (this.didTransformAnchors) this.finalizeAnchorMove();
-      this.resetTransformState();
-      this.resetDragState();
+    if (this.isDragging) {
+      const art = this.art();
+      if (this.didMove && art && this.applyDrag(art)) {
+        this.prunePicks();
+        if (this.layerId) this.renderer.markLayerDirty(this.layerId);
+        this.renderer.requestRender();
+        this.publish();
+        this.onSnapshot?.();
+      }
+      this.edgeDrag = null;
+      this.vertexDrag = null;
+      this.resetGesture();
       this.drawUI();
-      return;
     }
-
-    if (this.handleDrag) {
-      if (this.didMoveHandle) this.finalizeHandleMove();
-      this.resetDragState();
-      this.drawUI();
-      return;
-    }
-
-    if (this.edgeDrag) {
-      if (this.didMoveEdge) this.finalizeEdgeMove();
-      this.resetDragState();
-      this.drawUI();
-      return;
-    }
-
-    if (this.isDraggingAnchor && this.didMoveAnchor) {
-      this.finalizeAnchorMove();
-    }
-
-    this.resetDragState();
-    this.drawUI();
   }
 
   handleCancel(): void {
-    this.resetDragState();
-    this.resetMarqueeState();
-    this.resetTransformState();
+    this.edgeDrag = null;
+    this.vertexDrag = null;
+    this.resetGesture();
     this.drawUI();
   }
 
-  // ============================================================
-  // Drawing
-  // ============================================================
+  private noteEdit(): void {
+    if (!this.didMove) {
+      this.didMove = true;
+      this.onLiveEditStart?.();
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Vertex operations
+  // ------------------------------------------------------------
+
+  /** Edges touching `v` in the current map. */
+  private incident(art: VectorLayer, v: Px): KernelEdge[] {
+    return art.edges().filter((e) => same(e.a, v) || same(e.b, v));
+  }
+
+  /** Collapse each picked vertex onto a neighbour, removing it. */
+  deletePickedVertices(): void {
+    const art = this.art();
+    if (!art || this.picked.size === 0) return;
+    let changed = false;
+    for (const v of this.picked.values()) {
+      const inc = this.incident(art, v);
+      if (inc.length === 0) continue;
+      const e = inc[0];
+      const target = same(e.a, v) ? e.b : e.a;
+      if (art.moveVertex(v, target)) changed = true;
+    }
+    this.picked.clear();
+    if (changed) this.commitEdit();
+    this.publish();
+    this.drawUI();
+  }
+
+  /**
+   * Replace every picked run with a least-squares cubic fit, dropping
+   * redundant vertices. `tol` is the max deviation in world pixels.
+   */
+  simplifyPickedVertices(tol = SIMPLIFY_TOL_PX): void {
+    const art = this.art();
+    if (!art || this.picked.size === 0) return;
+    const { changed, picks } = simplifyChains(art, this.picked, tol);
+    this.picked = rekeyPicks(art, picks);
+    if (changed) this.commitEdit();
+    this.publish();
+    this.drawUI();
+  }
+
+  /**
+   * Make every picked run a cubic spline through its vertices. `amount` is
+   * the handle length as a fraction of each edge's chord (1/3 ≈ Catmull-Rom).
+   */
+  smoothPickedVertices(amount = SMOOTH_DEFAULT): void {
+    const art = this.art();
+    if (!art || this.picked.size === 0) return;
+    const { changed, picks } = smoothChains(art, this.picked, amount);
+    this.picked = rekeyPicks(art, picks);
+    if (changed) this.commitEdit();
+    this.drawUI();
+  }
+
+  private commitEdit(): void {
+    if (this.layerId) this.renderer.markLayerDirty(this.layerId);
+    this.renderer.requestRender();
+    this.onLiveEditStart?.();
+    this.onSnapshot?.();
+  }
+
+  // ------------------------------------------------------------
+  // Draggable "simplify"
+  // ------------------------------------------------------------
+
+  beginPathEditDrag(kind: PathEditKind): boolean {
+    const art = this.art();
+    if (!art || this.picked.size === 0 || this.pathEditDragSession) return false;
+    this.pathEditDragSession = { kind, picks: [...this.picked.values()], bytes: art.toBytes() };
+    return true;
+  }
+
+  updatePathEditDrag(amount: number): void {
+    const session = this.pathEditDragSession;
+    const art = this.art();
+    if (!session || !art) return;
+    // Rebuild from the pristine map, then apply the current amount.
+    art.restoreBytes(session.bytes);
+    this.picked = new Map(session.picks.map((p) => [key(p), p]));
+    // amount is a world drag distance: a fit tolerance (further = fewer vertices).
+    const tol = Math.min(SIMPLIFY_TOL_MAX, Math.max(SIMPLIFY_TOL_MIN, amount / 10));
+    this.picked = rekeyPicks(art, simplifyChains(art, this.picked, tol).picks);
+    if (this.layerId) this.renderer.markLayerDirty(this.layerId);
+    this.renderer.requestRender();
+    this.drawUI();
+  }
+
+  endPathEditDrag(): void {
+    if (!this.pathEditDragSession) return;
+    this.pathEditDragSession = null;
+    this.onLiveEditStart?.();
+    this.onSnapshot?.();
+    this.drawUI();
+  }
+
+  isPathEditDragActive(): boolean {
+    return this.pathEditDragSession !== null;
+  }
+
+  // ------------------------------------------------------------
+  // Chrome
+  // ------------------------------------------------------------
 
   drawUI(): void {
     this.chromeLayer.clear();
-    this.rebuildAnchorHandles();
-
     const ctx = this.chromeCtx;
-    ctx.save();
-
-    // Shown shapes = picked-into shapes ∪ peek-exposed shapes. Outline
-    // every shown shape; the anchor loop below uses the same set so verts
-    // and outline always appear (or disappear) together.
-    const shownItemIds = new Set<number>();
-    for (const item of this.getPickedItems()) {
-      shownItemIds.add(item.id);
-      this.paperRenderer.strokeSelectionShapeOutline(ctx, item);
-    }
-    for (const itemId of this.exposedItemIds) {
-      if (shownItemIds.has(itemId)) continue;
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item || !item.parent) continue;
-      shownItemIds.add(item.id);
-      this.paperRenderer.strokeSelectionShapeOutline(ctx, item);
-    }
-
-    // When exactly one anchor is picked, expose its bezier control handles
-    // (handleIn / handleOut). Drawn before the anchor squares so the picked
-    // anchor sits visually on top of the handle arms meeting at it.
-    if (this.pickedAnchors.size === 1) {
-      drawBezierHandlesForSoloPick(ctx, this.pickedAnchors, this.paperRenderer, this.camera);
-    }
-
-    // Anchor nodes: picked = black / white; exposed unpicked = solid grey (dim).
-    // Only shown shapes (picked-into or peek-exposed) render their anchor
-    // squares — every other shape draws nothing.
-    const unpickedR = 3;
-    const pickedR = 5;
-    const unpickedFill = "#6e6e6e";
-    const unpickedStroke = "#b8b8b8";
-    for (const h of this.anchorHandles) {
-      if (!shownItemIds.has(h.item.id)) continue;
-      const isPicked = this.pickedAnchors.has(h.key);
-      const r = isPicked ? pickedR : unpickedR;
-      ctx.fillStyle = isPicked ? "#000000" : unpickedFill;
-      ctx.strokeStyle = isPicked ? "#ffffff" : unpickedStroke;
-      ctx.lineWidth = isPicked ? 2 : 1.5;
-      ctx.beginPath();
-      ctx.rect(h.x - r, h.y - r, r * 2, r * 2);
-      ctx.fill();
-      ctx.stroke();
-    }
-
-    // Multi-pick transform gizmo: same bbox + 8 resize + 1 rotate handles as
-    // the select tool, but sized to the picked anchors' screen bounds.
-    // Suppress it during edge dragging so curvature editing stays visually focused.
-    if (this.pickedAnchors.size >= 2 && !this.edgeDrag) {
-      const bounds = this.getPickedAnchorScreenBounds();
-      if (bounds) {
-        const rotating = this.transformGizmo.getRotationOverlay(
-          this.camera,
-          this.lastViewportPoint,
-        );
-        this.transformHandles = this.paperRenderer.drawTransformChrome(
-          bounds,
-          ctx,
-          rotating,
-        );
-      } else {
-        this.transformHandles = [];
-      }
-    } else {
-      this.transformHandles = [];
-    }
 
     if (this.marquee.isTracking()) {
       const start = this.marquee.getStartPoint();
-      const current = this.marquee.getCurrentPoint();
-      if (!start || !current) {
-        ctx.restore();
-        return;
-      }
-      if (this.selectionShape === "lasso") {
-        this.chromeLayer.drawLassoPreview(this.marquee.getLassoPoints());
-      } else {
-        this.chromeLayer.drawMarqueeRect(start, current);
+      const cur = this.marquee.getCurrentPoint();
+      if (start && cur) {
+        if (this.selectionShape === "lasso") this.chromeLayer.drawLassoPreview(this.marquee.getLassoPoints());
+        else this.chromeLayer.drawMarqueeRect(start, cur);
       }
       setSnapGuides([]);
-      ctx.restore();
       return;
+    }
+
+    const art = this.art();
+    if (art && !art.isEmpty()) {
+      this.drawOutline(ctx, art);
+      const drag = this.vertexDrag;
+      const shift = (p: Px): Px =>
+        drag && drag.starts.some((s) => same(s, p)) ? { x: p.x + drag.offset.x, y: p.y + drag.offset.y } : p;
+      // Same palette as the main select chrome (selection-chrome.ts).
+      const controlFill = "#000000";
+      const controlStroke = "#ffffff";
+      ctx.save();
+      ctx.setLineDash([]);
+      // Control handles of curved edges touching picked vertices (at their
+      // pending positions while a drag is in flight), under the vertices.
+      const handles = this.handleEdges(art).map((e) => this.pendingEdge(e));
+      if (this.edgeDrag?.ctrl && !handles.some((h) => sameEdgeEnds(h, this.edgeDrag!.edge))) {
+        handles.push({ ...this.edgeDrag.edge, ctrl: this.edgeDrag.ctrl });
+      }
+      for (const e of handles) {
+        if (!e.ctrl) continue;
+        const c = this.camera.worldToScreen(e.ctrl.x, e.ctrl.y);
+        const a = this.camera.worldToScreen(e.a.x, e.a.y);
+        const b = this.camera.worldToScreen(e.b.x, e.b.y);
+        for (const pass of [{ style: controlStroke, width: 3 }, { style: controlFill, width: 1.5 }]) {
+          ctx.strokeStyle = pass.style;
+          ctx.lineWidth = pass.width;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(c.x, c.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = controlFill;
+        ctx.strokeStyle = controlStroke;
+        ctx.lineWidth = 2;
+        ctx.fill();
+        ctx.stroke();
+      }
+      // Vertices: black squares for picked, white for free, like select handles.
+      ctx.lineWidth = 2;
+      for (const v0 of art.vertices()) {
+        const v = shift(v0);
+        const s = this.camera.worldToScreen(v.x, v.y);
+        const isPicked = this.picked.has(key(v0));
+        ctx.fillStyle = isPicked ? controlFill : controlStroke;
+        ctx.strokeStyle = isPicked ? controlStroke : controlFill;
+        ctx.fillRect(s.x - ANCHOR_SIZE / 2, s.y - ANCHOR_SIZE / 2, ANCHOR_SIZE, ANCHOR_SIZE);
+        ctx.strokeRect(s.x - ANCHOR_SIZE / 2, s.y - ANCHOR_SIZE / 2, ANCHOR_SIZE, ANCHOR_SIZE);
+      }
+      ctx.restore();
     }
 
     setSnapGuides(this.snapGuides);
+  }
+
+  /**
+   * `e` as it will be after the in-flight drag: endpoints shifted, the
+   * control carried by the full offset when both ends move, half when one
+   * does (matching the kernel's `moveVertices`), or replaced by the pending
+   * control of an edge/handle drag.
+   */
+  private pendingEdge(e: KernelEdge): KernelEdge {
+    if (this.edgeDrag && sameEdgeEnds(e, this.edgeDrag.edge)) return { ...e, ctrl: this.edgeDrag.ctrl };
+    const d = this.vertexDrag;
+    if (!d) return e;
+    const moved = (p: Px) => d.starts.some((s) => same(s, p));
+    const shift = (p: Px): Px => (moved(p) ? { x: p.x + d.offset.x, y: p.y + d.offset.y } : p);
+    const ends = Number(moved(e.a)) + Number(moved(e.b));
+    const ctrl = e.ctrl && ends ? { x: e.ctrl.x + (d.offset.x * ends) / 2, y: e.ctrl.y + (d.offset.y * ends) / 2 } : e.ctrl;
+    return { a: shift(e.a), b: shift(e.b), ctrl };
+  }
+
+  /**
+   * Dashed outline of every edge on the active layer, at its pending
+   * position while a drag is in flight (so the preview is the outline).
+   */
+  private drawOutline(ctx: CanvasRenderingContext2D, art: VectorLayer): void {
+    ctx.save();
+    ctx.beginPath();
+    for (const e0 of art.edges()) {
+      const e = this.pendingEdge(e0);
+      const a = this.camera.worldToScreen(e.a.x, e.a.y);
+      const b = this.camera.worldToScreen(e.b.x, e.b.y);
+      ctx.moveTo(a.x, a.y);
+      if (e.ctrl) {
+        const c = this.camera.worldToScreen(e.ctrl.x, e.ctrl.y);
+        ctx.quadraticCurveTo(c.x, c.y, b.x, b.y);
+      } else {
+        ctx.lineTo(b.x, b.y);
+      }
+    }
+    // Same passes as the main select outline (StageRenderer.strokePartsOutline).
+    ctx.lineJoin = "round";
+    ctx.setLineDash([6, 5]);
+    for (const pass of [
+      { style: "rgba(0, 0, 0, 0.45)", width: 5 },
+      { style: "#ffffff", width: 3.5 },
+      { style: "#000000", width: 1.5 },
+    ]) {
+      ctx.strokeStyle = pass.style;
+      ctx.lineWidth = pass.width;
+      ctx.stroke();
+    }
     ctx.restore();
   }
+}
 
-  // ============================================================
-  // Derived state
-  // ============================================================
-
-  /** Items on the active layer that own at least one picked anchor. */
-  private getPickedItems(): paper.PathItem[] {
-    if (this.pickedAnchors.size === 0) return [];
-    const items: paper.PathItem[] = [];
-    const seen = new Set<number>();
-    for (const key of this.pickedAnchors) {
-      const { itemId } = parseAnchorKey(key);
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item || seen.has(item.id)) continue;
-      seen.add(item.id);
-      items.push(item);
-    }
-    return items;
-  }
-
-  /** Pick every anchor on this shape (fill click / interior hit). */
-  private pickAllAnchorsOfItem(item: paper.PathItem, additive = false): void {
-    const keys = additive ? new Set(this.pickedAnchors) : new Set<AnchorKey>();
-    this.forEachSegment(item, (ci, si) => {
-      keys.add(anchorKey(item.id, ci, si));
-    });
-    this.pickedAnchors = keys;
-  }
-
-  private rebuildAnchorHandles(): void {
-    const handles: AnchorHandle[] = [];
-    const liveKeys = new Set<AnchorKey>();
-    const liveItemIds = new Set<number>();
-
-    for (const item of this.paperRenderer.getAllPaths()) {
-      liveItemIds.add(item.id);
-      this.forEachSegment(item, (ci, si, seg) => {
-        const screen = this.camera.worldToScreen(seg.point.x, seg.point.y);
-        const key = anchorKey(item.id, ci, si);
-        liveKeys.add(key);
-        handles.push({
-          item,
-          childIndex: ci,
-          segmentIndex: si,
-          key,
-          x: screen.x,
-          y: screen.y,
-        });
-      });
-    }
-    this.anchorHandles = handles;
-
-    // Drop picks that reference anchors that no longer exist.
-    if (this.pickedAnchors.size > 0) {
-      const pruned = new Set<AnchorKey>();
-      for (const k of this.pickedAnchors) {
-        if (liveKeys.has(k)) pruned.add(k);
-      }
-      if (pruned.size !== this.pickedAnchors.size) {
-        this.pickedAnchors = pruned;
-      }
-    }
-
-    // Drop peek-exposures that reference shapes no longer on the layer.
-    if (this.exposedItemIds.size > 0) {
-      const pruned = new Set<number>();
-      for (const id of this.exposedItemIds) {
-        if (liveItemIds.has(id)) pruned.add(id);
-      }
-      if (pruned.size !== this.exposedItemIds.size) {
-        this.exposedItemIds = pruned;
-      }
-    }
-  }
-
-  // ============================================================
-  // Mutation & finalization
-  // ============================================================
-
-  /**
-   * Set the dragged handle's world-space offset so its tip sits at the
-   * pointer. Moves the in/out vector only — the anchor point itself is not
-   * touched. Other segments on the path are unaffected.
-   */
-  private dragBezierHandleTo(viewportPoint: Point): void {
-    if (!this.handleDrag) return;
-    const moved = applyBezierHandleDrag(
-      viewportPoint,
-      this.handleDrag,
-      this.paperRenderer,
-      this.camera,
-    );
-    if (!moved) return;
-    this.noteLiveEditStarted("handle");
-    this.drawUI();
-  }
-
-  /**
-   * Drag the curve itself by moving the outgoing tangent of the start anchor
-   * and the incoming tangent of the end anchor together. This edits curvature
-   * while leaving the anchor positions fixed.
-   */
-  private dragBezierEdgeTo(viewportPoint: Point): void {
-    if (!this.edgeDrag || !this.dragStartPoint) return;
-
-    const item = this.paperRenderer.getPathById(this.edgeDrag.itemId);
-    if (!item) return;
-    const path = this.paperRenderer.getChildPaths(item)[this.edgeDrag.childIndex];
-    if (!path) return;
-
-    const startSeg = path.segments[this.edgeDrag.startSegmentIndex];
-    const endSeg = path.segments[this.edgeDrag.endSegmentIndex];
-    if (!startSeg || !endSeg) return;
-
-    const screenDelta = constrainAxisScreenDelta(
-      viewportPoint.x - this.dragStartPoint.x,
-      viewportPoint.y - this.dragStartPoint.y,
-      isConstrainMoveModifierHeld(modifiersStore.get()),
-    );
-    const worldDelta = this.camera.screenDeltaToWorld(screenDelta.x, screenDelta.y);
-    if (worldDelta.x === 0 && worldDelta.y === 0) return;
-
-    const delta = new paper.Point(worldDelta.x, worldDelta.y);
-    startSeg.handleOut = startSeg.handleOut.add(delta);
-    endSeg.handleIn = endSeg.handleIn.add(delta);
-    if (this.edgeDrag.startLinkage === "mirrored") {
-      keepMirroredOpposite(startSeg, "out");
-    }
-    if (this.edgeDrag.endLinkage === "mirrored") {
-      keepMirroredOpposite(endSeg, "in");
-    }
-
-    this.dragStartPoint = viewportPoint;
-    paper.view.update();
-    this.noteLiveEditStarted("edge");
-    this.drawUI();
-  }
-
-  /**
-   * Commit a handle drag: reconcile the host item (a pulled handle can fold
-   * the path over itself) and snapshot history. The anchor world-position is
-   * unchanged by a handle move, so we remap the picked key to whichever
-   * segment sits at that position after reconcile.
-   */
-  private finalizeHandleMove(): void {
-    if (!this.handleDrag) return;
-
-    const oldKey = this.handleDrag.segmentKey;
-    const { itemId, childIndex, segmentIndex } = parseAnchorKey(oldKey);
-    const item = this.paperRenderer.getPathById(itemId);
-    const seg = item
-      ? this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex]
-      : undefined;
-    const anchorWorld = seg ? seg.point.clone() : null;
-
-    if (this.onReconcile && item && item.parent) {
-      this.onReconcile([item]);
-    }
-
-    // Remap pick to whichever segment now sits at the original anchor's
-    // world position (reconcile may have replaced the item).
-    if (anchorWorld) {
-      const epsilon = 1e-3;
-      for (const candidate of this.paperRenderer.getAllPaths()) {
-        const match = this.findSegmentNear(candidate, anchorWorld, epsilon);
-        if (match) {
-          const newKey = anchorKey(
-            candidate.id,
-            match.childIndex,
-            match.segmentIndex,
-          );
-          this.remapHandleMode(oldKey, newKey);
-          this.pickedAnchors = new Set([newKey]);
-          break;
-        }
-      }
-    }
-
-    this.onSnapshot?.();
-    this.publishPickedItems();
-  }
-
-  /** Commit an edge drag: reconcile the owning item; leave vertex picks alone. */
-  private finalizeEdgeMove(): void {
-    if (!this.edgeDrag) return;
-
-    const item = this.paperRenderer.getPathById(this.edgeDrag.itemId);
-    if (this.onReconcile && item && item.parent) {
-      this.onReconcile([item]);
-    }
-
-    this.onSnapshot?.();
-    this.publishPickedItems();
-  }
-
-  private moveSelectedAnchors(dx: number, dy: number): void {
-    const delta = new paper.Point(dx, dy);
-    for (const key of this.pickedAnchors) {
-      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item) continue;
-      const seg =
-        this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
-      if (!seg) continue;
-      seg.point = seg.point.add(delta);
-    }
-    paper.view.update();
-  }
-
-  private finalizeMarquee(): void {
-    const matched = this.collectMarqueeMatches();
-    const matchedKeys = new Set(matched.map((h) => h.key));
-    const add = isAddToSelectionModifierHeld(modifiersStore.get());
-
-    if (this.hasActiveMarquee()) {
-      // User actually dragged a marquee. Picks update to whatever the
-      // marquee covered; peek stays intact (a drag is not "a click
-      // outside the shape"). Add-to-selection unions with prior picks.
-      this.pickedAnchors = add
-        ? new Set([...this.pickedAnchors, ...matchedKeys])
-        : matchedKeys;
-      this.lastEdgeClick = null;
-      this.bringInteractedItemsToFront();
-    } else if (this.marqueeFromShapePeek) {
-      // Pure tap on a shape: handleStart already installed the exposure.
-      // Leave it so the next click on this shape can pick all verts.
-    } else if (!add) {
-      // Tap on empty area — the "click outside the shape" gesture.
-      // Clears picks and peek. With add-to-selection held, keep the current picks.
-      this.pickedAnchors.clear();
-      this.exposedItemIds.clear();
-      this.lastEdgeClick = null;
-    }
-
-    this.publishPickedItems();
-  }
-
-  /**
-   * Reconcile every item that carried a picked anchor, then remap picks by
-   * matching pre-move world positions against segments on whatever is on the
-   * layer now. We don't need to track survivors or new items — since every
-   * active-layer anchor is exposed automatically, the user always sees the
-   * boolean result. Remap is purely about keeping the "picked" set meaningful
-   * across the reconcile.
-   *
-   * Special case: when an item that was FULLY picked gets absorbed into a
-   * same-color union (its anchors are now interior to a survivor and don't
-   * exist on any path's outline), the position-based remap would silently
-   * drop the interior picks and leave only the union's silhouette anchors
-   * selected. We detect this by sampling each fully-picked item's interior
-   * point post-rotation and re-picking every anchor of whichever survivor
-   * contains that sample. This keeps "rotate a multi-shape selection" from
-   * collapsing the pick set down to the silhouette of the merged result.
-   */
-  private finalizeAnchorMove(): void {
-    const targets: Array<{
-      pos: paper.Point;
-      oldKey: AnchorKey;
-      mode: AnchorHandleMode | undefined;
-    }> = [];
-    for (const key of this.pickedAnchors) {
-      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item) continue;
-      const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
-      if (!seg) continue;
-      targets.push({
-        pos: seg.point.clone(),
-        oldKey: key,
-        mode: this.anchorHandleModes.get(key),
-      });
-    }
-
-    if (!this.onReconcile) {
-      this.onSnapshot?.();
-      this.publishPickedItems();
-      return;
-    }
-
-    const affectedIds = new Set<number>();
-    for (const key of this.pickedAnchors) affectedIds.add(parseAnchorKey(key).itemId);
-    const affectedItems = [...affectedIds]
-      .map((id) => this.paperRenderer.getPathById(id))
-      .filter((item): item is paper.PathItem => !!item?.parent);
-
-    // Capture interior sample points for every fully-picked affected
-    // item, BEFORE reconcile potentially removes them. We use these
-    // post-reconcile to find the survivor that absorbed the original
-    // item, so we can re-pick all of its anchors instead of losing
-    // the interior anchors to a same-color union.
-    const fullyPickedSamples: paper.Point[] = [];
-    for (const item of affectedItems) {
-      let total = 0;
-      let picked = 0;
-      this.forEachSegment(item, (ci, si) => {
-        total++;
-        if (this.pickedAnchors.has(anchorKey(item.id, ci, si))) picked++;
-      });
-      if (total > 0 && picked === total) {
-        fullyPickedSamples.push(item.bounds.center.clone());
-      }
-    }
-
-    this.onReconcile(affectedItems);
-
-    const epsilon = 1e-3;
-    const newKeys = new Set<AnchorKey>();
-    const layerItems = this.paperRenderer.getAllPaths();
-    for (const target of targets) {
-      for (const candidate of layerItems) {
-        const match = this.findSegmentNear(candidate, target.pos, epsilon);
-        if (match) {
-          const newKey = anchorKey(
-            candidate.id,
-            match.childIndex,
-            match.segmentIndex,
-          );
-          newKeys.add(newKey);
-          if (target.mode) {
-            if (target.oldKey !== newKey) {
-              this.anchorHandleModes.delete(target.oldKey);
-            }
-            this.anchorHandleModes.set(newKey, target.mode);
-          }
-          break;
-        }
-      }
-    }
-
-    // For each fully-picked item, find the surviving path that
-    // contains its interior sample and pick every one of that
-    // survivor's anchors. If the item itself survived, this is a
-    // no-op (we just re-add the picks we already had); if the item
-    // was absorbed into a union, this rescues every "now interior"
-    // anchor by picking the absorbing shape in its entirety.
-    for (const sample of fullyPickedSamples) {
-      for (const candidate of layerItems) {
-        if (!candidate.contains(sample)) continue;
-        this.forEachSegment(candidate, (ci, si) => {
-          newKeys.add(anchorKey(candidate.id, ci, si));
-        });
-        break;
-      }
-    }
-
-    this.pickedAnchors = newKeys;
-
-    this.bringInteractedItemsToFront();
-    this.onSnapshot?.();
-    this.publishPickedItems();
-  }
-
-  // ============================================================
-  // Sync / state helpers
-  // ============================================================
-
-  private publishPickedItems(): void {
-    const items = this.getPickedItems();
-    this.lastSelectionViewport = this.getSelectionAnchorViewport(items);
-    selectionStore.set({ items });
-    this.selectionChangeCallback?.(items.length > 0);
-  }
-
-  /**
-   * Move every shape we're currently interacting with — picked-into or
-   * peek-exposed — to the top of the active layer's z-order. Mirrors the
-   * select tool's "click to bring to front" behavior so direct-select
-   * gestures (anchor / edge / shape click, marquee, double-click) also
-   * surface the touched shapes above their neighbors. Iterates in current
-   * layer order so calling `bringToFront` repeatedly preserves relative
-   * order among the lifted items.
-   */
-  private bringInteractedItemsToFront(): void {
-    const ids = new Set<number>();
-    for (const key of this.pickedAnchors) ids.add(parseAnchorKey(key).itemId);
-    for (const id of this.exposedItemIds) ids.add(id);
-    if (ids.size === 0) return;
-
-    for (const item of this.paperRenderer.getAllPaths()) {
-      if (!ids.has(item.id)) continue;
-      this.paperRenderer.bringToFront(item);
-    }
-  }
-
-  private resetDragState(): void {
-    this.isDraggingAnchor = false;
-    this.dragStartPoint = null;
-    this.didMoveAnchor = false;
-    this.handleDrag = null;
-    this.didMoveHandle = false;
-    this.edgeDrag = null;
-    this.didMoveEdge = false;
-    this.resetDragThreshold();
-  }
-
-  private beginMarquee(viewportPoint: Point): void {
-    this.marquee.start(viewportPoint);
-    if (this.selectionShape === "lasso") {
-      this.syncLassoQuickShapePrefs();
-      this.lassoQuickShape.begin(
-        viewportPoint,
-        () => this.marquee.getLassoPoints(),
-        (path) => {
-          this.marquee.setLassoPoints(path);
-          this.drawUI();
-        },
-      );
-    } else {
-      this.lassoQuickShape.reset();
-    }
-  }
-
-  private resetMarqueeState(): void {
-    this.lassoQuickShape.reset();
-    this.marquee.reset();
-    this.marqueeFromShapePeek = false;
-  }
-
-  private resetTransformState(): void {
-    this.didTransformAnchors = false;
-    this.transformGizmo.reset();
-    this.lastViewportPoint = null;
-  }
-
-  private beginDragThreshold(viewportPoint: Point): void {
-    this.dragPointerOrigin = viewportPoint;
-    this.dragPastThreshold = false;
-    this.captureSnapSources();
-    this.lastAppliedWorld = { x: 0, y: 0 };
-    this.snapGuides = [];
-  }
-
-  private snapExcludeIds(): Set<number> {
-    return new Set(this.getPickedItems().map((item) => item.id));
-  }
-
-  private captureSnapSources(): void {
-    const xs: number[] = [];
-    const ys: number[] = [];
-    const points: Point[] = [];
-    for (const key of this.pickedAnchors) {
-      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = this.paperRenderer.getPathById(itemId);
-      const seg = item
-        ? this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex]
-        : undefined;
-      if (!seg) continue;
-      points.push({ x: seg.point.x, y: seg.point.y });
-      xs.push(seg.point.x);
-      ys.push(seg.point.y);
-    }
-    this.snapSources = { xs, ys, points };
-  }
-
-  private noteLiveEditStarted(kind: "anchor" | "handle" | "edge" | "transform"): void {
-    if (kind === "anchor") {
-      if (this.didMoveAnchor) return;
-      this.didMoveAnchor = true;
-    } else if (kind === "handle") {
-      if (this.didMoveHandle) return;
-      this.didMoveHandle = true;
-    } else if (kind === "edge") {
-      if (this.didMoveEdge) return;
-      this.didMoveEdge = true;
-    } else {
-      if (this.didTransformAnchors) return;
-      this.didTransformAnchors = true;
-    }
-    this.onLiveEditStart?.();
-  }
-
-  private resetDragThreshold(): void {
-    this.dragPointerOrigin = null;
-    this.dragPastThreshold = false;
-    this.lastAppliedWorld = { x: 0, y: 0 };
-    this.snapSources = null;
-    this.snapGuides = [];
-    setSnapGuides([]);
-  }
-
-  private pastDragThreshold(viewportPoint: Point): boolean {
-    if (this.dragPastThreshold) return true;
-    if (!this.dragPointerOrigin) return true;
-    const dx = viewportPoint.x - this.dragPointerOrigin.x;
-    const dy = viewportPoint.y - this.dragPointerOrigin.y;
-    if (dx * dx + dy * dy >= this.dragMoveThresholdSq) {
-      this.dragPastThreshold = true;
-      return true;
-    }
-    return false;
-  }
-
-  // ============================================================
-  // Multi-pick transform gizmo (scale + rotate picked anchors)
-  // ============================================================
-
-  /**
-   * Screen-space bbox enclosing every picked anchor, with a small pad so the
-   * box doesn't sit flush on the outermost anchor squares. Returns null when
-   * fewer than two anchors are picked or they haven't been cached this frame.
-   */
-  private getPickedAnchorScreenBounds():
-    | { x: number; y: number; width: number; height: number }
-    | null {
-    if (this.pickedAnchors.size < 2) return null;
-
-    let minX = Infinity,
-      minY = Infinity,
-      maxX = -Infinity,
-      maxY = -Infinity;
-    let count = 0;
-    for (const h of this.anchorHandles) {
-      if (!this.pickedAnchors.has(h.key)) continue;
-      if (h.x < minX) minX = h.x;
-      if (h.y < minY) minY = h.y;
-      if (h.x > maxX) maxX = h.x;
-      if (h.y > maxY) maxY = h.y;
-      count++;
-    }
-    if (count < 2) return null;
-
-    const pad = 10;
+/** Parameter on `e` (line or quadratic) closest to `p`. */
+function nearestT(e: KernelEdge, p: Px): number {
+  const at = (t: number): Px => {
+    if (!e.ctrl) return { x: e.a.x + (e.b.x - e.a.x) * t, y: e.a.y + (e.b.y - e.a.y) * t };
+    const mt = 1 - t;
     return {
-      x: minX - pad,
-      y: minY - pad,
-      width: maxX - minX + pad * 2,
-      height: maxY - minY + pad * 2,
+      x: mt * mt * e.a.x + 2 * mt * t * e.ctrl.x + t * t * e.b.x,
+      y: mt * mt * e.a.y + 2 * mt * t * e.ctrl.y + t * t * e.b.y,
     };
-  }
-
-  private hitTestTransformHandle(viewportPoint: Point): SelectionHandleId | null {
-    const hitRadiusSq = 12 * 12;
-    for (const h of this.transformHandles) {
-      const dx = viewportPoint.x - h.x;
-      const dy = viewportPoint.y - h.y;
-      if (dx * dx + dy * dy <= hitRadiusSq) return h.id;
+  };
+  const d2 = (t: number) => {
+    const q = at(t);
+    return (q.x - p.x) ** 2 + (q.y - p.y) ** 2;
+  };
+  // Coarse sample, then refine by shrinking the bracket.
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i <= 32; i++) {
+    const t = i / 32;
+    const d = d2(t);
+    if (d < bestD) {
+      bestD = d;
+      best = t;
     }
-    return null;
   }
-
-  private getPickedAnchorCentroidWorld(): Point | null {
-    if (this.pickedAnchors.size === 0) return null;
-    let sx = 0,
-      sy = 0,
-      n = 0;
-    for (const key of this.pickedAnchors) {
-      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item) continue;
-      const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
-      if (!seg) continue;
-      sx += seg.point.x;
-      sy += seg.point.y;
-      n++;
-    }
-    if (n === 0) return null;
-    return { x: sx / n, y: sy / n };
-  }
-
-  /**
-   * Scale every picked anchor about `worldPivot` in **view-aligned axes**,
-   * so dragging a handle rightward scales horizontally on screen even when
-   * the camera is rotated. Bezier tangents are scaled with the anchor so the
-   * curvature of each picked segment is preserved.
-   */
-  private scalePickedAnchorsInViewSpace(
-    incSX: number,
-    incSY: number,
-    worldPivot: Point,
-  ): void {
-    const rotDeg = this.camera.getRotationDegrees();
-    const origin = new paper.Point(0, 0);
-    const matrix = new paper.Matrix();
-    matrix.translate(worldPivot.x, worldPivot.y);
-    matrix.rotate(-rotDeg, origin);
-    matrix.scale(incSX, incSY);
-    matrix.rotate(rotDeg, origin);
-    matrix.translate(-worldPivot.x, -worldPivot.y);
-
-    for (const key of this.pickedAnchors) {
-      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item) continue;
-      const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
-      if (!seg) continue;
-
-      const newPoint = matrix.transform(seg.point);
-      // Handles are relative vectors — transform (anchor + handle), subtract
-      // the new anchor to get the new relative handle. This applies the
-      // rotational/scale portion of the matrix to the vector and drops the
-      // translational part, which is exactly what we want for handles.
-      const inAbsNew = matrix.transform(seg.point.add(seg.handleIn));
-      const outAbsNew = matrix.transform(seg.point.add(seg.handleOut));
-
-      seg.point = newPoint;
-      seg.handleIn = new paper.Point(
-        inAbsNew.x - newPoint.x,
-        inAbsNew.y - newPoint.y,
-      );
-      seg.handleOut = new paper.Point(
-        outAbsNew.x - newPoint.x,
-        outAbsNew.y - newPoint.y,
-      );
-    }
-    paper.view.update();
-  }
-
-  private rotatePickedAnchors(degrees: number, worldPivot: Point): void {
-    const pivot = new paper.Point(worldPivot.x, worldPivot.y);
-    for (const key of this.pickedAnchors) {
-      const { itemId, childIndex, segmentIndex } = parseAnchorKey(key);
-      const item = this.paperRenderer.getPathById(itemId);
-      if (!item) continue;
-      const seg = this.paperRenderer.getChildPaths(item)[childIndex]?.segments[segmentIndex];
-      if (!seg) continue;
-
-      seg.point = seg.point.rotate(degrees, pivot);
-      // Handles are relative vectors; rotate them about the origin.
-      seg.handleIn = seg.handleIn.rotate(degrees, new paper.Point(0, 0));
-      seg.handleOut = seg.handleOut.rotate(degrees, new paper.Point(0, 0));
-    }
-    paper.view.update();
-  }
-
-  // ============================================================
-  // Hit testing & marquee
-  // ============================================================
-
-  private hitTestAnchor(viewportPoint: Point): number | null {
-    const hitRadiusSq = 10 * 10;
-    for (let i = 0; i < this.anchorHandles.length; i++) {
-      const h = this.anchorHandles[i];
-      const dx = viewportPoint.x - h.x;
-      const dy = viewportPoint.y - h.y;
-      if (dx * dx + dy * dy <= hitRadiusSq) return i;
-    }
-    return null;
-  }
-
-  private hitTestEdge(
-    viewportPoint: Point,
-  ): {
-    itemId: number;
-    childIndex: number;
-    startSegmentIndex: number;
-    endSegmentIndex: number;
-  } | null {
-    const worldPoint = this.camera.screenToWorld(viewportPoint.x, viewportPoint.y);
-    const queryPoint = new paper.Point(worldPoint.x, worldPoint.y);
-    const hitRadiusSq = 10 * 10;
-    let best:
-      | {
-          itemId: number;
-          childIndex: number;
-          startSegmentIndex: number;
-          endSegmentIndex: number;
-          distSq: number;
-        }
-      | null = null;
-
-    const items = [...this.paperRenderer.getAllPaths()].reverse();
-    for (const item of items) {
-      const childPaths = this.paperRenderer.getChildPaths(item);
-      for (let childIndex = 0; childIndex < childPaths.length; childIndex++) {
-        const path = childPaths[childIndex];
-        const curves = path.curves;
-        for (let curveIndex = 0; curveIndex < curves.length; curveIndex++) {
-          const location = curves[curveIndex].getNearestLocation(queryPoint);
-          if (!location) continue;
-          const screenPoint = this.camera.worldToScreen(location.point.x, location.point.y);
-          const dx = viewportPoint.x - screenPoint.x;
-          const dy = viewportPoint.y - screenPoint.y;
-          const distSq = dx * dx + dy * dy;
-          if (distSq > hitRadiusSq) continue;
-          if (best && distSq >= best.distSq) continue;
-
-          const startSegmentIndex = curveIndex;
-          const endSegmentIndex =
-            curveIndex + 1 < path.segments.length ? curveIndex + 1 : 0;
-          best = {
-            itemId: item.id,
-            childIndex,
-            startSegmentIndex,
-            endSegmentIndex,
-            distSq,
-          };
-        }
-      }
-    }
-
-    if (!best) return null;
-    return {
-      itemId: best.itemId,
-      childIndex: best.childIndex,
-      startSegmentIndex: best.startSegmentIndex,
-      endSegmentIndex: best.endSegmentIndex,
-    };
-  }
-
-  private collectMarqueeMatches(): AnchorHandle[] {
-    const handles = this.anchorHandles;
-
-    if (this.selectionShape === "lasso") {
-      return handles.filter((h) =>
-        pointInPolygon({ x: h.x, y: h.y }, this.marquee.getLassoPoints()),
-      );
-    }
-    const start = this.marquee.getStartPoint();
-    const current = this.marquee.getCurrentPoint();
-    if (!start || !current) return [];
-    const minX = Math.min(start.x, current.x);
-    const minY = Math.min(start.y, current.y);
-    const maxX = Math.max(start.x, current.x);
-    const maxY = Math.max(start.y, current.y);
-    return handles.filter(
-      (h) => h.x >= minX && h.x <= maxX && h.y >= minY && h.y <= maxY,
-    );
-  }
-
-  private hasActiveMarquee(): boolean {
-    return this.marquee.hasActiveMarquee(this.selectionShape);
-  }
-
-  // ============================================================
-  // Path helpers
-  // ============================================================
-
-  private forEachSegment(
-    item: paper.PathItem,
-    fn: (childIndex: number, segmentIndex: number, seg: paper.Segment) => void,
-  ): void {
-    const childPaths = this.paperRenderer.getChildPaths(item);
-    for (let ci = 0; ci < childPaths.length; ci++) {
-      const segs = childPaths[ci].segments;
-      for (let si = 0; si < segs.length; si++) {
-        fn(ci, si, segs[si]);
+  let step = 1 / 32;
+  for (let i = 0; i < 20; i++) {
+    step /= 2;
+    for (const t of [best - step, best + step]) {
+      if (t < 0 || t > 1) continue;
+      const d = d2(t);
+      if (d < bestD) {
+        bestD = d;
+        best = t;
       }
     }
   }
-
-  private findSegmentNear(
-    item: paper.PathItem,
-    worldPoint: paper.Point,
-    epsilon: number,
-  ): { childIndex: number; segmentIndex: number } | null {
-    const eps2 = epsilon * epsilon;
-    let bestChild = -1;
-    let bestSeg = -1;
-    let bestDist2 = Infinity;
-    this.forEachSegment(item, (ci, si, seg) => {
-      const dx = seg.point.x - worldPoint.x;
-      const dy = seg.point.y - worldPoint.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 <= eps2 && d2 < bestDist2) {
-        bestChild = ci;
-        bestSeg = si;
-        bestDist2 = d2;
-      }
-    });
-    return bestChild >= 0 ? { childIndex: bestChild, segmentIndex: bestSeg } : null;
-  }
-
-  // ============================================================
-  // Drawing helpers
-  // ============================================================
-
-  private getSelectionAnchorViewport(items: paper.PathItem[]): Point | null {
-    if (items.length === 0) return null;
-    const bounds = this.paperRenderer.getCombinedBounds(items);
-    if (!bounds) return null;
-    return this.camera.worldToScreen(bounds.x + bounds.width, bounds.y);
-  }
-}
-
-type SegmentSnapshot = {
-  point: [number, number];
-  handleIn: [number, number];
-  handleOut: [number, number];
-};
-
-function snapshotSegments(path: paper.Path): SegmentSnapshot[] {
-  return path.segments.map((seg) => ({
-    point: [seg.point.x, seg.point.y],
-    handleIn: [seg.handleIn.x, seg.handleIn.y],
-    handleOut: [seg.handleOut.x, seg.handleOut.y],
-  }));
-}
-
-function restoreSegments(path: paper.Path, original: SegmentSnapshot[]): void {
-  path.removeSegments();
-  for (const snap of original) {
-    path.add(
-      new paper.Segment(
-        new paper.Point(snap.point[0], snap.point[1]),
-        new paper.Point(snap.handleIn[0], snap.handleIn[1]),
-        new paper.Point(snap.handleOut[0], snap.handleOut[1]),
-      ),
-    );
-  }
-}
-
-type PathEditKind = "simplify" | "smooth" | "round-corners";
-
-function applyPathEditToSelected(
-  kind: PathEditKind,
-  path: paper.Path,
-  selectedIndices: number[],
-  amount: number,
-): void {
-  if (kind === "simplify") {
-    applySimplifyToSelected(path, selectedIndices, amount);
-  } else if (kind === "smooth") {
-    applySmoothToSelected(path, selectedIndices, Math.max(0.01, Math.min(1, amount)));
-  } else {
-    applyRoundCornersToSelected(path, selectedIndices, Math.max(0, amount));
-  }
-}
-
-/**
- * Illustrator/Affinity-style corner round: replace each picked sharp apex with
- * a circular fillet of `radius` (capped by adjacent edge lengths).
- */
-function applyRoundCornersToSelected(
-  path: paper.Path,
-  selectedIndices: number[],
-  radius: number,
-): void {
-  if (radius < 1e-6) return;
-  const n0 = path.segments.length;
-  if (n0 < 3 || selectedIndices.length === 0) return;
-
-  const points = path.segments.map((seg) => ({ x: seg.point.x, y: seg.point.y }));
-  const sharp = findSharpCornerIndicesFromPoints(points, path.closed, 20);
-  const corners = selectedIndices
-    .filter((i) => {
-      if (i < 0 || i >= n0) return false;
-      if (!path.closed && (i === 0 || i === n0 - 1)) return false;
-      if (sharp.has(i)) return true;
-      const seg = path.segments[i];
-      if (!seg) return false;
-      // Zero-handle verts with a real turn are fillet-able too.
-      if (seg.handleIn.length > 1e-4 || seg.handleOut.length > 1e-4) return false;
-      return turnDegreesAt(
-        points[(i - 1 + n0) % n0],
-        points[i],
-        points[(i + 1) % n0],
-      ) >= 12;
-    })
-    .sort((a, b) => b - a);
-
-  for (const index of corners) {
-    filletCornerAt(path, index, radius);
-  }
-}
-
-/**
- * Replace segment `index` with a circular fillet tangent to both edges.
- * Central angle is π−φ (φ = angle at the corner); using φ alone pinches
- * acute corners. Built via Path.Arc so joins stay flush.
- */
-function filletCornerAt(path: paper.Path, index: number, radius: number): boolean {
-  const n = path.segments.length;
-  if (n < 3) return false;
-  if (!path.closed && (index <= 0 || index >= n - 1)) return false;
-
-  const prev = path.segments[(index - 1 + n) % n];
-  const curr = path.segments[index];
-  const next = path.segments[(index + 1) % n];
-  if (!prev || !curr || !next) return false;
-
-  const C = curr.point;
-  const A = prev.point;
-  const B = next.point;
-
-  const u0x = A.x - C.x;
-  const u0y = A.y - C.y;
-  const u1x = B.x - C.x;
-  const u1y = B.y - C.y;
-  const len0 = Math.hypot(u0x, u0y);
-  const len1 = Math.hypot(u1x, u1y);
-  if (len0 < 1e-9 || len1 < 1e-9) return false;
-
-  const ux0 = u0x / len0;
-  const uy0 = u0y / len0;
-  const ux1 = u1x / len1;
-  const uy1 = u1y / len1;
-  const dot = Math.max(-1, Math.min(1, ux0 * ux1 + uy0 * uy1));
-  const phi = Math.acos(dot);
-  if (phi < (8 * Math.PI) / 180 || phi > Math.PI - 1e-3) return false;
-
-  const half = phi / 2;
-  const sinHalf = Math.sin(half);
-  const tanHalf = Math.tan(half);
-  if (Math.abs(sinHalf) < 1e-9 || Math.abs(tanHalf) < 1e-9) return false;
-
-  let dist = radius / tanHalf;
-  dist = Math.min(dist, Math.min(len0, len1) * 0.49);
-  if (dist < 1e-6) return false;
-  const r = dist * tanHalf;
-
-  const T1 = new paper.Point(C.x + ux0 * dist, C.y + uy0 * dist);
-  const T2 = new paper.Point(C.x + ux1 * dist, C.y + uy1 * dist);
-
-  // Center on the interior bisector; arc sweeps π−φ (nearest point to C).
-  const bx = ux0 + ux1;
-  const by = uy0 + uy1;
-  const bl = Math.hypot(bx, by);
-  if (bl < 1e-9) return false;
-  const center = new paper.Point(
-    C.x + (bx / bl) * (r / sinHalf),
-    C.y + (by / bl) * (r / sinHalf),
-  );
-  const toCx = C.x - center.x;
-  const toCy = C.y - center.y;
-  const toClen = Math.hypot(toCx, toCy);
-  if (toClen < 1e-9) return false;
-  const through = new paper.Point(
-    center.x + (toCx / toClen) * r,
-    center.y + (toCy / toClen) * r,
-  );
-
-  const arc = new paper.Path.Arc({
-    from: T1,
-    through,
-    to: T2,
-    insert: false,
-  });
-  if (arc.segments.length < 2) {
-    arc.remove();
-    return false;
-  }
-
-  prev.handleOut = new paper.Point(0, 0);
-  next.handleIn = new paper.Point(0, 0);
-
-  // Swap corner for arc segments (Path.Arc is already edge-tangent).
-  path.removeSegment(index);
-  for (let i = 0; i < arc.segments.length; i++) {
-    const s = arc.segments[i];
-    path.insert(
-      index + i,
-      new paper.Segment(s.point.clone(), s.handleIn.clone(), s.handleOut.clone()),
-    );
-  }
-  const first = path.segments[index];
-  const last = path.segments[index + arc.segments.length - 1];
-  if (first) first.handleIn = new paper.Point(0, 0);
-  if (last) last.handleOut = new paper.Point(0, 0);
-
-  arc.remove();
-  return true;
-}
-
-/**
- * Fit cubics to the outline. Tolerance is the max deviation in world units.
- * Unselected anchors stay put; a smooth one keeps its tangent.
- */
-function applySimplifyToSelected(
-  path: paper.Path,
-  selectedIndices: number[],
-  tolerance: number,
-): void {
-  const n = path.segments.length;
-  if (n < 2 || selectedIndices.length === 0) return;
-
-  const selected = [...new Set(selectedIndices.filter((i) => i >= 0 && i < n))].sort(
-    (a, b) => a - b,
-  );
-  if (selected.length === 0) return;
-
-  const epsilon = Math.max(0.05, tolerance);
-  const closed = path.closed;
-
-  if (selected.length >= n) {
-    writeAnchors(path, simplifyPolyline(flattenPath(path), { tolerance: epsilon, closed }));
-    return;
-  }
-
-  const selectedSet = new Set(selected);
-  const breaks: number[] = [];
-  for (let i = 0; i < n; i++) {
-    if (!selectedSet.has(i)) breaks.push(i);
-  }
-  if (!closed) {
-    if (breaks.length === 0 || breaks[0] !== 0) breaks.unshift(0);
-    if (breaks[breaks.length - 1] !== n - 1) breaks.push(n - 1);
-  }
-  if (breaks.length === 0) {
-    writeAnchors(path, simplifyPolyline(flattenPath(path), { tolerance: epsilon, closed }));
-    return;
-  }
-
-  const firstIn = closed
-    ? null
-    : { x: path.segments[0].handleIn.x, y: path.segments[0].handleIn.y };
-  const lastOut = closed
-    ? null
-    : { x: path.segments[n - 1].handleOut.x, y: path.segments[n - 1].handleOut.y };
-
-  const cubics: CubicSpan[] = [];
-  const spanCount = closed ? breaks.length : breaks.length - 1;
-  for (let s = 0; s < spanCount; s++) {
-    const i0 = breaks[s];
-    const i1 = closed ? breaks[(s + 1) % breaks.length] : breaks[s + 1];
-    cubics.push(...cubicsBetween(path, i0, i1, epsilon, selectedSet));
-  }
-
-  const anchors = cubicsToAnchors(cubics, closed);
-  if (!closed && anchors.length > 0) {
-    if (firstIn) anchors[0].handleIn = firstIn;
-    if (lastOut) anchors[anchors.length - 1].handleOut = lastOut;
-  }
-  writeAnchors(path, anchors);
-}
-
-function flattenPath(path: paper.Path): Array<{ x: number; y: number }> {
-  const flat = path.clone({ insert: false }) as paper.Path;
-  flat.flatten(0.5);
-  const raw = flat.segments.map((seg) => ({ x: seg.point.x, y: seg.point.y }));
-  flat.remove();
-  return raw;
-}
-
-function writeAnchors(path: paper.Path, anchors: FittedAnchor[]): void {
-  const min = path.closed ? 3 : 2;
-  if (anchors.length < min) return;
-  const closed = path.closed;
-  path.removeSegments();
-  for (const a of anchors) {
-    path.add(
-      new paper.Segment(
-        new paper.Point(a.x, a.y),
-        new paper.Point(a.handleIn.x, a.handleIn.y),
-        new paper.Point(a.handleOut.x, a.handleOut.y),
-      ),
-    );
-  }
-  path.closed = closed;
-}
-
-/** Indices from `start` to `end`, wrapping when `end` is behind `start`. */
-function indicesFromTo(start: number, end: number, n: number): number[] {
-  const out: number[] = [start];
-  let i = start;
-  for (let guard = 0; guard < n; guard++) {
-    i = (i + 1) % n;
-    out.push(i);
-    if (i === end) break;
-  }
-  return out;
-}
-
-function cubicsBetween(
-  path: paper.Path,
-  i0: number,
-  i1: number,
-  epsilon: number,
-  selected: Set<number>,
-): CubicSpan[] {
-  const indices = indicesFromTo(i0, i1, path.segments.length);
-  if (indices.length < 2) return [];
-
-  if (indices.length === 2) {
-    const a = path.segments[i0];
-    const b = path.segments[i1];
-    return [{
-      p0: { x: a.point.x, y: a.point.y },
-      handleOut: { x: a.handleOut.x, y: a.handleOut.y },
-      handleIn: { x: b.handleIn.x, y: b.handleIn.y },
-      p3: { x: b.point.x, y: b.point.y },
-    }];
-  }
-
-  const sub = new paper.Path({ insert: false });
-  for (const idx of indices) {
-    const seg = path.segments[idx];
-    sub.add(new paper.Segment(seg.point.clone(), seg.handleIn.clone(), seg.handleOut.clone()));
-  }
-  const raw = flattenPath(sub);
-  sub.remove();
-
-  const startH = path.segments[i0].handleOut;
-  const endH = path.segments[i1].handleIn;
-  const startSelected = selected.has(i0);
-  const endSelected = selected.has(i1);
-  return simplifyCubics(raw, {
-    tolerance: epsilon,
-    closed: false,
-    sharpStart: !startSelected && startH.length <= 1e-3,
-    sharpEnd: !endSelected && endH.length <= 1e-3,
-    tangentStart:
-      !startSelected && startH.length > 1e-3 ? { x: startH.x, y: startH.y } : null,
-    tangentEnd: !endSelected && endH.length > 1e-3 ? { x: endH.x, y: endH.y } : null,
-  });
-}
-
-/** Paper path.smooth on full path or contiguous selected runs. */
-function applySmoothToSelected(
-  path: paper.Path,
-  selectedIndices: number[],
-  factor: number,
-): void {
-  const n = path.segments.length;
-  if (n < 2 || selectedIndices.length === 0) return;
-
-  const selected = selectedIndices.filter((i) => i >= 0 && i < n).sort((a, b) => a - b);
-  if (selected.length === 0) return;
-
-  if (selected.length >= n) {
-    path.smooth({ type: "geometric", factor });
-    return;
-  }
-
-  for (const run of contiguousIndexRuns(selected)) {
-    path.smooth({ type: "geometric", factor, from: run.start, to: run.end });
-  }
-}
-
-function contiguousIndexRuns(sortedIndices: number[]): Array<{ start: number; end: number }> {
-  if (sortedIndices.length === 0) return [];
-  const runs: Array<{ start: number; end: number }> = [];
-  let start = sortedIndices[0];
-  let prev = sortedIndices[0];
-  for (let i = 1; i < sortedIndices.length; i++) {
-    const idx = sortedIndices[i];
-    if (idx === prev + 1) {
-      prev = idx;
-      continue;
-    }
-    runs.push({ start, end: prev });
-    start = idx;
-    prev = idx;
-  }
-  runs.push({ start, end: prev });
-  return runs;
+  return best;
 }

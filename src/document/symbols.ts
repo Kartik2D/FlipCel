@@ -1,13 +1,10 @@
 /**
  * Flash-style symbols — model types and pure resolution helpers.
  *
- * A symbol is a reusable nested timeline. Instances live on vector layers as
- * empty `paper.Group`s (applyMatrix=false) whose `data` is a
- * `SymbolInstanceData`; the group's `matrix` and `pivot` hold the transform.
- * Artwork is hydrated into the group for display and stripped before export,
- * so stored layer JSON stays small and deterministic.
- *
- * Paper-specific code lives in `render/paper/symbol-instances.ts`.
+ * A symbol is a reusable nested timeline. Instances live in vector content as
+ * plain `PlacedInstance` records (`vector/content.ts`): a `SymbolInstanceData`
+ * plus a world `matrix` and local `pivot`. The stage renderer resolves and
+ * draws them recursively; nothing is baked into stored content.
  */
 import {
   coveringKeyframeOf,
@@ -45,10 +42,7 @@ export interface SymbolDefinition {
   tags: SymbolTag[];
 }
 
-/**
- * Stored in an instance group's `data`. Flat primitives only: Paper's
- * `Item.clone()` shallow-copies `data`.
- */
+/** Per-instance playback data (flat primitives; cloned by spread). */
 export interface SymbolInstanceData {
   symbol: string;
   /** Stable instance identity across frames, merge rebuilds, and undo. */

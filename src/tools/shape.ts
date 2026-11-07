@@ -1,6 +1,7 @@
-import paper from "paper";
 import type { CanvasConfig, Point } from "../geometry/types";
 import { pixelToViewport } from "../geometry/coords";
+import { polygonRing, rectRing, type Ring } from "../vector/kernel";
+import { ellipseRing, roundRectRing } from "../vector/rings";
 import type { ToolContext, ToolDefinition, SettingsSchema, InferSettings } from "./types";
 import {
   paintModeSetting,
@@ -12,7 +13,7 @@ import {
 } from "./paint-mode";
 
 // ============================================================
-// Shape Tool — pixel-canvas preview, direct Paper path on commit
+// Shape Tool — pixel-canvas preview, kernel rings on commit
 // ============================================================
 
 export const shapeKindSetting = {
@@ -306,8 +307,8 @@ function drawShapePreview(
 }
 
 /**
- * Build an unattached Paper path in viewport coords from pixel-canvas anchors.
- * PaperRenderer's shape pipeline reparents into world space.
+ * Build the primitive as kernel rings in viewport coords from pixel-canvas
+ * anchors. The paint pipeline maps viewport → world.
  */
 export function buildPrimitiveShape(
   config: CanvasConfig,
@@ -316,7 +317,7 @@ export function buildPrimitiveShape(
   fromCenter: boolean,
   points = 5,
   constrain = false,
-): paper.PathItem | null {
+): Ring[] | null {
   if (pixelPoints.length < 2) return null;
 
   const a = pixelToViewport(pixelPoints[0], config);
@@ -324,32 +325,19 @@ export function buildPrimitiveShape(
   const box = shapeBox(a, b, fromCenter, constrain);
   if (!box) return null;
 
-  const rect = new paper.Rectangle(
-    new paper.Point(box.x, box.y),
-    new paper.Size(box.w, box.h),
-  );
-
-  if (kind === "rect") {
-    return new paper.Path.Rectangle({ rectangle: rect, insert: false });
-  }
+  if (kind === "rect") return [rectRing(box.x, box.y, box.w, box.h)];
   if (kind === "roundRect") {
     const r = roundCornerRadius(box);
-    return new paper.Path.Rectangle({
-      rectangle: rect,
-      radius: new paper.Size(r, r),
-      insert: false,
-    });
+    return [roundRectRing(box.x, box.y, box.w, box.h, r, r)];
   }
-  if (kind === "circle") {
-    return new paper.Path.Ellipse({ rectangle: rect, insert: false });
-  }
+  if (kind === "circle") return [ellipseRing(box.cx, box.cy, box.rx, box.ry)];
 
   const verts = unitVerts(kind, points);
   if (!verts) return null;
-  const segments = verts.map(
-    ([ux, uy]) => new paper.Point(box.cx + ux * box.rx, box.cy + uy * box.ry),
+  const ring = polygonRing(
+    verts.map(([ux, uy]) => ({ x: box.cx + ux * box.rx, y: box.cy + uy * box.ry })),
   );
-  return new paper.Path({ segments, closed: true, insert: false });
+  return ring ? [ring] : null;
 }
 
 export function isShapeKind(value: unknown): value is ShapeKind {

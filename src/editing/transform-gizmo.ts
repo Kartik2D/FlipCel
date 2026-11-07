@@ -1,5 +1,5 @@
 import type { Camera } from "../render/camera";
-import type { SelectionHandleId } from "../render/paper-renderer";
+import type { SelectionHandleId } from "../render/selection-types";
 import type { Point } from "../geometry/types";
 import { modifiersStore } from "../state/index";
 import { isConstrainScaleModifierHeld } from "../input/shortcuts";
