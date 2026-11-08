@@ -29,11 +29,11 @@ type PotraceTraceOptions = {
 };
 
 const DEFAULT_POTRACE_OPTIONS: PotraceTraceOptions = {
-  turdsize: 2,
+  turdsize: 0,
   turnpolicy: 4,
   alphamax: 1,
   opticurve: true,
-  opttolerance: 0.2,
+  opttolerance: 0,
   threshold: 0.5,
   extractcolors: false,
   posterizelevel: 4,

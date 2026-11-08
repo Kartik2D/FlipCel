@@ -27,9 +27,9 @@ pub(crate) fn slice(mut pieces: Vec<Piece>) -> Vec<Piece> {
                 splits: Vec::new(),
             })
             .collect();
-        // A graze is one shared vertex. Later passes only cut crossings the
-        // snap created; grazing again would walk along a near-parallel pair
-        // and stack both windings onto one edge.
+        // Pass 0 grazes a near-miss into one shared vertex. A later pass pins
+        // a vertex that already lies within a twip of an edge, and leaves
+        // the two edges as two edges.
         sweep(&mut segs, pass == 0);
         let split = segs.iter().any(|seg| !seg.splits.is_empty());
         pieces = emit_all(&segs);
@@ -90,9 +90,10 @@ struct Split {
     at: P,
 }
 
-fn split_pair(segs: &mut [Seg], i: usize, j: usize, graze: bool) {
+fn split_pair(segs: &mut [Seg], i: usize, j: usize, first: bool) {
     let left = segs[i].piece;
     let right = segs[j].piece;
+    let graze = first;
     match (left.ctrl, right.ctrl) {
         (None, None) => split_lines(segs, i, j),
         (None, Some(ctrl)) => {
@@ -114,6 +115,80 @@ fn split_pair(segs: &mut [Seg], i: usize, j: usize, graze: bool) {
             }
         }
     }
+    if !first {
+        pin_ends(segs, i, j);
+        pin_ends(segs, j, i);
+    }
+}
+
+/// Split `onto` at a vertex of `from` that already lies within a twip of it.
+/// The vertex stays where it is, so the two edges share it and nothing else.
+fn pin_ends(segs: &mut [Seg], from: usize, onto: usize) {
+    let onto_piece = segs[onto].piece;
+    for vertex in [segs[from].piece.a, segs[from].piece.b] {
+        if vertex == onto_piece.a || vertex == onto_piece.b {
+            continue;
+        }
+        let Some((t, dist2)) = closest(onto_piece, vertex) else {
+            continue;
+        };
+        if dist2 <= 1.0 && (1e-3..1.0 - 1e-3).contains(&t) {
+            push_split(&mut segs[onto], t, vertex);
+        }
+    }
+}
+
+fn closest(piece: Piece, p: P) -> Option<(f64, f64)> {
+    match piece.ctrl {
+        None => Some(line_closest(piece.a, piece.b, p)),
+        Some(ctrl) => quad_closest(Bez::from_i(piece.a, ctrl, piece.b), p, 0.0, 1.0, 0),
+    }
+}
+
+fn line_closest(a: P, b: P, p: P) -> (f64, f64) {
+    let dx = (b.0 - a.0) as f64;
+    let dy = (b.1 - a.1) as f64;
+    let len2 = dx * dx + dy * dy;
+    if len2 < 1e-9 {
+        let x = (a.0 - p.0) as f64;
+        let y = (a.1 - p.1) as f64;
+        return (0.0, x * x + y * y);
+    }
+    let t = (((p.0 - a.0) as f64 * dx + (p.1 - a.1) as f64 * dy) / len2).clamp(0.0, 1.0);
+    let x = a.0 as f64 + t * dx - p.0 as f64;
+    let y = a.1 as f64 + t * dy - p.1 as f64;
+    (t, x * x + y * y)
+}
+
+fn quad_closest(quad: Bez, p: P, t0: f64, t1: f64, depth: u32) -> Option<(f64, f64)> {
+    let (x, y) = (p.0 as f64, p.1 as f64);
+    let (x0, y0, x1, y1) = quad.bounds();
+    if x < x0 - 1.0 || x > x1 + 1.0 || y < y0 - 1.0 || y > y1 + 1.0 {
+        return None;
+    }
+    if quad.span() >= 1.0 && depth < 80 {
+        let (left, right) = quad.split();
+        let mid = (t0 + t1) * 0.5;
+        let a = quad_closest(left, p, t0, mid, depth + 1);
+        let b = quad_closest(right, p, mid, t1, depth + 1);
+        return match (a, b) {
+            (Some(a), Some(b)) if a.1 <= b.1 => Some(a),
+            (Some(_), Some(b)) => Some(b),
+            (Some(a), None) => Some(a),
+            (None, b) => b,
+        };
+    }
+    let dx = quad.p2.0 - quad.p0.0;
+    let dy = quad.p2.1 - quad.p0.1;
+    let len2 = dx * dx + dy * dy;
+    let u = if len2 < 1e-12 {
+        0.0
+    } else {
+        (((x - quad.p0.0) * dx + (y - quad.p0.1) * dy) / len2).clamp(0.0, 1.0)
+    };
+    let px = quad.p0.0 + u * dx - x;
+    let py = quad.p0.1 + u * dy - y;
+    Some((t0 + u * (t1 - t0), px * px + py * py))
 }
 
 fn split_lines(segs: &mut [Seg], i: usize, j: usize) {
@@ -149,17 +224,26 @@ fn split_lines(segs: &mut [Seg], i: usize, j: usize) {
     }
     let t_num = cross(qx, qy, sx, sy);
     let u_num = cross(qx, qy, rx, ry);
-    if in_closed(t_num, den) && in_closed(u_num, den) && !(is_end(t_num, den) && is_end(u_num, den)) {
+    if in_closed(t_num, den) && in_closed(u_num, den) && !(is_end(t_num, den) && is_end(u_num, den))
+    {
         let at = if !is_end(t_num, den) {
             point_at(segs[i].piece.a, segs[i].piece.b, t_num, den)
         } else {
             point_at(segs[j].piece.a, segs[j].piece.b, u_num, den)
         };
         if !is_end(t_num, den) {
-            segs[i].splits.push(Split { num: t_num, den, at });
+            segs[i].splits.push(Split {
+                num: t_num,
+                den,
+                at,
+            });
         }
         if !is_end(u_num, den) {
-            segs[j].splits.push(Split { num: u_num, den, at });
+            segs[j].splits.push(Split {
+                num: u_num,
+                den,
+                at,
+            });
         }
     }
 }
@@ -206,13 +290,25 @@ fn strict_t(a: P, b: P, p: P) -> Option<(i128, i128)> {
         return None;
     }
     let dot = px as i128 * rx as i128 + py as i128 * ry as i128;
-    if dot > 0 && dot < len2 { Some((dot, len2)) } else { None }
+    if dot > 0 && dot < len2 {
+        Some((dot, len2))
+    } else {
+        None
+    }
 }
 
 fn emit(seg: &Seg, out: &mut Vec<Piece>) {
     let mut ts = vec![
-        Split { num: 0, den: 1, at: seg.piece.a },
-        Split { num: 1, den: 1, at: seg.piece.b },
+        Split {
+            num: 0,
+            den: 1,
+            at: seg.piece.a,
+        },
+        Split {
+            num: 1,
+            den: 1,
+            at: seg.piece.b,
+        },
     ];
     ts.extend(seg.splits.iter().copied().filter(|split| {
         let (num, den) = norm_frac(split.num, split.den);
@@ -220,7 +316,8 @@ fn emit(seg: &Seg, out: &mut Vec<Piece>) {
     }));
     ts.sort_by(|left, right| cmp_frac((left.num, left.den), (right.num, right.den)));
     ts.dedup_by(|left, right| {
-        left.at == right.at || cmp_frac((left.num, left.den), (right.num, right.den)) == Ordering::Equal
+        left.at == right.at
+            || cmp_frac((left.num, left.den), (right.num, right.den)) == Ordering::Equal
     });
     for pair in ts.windows(2) {
         let a = pair[0].at;
@@ -229,7 +326,12 @@ fn emit(seg: &Seg, out: &mut Vec<Piece>) {
             continue;
         }
         let ctrl = span_ctrl(seg.piece, pair[0], pair[1]);
-        out.push(Piece { a, b, ctrl, ..seg.piece });
+        out.push(Piece {
+            a,
+            b,
+            ctrl,
+            ..seg.piece
+        });
     }
 }
 
@@ -238,7 +340,11 @@ fn span_ctrl(piece: Piece, t0: Split, t1: Split) -> Option<P> {
     let u = frac_f64(t0.num, t0.den);
     let v = frac_f64(t1.num, t1.den);
     let ctrl = round_p(blossom(piece.a, ctrl, piece.b, u, v));
-    if near_chord(t0.at, t1.at, ctrl) { None } else { Some(ctrl) }
+    if near_chord(t0.at, t1.at, ctrl) {
+        None
+    } else {
+        Some(ctrl)
+    }
 }
 
 fn frac_f64(num: i128, den: i128) -> f64 {
@@ -266,7 +372,11 @@ fn point_at(a: P, b: P, num: i128, den: i128) -> P {
 fn round_div(num: i128, den: i128) -> i128 {
     let (num, den) = norm_frac(num, den);
     let half = den / 2;
-    if num >= 0 { (num + half) / den } else { (num - half) / den }
+    if num >= 0 {
+        (num + half) / den
+    } else {
+        (num - half) / den
+    }
 }
 
 fn clamp_i32(value: i128) -> i32 {
@@ -379,7 +489,8 @@ fn line_quad_graze(a: P, b: P, p0: P, ctrl: P, p2: P) -> Option<(f64, f64, P)> {
         0,
         &mut best,
     );
-    best.filter(|hit| hit.dist2 <= 1.0).map(|hit| (hit.u, hit.t, hit.at))
+    best.filter(|hit| hit.dist2 <= 1.0)
+        .map(|hit| (hit.u, hit.t, hit.at))
 }
 
 fn line_quad_near(
@@ -419,10 +530,18 @@ fn line_quad_near(
     }
     let at = snap_between(
         (a.0 + u * (b.0 - a.0), a.1 + u * (b.1 - a.1)),
-        (quad.p0.0 + t * (quad.p2.0 - quad.p0.0), quad.p0.1 + t * (quad.p2.1 - quad.p0.1)),
+        (
+            quad.p0.0 + t * (quad.p2.0 - quad.p0.0),
+            quad.p0.1 + t * (quad.p2.1 - quad.p0.1),
+        ),
     );
     if best.as_ref().is_none_or(|hit| dist2 < hit.dist2) {
-        *best = Some(Approach { dist2, u: ua, t: ta, at });
+        *best = Some(Approach {
+            dist2,
+            u: ua,
+            t: ta,
+            at,
+        });
     }
 }
 
@@ -451,7 +570,8 @@ fn quad_quad(a0: P, ac: P, a1: P, b0: P, bc: P, b1: P, graze: bool) -> Vec<(f64,
 fn quad_graze(a: Bez, b: Bez) -> Option<(f64, f64, P)> {
     let mut best: Option<Approach> = None;
     quad_near(a, 0.0, 1.0, b, 0.0, 1.0, 0, &mut best);
-    best.filter(|hit| hit.dist2 <= 1.0).map(|hit| (hit.t, hit.u, hit.at))
+    best.filter(|hit| hit.dist2 <= 1.0)
+        .map(|hit| (hit.t, hit.u, hit.at))
 }
 
 fn quad_near(
@@ -475,11 +595,22 @@ fn quad_near(
             return;
         }
         let at = snap_between(
-            (a.p0.0 + t * (a.p2.0 - a.p0.0), a.p0.1 + t * (a.p2.1 - a.p0.1)),
-            (b.p0.0 + u * (b.p2.0 - b.p0.0), b.p0.1 + u * (b.p2.1 - b.p0.1)),
+            (
+                a.p0.0 + t * (a.p2.0 - a.p0.0),
+                a.p0.1 + t * (a.p2.1 - a.p0.1),
+            ),
+            (
+                b.p0.0 + u * (b.p2.0 - b.p0.0),
+                b.p0.1 + u * (b.p2.1 - b.p0.1),
+            ),
         );
         if best.as_ref().is_none_or(|hit| dist2 < hit.dist2) {
-            *best = Some(Approach { dist2, u: tb, t: ta, at });
+            *best = Some(Approach {
+                dist2,
+                u: tb,
+                t: ta,
+                at,
+            });
         }
         return;
     }
@@ -509,7 +640,10 @@ struct Approach {
 }
 
 fn snap_between(p: (f64, f64), q: (f64, f64)) -> P {
-    (((p.0 + q.0) * 0.5).round() as i32, ((p.1 + q.1) * 0.5).round() as i32)
+    (
+        ((p.0 + q.0) * 0.5).round() as i32,
+        ((p.1 + q.1) * 0.5).round() as i32,
+    )
 }
 
 /// `(t on first, t on second, squared distance)` of the closest points of two segments.
@@ -523,14 +657,26 @@ fn seg_closest(a0: (f64, f64), a1: (f64, f64), b0: (f64, f64), b1: (f64, f64)) -
     let c = d1.0 * r.0 + d1.1 * r.1;
     let b = d1.0 * d2.0 + d1.1 * d2.1;
     let denom = aa * e - b * b;
-    let mut s = if denom.abs() > 1e-12 { ((b * f - c * e) / denom).clamp(0.0, 1.0) } else { 0.0 };
+    let mut s = if denom.abs() > 1e-12 {
+        ((b * f - c * e) / denom).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let mut t = if e > 1e-18 { (b * s + f) / e } else { 0.0 };
     if t < 0.0 {
         t = 0.0;
-        s = if aa > 1e-18 { (-c / aa).clamp(0.0, 1.0) } else { 0.0 };
+        s = if aa > 1e-18 {
+            (-c / aa).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     } else if t > 1.0 {
         t = 1.0;
-        s = if aa > 1e-18 { ((b - c) / aa).clamp(0.0, 1.0) } else { 0.0 };
+        s = if aa > 1e-18 {
+            ((b - c) / aa).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
     let dx = a0.0 + s * d1.0 - (b0.0 + t * d2.0);
     let dy = a0.1 + s * d1.1 - (b0.1 + t * d2.1);
@@ -586,8 +732,16 @@ impl Bez {
         let m12 = ((self.c.0 + self.p2.0) * 0.5, (self.c.1 + self.p2.1) * 0.5);
         let mid = ((m01.0 + m12.0) * 0.5, (m01.1 + m12.1) * 0.5);
         (
-            Self { p0: self.p0, c: m01, p2: mid },
-            Self { p0: mid, c: m12, p2: self.p2 },
+            Self {
+                p0: self.p0,
+                c: m01,
+                p2: mid,
+            },
+            Self {
+                p0: mid,
+                c: m12,
+                p2: self.p2,
+            },
         )
     }
 }

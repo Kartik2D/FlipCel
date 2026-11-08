@@ -291,7 +291,12 @@ function check(name: string, ok: boolean, detail = ""): void {
   const chain = poly.slice(1, 6);
   const ok = l.replaceChain(chain, [{ kind: "C", c1: { x: 150, y: 10 }, c2: { x: 150, y: 90 }, to: { x: 100, y: 100 } }]);
   check("replaceChain accepted", ok);
-  check("replaceChain dropped vertices", l.vertices().length < vertsBefore, `${vertsBefore} -> ${l.vertices().length}`);
+  const gone = (x: number, y: number) => !l.vertices().some((v) => v.x === x && v.y === y);
+  check(
+    "replaceChain dropped the polyline knots",
+    gone(130, 25) && gone(135, 50) && gone(130, 75),
+    `${vertsBefore} -> ${l.vertices().length}`,
+  );
   check("replaceChain kept fills", l.faceAt({ x: 50, y: 50 }) === 1 && l.faceAt({ x: -25, y: 50 }) === 2 && l.faceAt({ x: 130, y: 50 }) === 1);
   check("replaceChain refuses a non-edge", !l.replaceChain([{ x: 0, y: 0 }, { x: 77, y: 77 }], [{ kind: "L", to: { x: 77, y: 77 } }]));
   l.free();

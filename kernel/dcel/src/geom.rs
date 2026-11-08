@@ -51,28 +51,27 @@ pub fn edge_at(a: P, b: P, ctrl: Option<P>, t: f64) -> (f64, f64) {
     }
 }
 
-/// Tolerance (twips) for approximating cubics with quadratics: half a pixel.
-pub const CUBIC_TOL: f64 = 10.0;
+/// Tolerance (twips) for approximating cubics with quadratics.
+/// One twip is the floor. Coarser outlines are a trace-tool choice.
+pub const CUBIC_TOL: f64 = 1.0;
 
-/// Squared distance (twips) a control may sit from the chord and still count as
-/// straight: 5 twips = a quarter pixel.
-const CHORD_TOL2: i128 = 25;
-
-/// A control within a quarter pixel of the chord is a straight edge.
+/// The control lies on the chord, so the quadratic does not bend.
+/// Integer twips already round it; anything off the line stays a curve.
 pub fn near_chord(a: P, b: P, p: P) -> bool {
     let rx = (b.0 as i128) - (a.0 as i128);
     let ry = (b.1 as i128) - (a.1 as i128);
-    let len2 = rx * rx + ry * ry;
-    if len2 == 0 {
+    if rx == 0 && ry == 0 {
         return true;
     }
     let cross = rx * ((p.1 as i128) - (a.1 as i128)) - ry * ((p.0 as i128) - (a.0 as i128));
-    cross * cross <= len2 * CHORD_TOL2
+    cross == 0
 }
 
 pub fn blossom(a: P, c: P, b: P, u: f64, v: f64) -> (f64, f64) {
     let mix = |a: i32, c: i32, b: i32| {
-        (1.0 - u) * (1.0 - v) * a as f64 + ((1.0 - u) * v + u * (1.0 - v)) * c as f64 + u * v * b as f64
+        (1.0 - u) * (1.0 - v) * a as f64
+            + ((1.0 - u) * v + u * (1.0 - v)) * c as f64
+            + u * v * b as f64
     };
     (mix(a.0, c.0, b.0), mix(a.1, c.1, b.1))
 }
@@ -206,7 +205,12 @@ fn cubic_sub(p: [F2; 4], t0: f64, t1: f64) -> [F2; 4] {
         let bcd = lerp(bc, cd, v);
         lerp(abc, bcd, w)
     };
-    [polar(t0, t0, t0), polar(t0, t0, t1), polar(t0, t1, t1), polar(t1, t1, t1)]
+    [
+        polar(t0, t0, t0),
+        polar(t0, t0, t1),
+        polar(t0, t1, t1),
+        polar(t1, t1, t1),
+    ]
 }
 
 /// Approximate a cubic with quadratics within `tol` (in the same units as the

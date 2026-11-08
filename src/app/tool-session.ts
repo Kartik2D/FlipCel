@@ -54,7 +54,8 @@ import { replaceLassoStroke } from "../tools/lasso";
 import { buildPrimitiveShape, isShapeKind } from "../tools/shape";
 import { clampStrokeWidth } from "../tools/paint-mode";
 import { fillAt } from "../editing/fill-region";
-import { commitPaint, tracedSvgToWorldRings, viewportToWorldAffine, worldRings } from "../vector/paint";
+import { simplifyRings } from "../editing/direct-select/fit-curve";
+import { commitPaint, pixelToWorldAffine, tracedSvgToWorldRings, viewportToWorldAffine, worldRings } from "../vector/paint";
 import type { Px } from "../vector/kernel";
 
 interface PixelQuickShapeState {
@@ -148,10 +149,11 @@ export class ToolSession {
     tc.ctx.lineJoin = "round";
     tc.ctx.lineCap = "round";
     tc.ctx.stroke();
-    await this.commitTracedPixelCanvas(paint, clip);
+    await this.commitTracedPixelCanvas("create-points", paint, clip);
   }
 
   private async commitTracedPixelCanvas(
+    tool: ToolId,
     effectiveMode: "add" | "subtract" | "inside",
     clipForInside: Px | null | undefined,
   ): Promise<void> {
@@ -162,7 +164,11 @@ export class ToolSession {
         deps.pixelCanvasManager.clear();
         return;
       }
-      const rings = tracedSvgToWorldRings(svg, deps.getConfig(), deps.camera);
+      const config = deps.getConfig();
+      const rings = simplifyRings(
+        tracedSvgToWorldRings(svg, config, deps.camera),
+        traceSimplifyWorld(tool, config, deps.camera),
+      );
       const changed = commitPaint(
         deps.renderer,
         rings,
@@ -718,7 +724,7 @@ export class ToolSession {
       }
     }
 
-    await this.commitTracedPixelCanvas(effectiveMode, clipForInside);
+    await this.commitTracedPixelCanvas(tool, effectiveMode, clipForInside);
   }
 
   onToolCancel(tool: ToolId): void {
@@ -806,6 +812,15 @@ export class ToolSession {
     this.shapeSnapGuides = [];
     setSnapGuides([]);
   }
+}
+
+/** Screen-pixel simplify amount for `tool`, converted into world px. 0 skips the refit. */
+function traceSimplifyWorld(tool: ToolId, config: CanvasConfig, camera: Camera): number {
+  const raw = (toolSettingsStore.get()[tool] as { simplify?: unknown } | undefined)?.simplify;
+  const px = typeof raw === "number" && raw > 0 ? raw : 0;
+  if (px === 0) return 0;
+  const m = pixelToWorldAffine(config, camera);
+  return px * Math.hypot(m[0], m[1]);
 }
 
 export function getEffectiveMode(tool: ToolId): "add" | "subtract" | "inside" {

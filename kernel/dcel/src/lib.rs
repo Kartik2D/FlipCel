@@ -67,12 +67,22 @@ pub struct Affine {
 }
 
 impl Affine {
-    pub const IDENTITY: Affine = Affine { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+    pub const IDENTITY: Affine = Affine {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
 
     pub fn apply(&self, p: P) -> P {
         let x = p.0 as f64;
         let y = p.1 as f64;
-        round_p((self.a * x + self.c * y + self.e, self.b * x + self.d * y + self.f))
+        round_p((
+            self.a * x + self.c * y + self.e,
+            self.b * x + self.d * y + self.f,
+        ))
     }
 
     pub fn is_identity(&self) -> bool {
@@ -152,7 +162,11 @@ impl Map {
         Self {
             verts: Vec::new(),
             halfs: Vec::new(),
-            faces: vec![Face { fill: EMPTY, outer: None, inner: Vec::new() }],
+            faces: vec![Face {
+                fill: EMPTY,
+                outer: None,
+                inner: Vec::new(),
+            }],
         }
     }
 
@@ -224,7 +238,12 @@ impl Map {
         if moves.iter().all(|(from, to)| from == to) {
             return true;
         }
-        let delta_of = |p: P| moves.iter().find(|(from, _)| *from == p).map(|(from, to)| sub(*to, *from));
+        let delta_of = |p: P| {
+            moves
+                .iter()
+                .find(|(from, _)| *from == p)
+                .map(|(from, to)| sub(*to, *from))
+        };
         let mut pieces = self.to_pieces();
         for piece in &mut pieces {
             let da = delta_of(piece.a);
@@ -239,10 +258,17 @@ impl Map {
                 piece.b = (piece.b.0 + d.0 as i32, piece.b.1 + d.1 as i32);
             }
             if let Some(c) = piece.ctrl {
-                let (sx, sy) = [da, db].into_iter().flatten().fold((0i64, 0i64), |acc, d| (acc.0 + d.0, acc.1 + d.1));
+                let (sx, sy) = [da, db]
+                    .into_iter()
+                    .flatten()
+                    .fold((0i64, 0i64), |acc, d| (acc.0 + d.0, acc.1 + d.1));
                 let moved = ((sx + sx.signum()) / 2, (sy + sy.signum()) / 2);
                 let c = (c.0 + moved.0 as i32, c.1 + moved.1 as i32);
-                piece.ctrl = if near_chord(piece.a, piece.b, c) { None } else { Some(c) };
+                piece.ctrl = if near_chord(piece.a, piece.b, c) {
+                    None
+                } else {
+                    Some(c)
+                };
             }
             piece.fresh = true;
         }
@@ -260,7 +286,11 @@ impl Map {
                 continue;
             }
             found = true;
-            piece.ctrl = if near_chord(piece.a, piece.b, to) { None } else { Some(to) };
+            piece.ctrl = if near_chord(piece.a, piece.b, to) {
+                None
+            } else {
+                Some(to)
+            };
             piece.fresh = true;
         }
         if !found {
@@ -289,15 +319,15 @@ impl Map {
             if a == b {
                 return false;
             }
-            let Some(index) = pieces
-                .iter()
-                .enumerate()
-                .position(|(i, p)| !removed[i] && ((p.a == a && p.b == b) || (p.a == b && p.b == a)))
-            else {
+            let Some(index) = pieces.iter().enumerate().position(|(i, p)| {
+                !removed[i] && ((p.a == a && p.b == b) || (p.a == b && p.b == a))
+            }) else {
                 return false;
             };
             let piece = pieces[index];
-            let oriented = piece.under.map(|(l, r)| if piece.a == a { (l, r) } else { (r, l) });
+            let oriented = piece
+                .under
+                .map(|(l, r)| if piece.a == a { (l, r) } else { (r, l) });
             match (under, oriented) {
                 (None, o) => under = o,
                 (Some(u), Some(o)) if u != o => return false,
@@ -307,7 +337,11 @@ impl Map {
             removed[index] = true;
         }
         // Interior vertices must not touch anything else, or the chain would tear.
-        let interior = if first == last { &chain[..chain.len() - 1] } else { &chain[1..chain.len() - 1] };
+        let interior = if first == last {
+            &chain[..chain.len() - 1]
+        } else {
+            &chain[1..chain.len() - 1]
+        };
         for &v in interior {
             let degree = pieces.iter().filter(|p| p.a == v || p.b == v).count();
             if degree != 2 {
@@ -316,12 +350,26 @@ impl Map {
         }
         let mut fresh = Vec::new();
         let end = walk_segs(first, segs, |a, b, ctrl| {
-            fresh.push(Piece { a, b, ctrl, under, top: None, wind: [0, 0], stroke, fresh: true });
+            fresh.push(Piece {
+                a,
+                b,
+                ctrl,
+                under,
+                top: None,
+                wind: [0, 0],
+                stroke,
+                fresh: true,
+            });
         });
         if end != last {
             return false;
         }
-        let mut kept: Vec<Piece> = pieces.iter().zip(&removed).filter(|(_, r)| !**r).map(|(p, _)| *p).collect();
+        let mut kept: Vec<Piece> = pieces
+            .iter()
+            .zip(&removed)
+            .filter(|(_, r)| !**r)
+            .map(|(p, _)| *p)
+            .collect();
         kept.append(&mut fresh);
         *self = assemble(kept, Overlay::None);
         true
@@ -345,7 +393,12 @@ impl Map {
         if pairs.is_empty() {
             return;
         }
-        let map = |fill: u32| pairs.iter().find(|(from, _)| *from == fill).map_or(fill, |(_, to)| *to);
+        let map = |fill: u32| {
+            pairs
+                .iter()
+                .find(|(from, _)| *from == fill)
+                .map_or(fill, |(_, to)| *to)
+        };
         let mut pieces = self.to_pieces();
         for piece in &mut pieces {
             piece.under = piece.under.map(|(l, r)| (map(l), map(r)));
@@ -388,14 +441,20 @@ impl Map {
         // Faces survive `overlay` unchanged, but their indices come from a
         // fresh build; find the one that still contains the point.
         let target = face_index_in(&labeled.built.verts, &labeled.built.halfs, p);
-        let inside: Vec<bool> = (0..labeled.built.faces.len()).map(|f| f == target).collect();
+        let inside: Vec<bool> = (0..labeled.built.faces.len())
+            .map(|f| f == target)
+            .collect();
         self.take_partition(labeled, &inside)
     }
 
     /// Lift every face whose fill is in `fills`.
     pub fn split_off_fills(&mut self, fills: &[u32]) -> Map {
         let labeled = overlay(self.to_pieces(), Overlay::None);
-        let inside: Vec<bool> = labeled.fills.iter().map(|fill| *fill != EMPTY && fills.contains(fill)).collect();
+        let inside: Vec<bool> = labeled
+            .fills
+            .iter()
+            .map(|fill| *fill != EMPTY && fills.contains(fill))
+            .collect();
         self.take_partition(labeled, &inside)
     }
 
@@ -413,7 +472,12 @@ impl Map {
         if top.is_empty() {
             return;
         }
-        pieces.extend(top.into_iter().map(|piece| Piece { top: piece.under, under: None, fresh: true, ..piece }));
+        pieces.extend(top.into_iter().map(|piece| Piece {
+            top: piece.under,
+            under: None,
+            fresh: true,
+            ..piece
+        }));
         *self = assemble(pieces, Overlay::Stamp);
     }
 
@@ -503,7 +567,12 @@ impl Map {
 
     /// Distinct fills in use, ascending.
     pub fn fills(&self) -> Vec<u32> {
-        let mut fills: Vec<u32> = self.faces.iter().map(|face| face.fill).filter(|fill| *fill != EMPTY).collect();
+        let mut fills: Vec<u32> = self
+            .faces
+            .iter()
+            .map(|face| face.fill)
+            .filter(|fill| *fill != EMPTY)
+            .collect();
         fills.sort_unstable();
         fills.dedup();
         fills
@@ -517,7 +586,12 @@ impl Map {
             let b = self.verts[pair[1].origin as usize];
             let bb = match pair[0].ctrl {
                 Some(c) => quad_bounds(a, c, b),
-                None => (a.0.min(b.0) as f64, a.1.min(b.1) as f64, a.0.max(b.0) as f64, a.1.max(b.1) as f64),
+                None => (
+                    a.0.min(b.0) as f64,
+                    a.1.min(b.1) as f64,
+                    a.0.max(b.0) as f64,
+                    a.1.max(b.1) as f64,
+                ),
             };
             out = Some(match out {
                 None => bb,
@@ -529,7 +603,10 @@ impl Map {
 
     /// The boundary of a cycle as a ring.
     pub fn cycle_ring(&self, start: u32) -> Ring {
-        let mut ring = Ring { start: self.verts[self.halfs[start as usize].origin as usize], segs: Vec::new() };
+        let mut ring = Ring {
+            start: self.verts[self.halfs[start as usize].origin as usize],
+            segs: Vec::new(),
+        };
         let mut edge = start;
         for _ in 0..=self.halfs.len() {
             let half = self.halfs[edge as usize];
@@ -628,7 +705,10 @@ pub fn region_op(a: &[Ring], b: &[Ring], op: BoolOp) -> Vec<Ring> {
         ring_pieces(ring, 1, None, &mut pieces);
     }
     let map = assemble(pieces, Overlay::Region(op));
-    map.regions().into_iter().flat_map(|(_, rings)| rings).collect()
+    map.regions()
+        .into_iter()
+        .flat_map(|(_, rings)| rings)
+        .collect()
 }
 
 pub fn polygon(pts: &[P]) -> Ring {
@@ -640,7 +720,10 @@ pub fn polygon(pts: &[P]) -> Ring {
     let Some((&start, rest)) = pts.split_first() else {
         return Ring::default();
     };
-    Ring { start, segs: rest.iter().map(|&p| Seg::Line(p)).collect() }
+    Ring {
+        start,
+        segs: rest.iter().map(|&p| Seg::Line(p)).collect(),
+    }
 }
 
 fn face_index_in(verts: &[P], halfs: &[HalfEdge], p: P) -> usize {
@@ -663,7 +746,10 @@ fn transformed_pieces(mut pieces: Vec<Piece>, xf: &Affine) -> Vec<Piece> {
     for piece in &mut pieces {
         piece.a = xf.apply(piece.a);
         piece.b = xf.apply(piece.b);
-        piece.ctrl = piece.ctrl.map(|c| xf.apply(c)).filter(|&c| !near_chord(piece.a, piece.b, c));
+        piece.ctrl = piece
+            .ctrl
+            .map(|c| xf.apply(c))
+            .filter(|&c| !near_chord(piece.a, piece.b, c));
         piece.fresh = true;
     }
     pieces.retain(|piece| piece.a != piece.b);
@@ -709,7 +795,16 @@ fn ring_pieces(ring: &Ring, slot: usize, top: Option<(u32, u32)>, out: &mut Vec<
     let mut wind = [0i8; 2];
     wind[slot] = 1;
     let mut emit = |a: P, b: P, ctrl: Option<P>| {
-        out.push(Piece { a, b, ctrl, under: None, top, wind, stroke: None, fresh: true });
+        out.push(Piece {
+            a,
+            b,
+            ctrl,
+            under: None,
+            top,
+            wind,
+            stroke: None,
+            fresh: true,
+        });
     };
     let cur = walk_segs(ring.start, &ring.segs, &mut emit);
     if cur != ring.start {

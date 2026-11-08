@@ -4,6 +4,7 @@ import {
   paintModeSetting,
   paintStyleSetting,
   strokeWidthSetting,
+  traceSimplifySetting,
   scaleWithStageSetting,
   clampStrokeWidth,
   type PaintStyle,
@@ -17,6 +18,7 @@ const lassoSettings = {
   mode: paintModeSetting,
   style: paintStyleSetting,
   width: strokeWidthSetting,
+  simplify: traceSimplifySetting,
   scaleWithStage: scaleWithStageSetting,
 } as const satisfies SettingsSchema;
 

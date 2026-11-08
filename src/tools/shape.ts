@@ -7,6 +7,7 @@ import {
   paintModeSetting,
   paintStyleSetting,
   strokeWidthSetting,
+  traceSimplifySetting,
   scaleWithStageSetting,
   clampStrokeWidth,
   type PaintStyle,
@@ -38,6 +39,7 @@ const shapeSettings = {
   mode: paintModeSetting,
   style: paintStyleSetting,
   width: strokeWidthSetting,
+  simplify: traceSimplifySetting,
   shape: shapeKindSetting,
   points: {
     type: "range" as const,

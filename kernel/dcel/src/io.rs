@@ -53,7 +53,9 @@ impl Reader<'_> {
 }
 
 pub(crate) fn to_bytes(map: &Map) -> Vec<u8> {
-    let mut w = Writer(Vec::with_capacity(16 + map.verts.len() * 8 + map.halfs.len() * 28));
+    let mut w = Writer(Vec::with_capacity(
+        16 + map.verts.len() * 8 + map.halfs.len() * 28,
+    ));
     w.0.extend_from_slice(MAGIC);
     w.u32(map.verts.len() as u32);
     for &(x, y) in &map.verts {
@@ -109,7 +111,11 @@ pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Map, String> {
         let face = r.u32()?;
         let fill = r.u32()?;
         let stroke = r.u32()?;
-        let ctrl = if r.u8()? == 1 { Some((r.i32()?, r.i32()?)) } else { None };
+        let ctrl = if r.u8()? == 1 {
+            Some((r.i32()?, r.i32()?))
+        } else {
+            None
+        };
         halfs.push(HalfEdge {
             origin,
             next,
@@ -129,20 +135,37 @@ pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Map, String> {
         for _ in 0..ni {
             inner.push(r.u32()?);
         }
-        faces.push(Face { fill, outer: (outer != NONE).then_some(outer), inner });
+        faces.push(Face {
+            fill,
+            outer: (outer != NONE).then_some(outer),
+            inner,
+        });
     }
     if faces.is_empty() {
-        faces.push(Face { fill: EMPTY, outer: None, inner: Vec::new() });
+        faces.push(Face {
+            fill: EMPTY,
+            outer: None,
+            inner: Vec::new(),
+        });
     }
     for half in &halfs {
-        if half.origin as usize >= verts.len() || half.next as usize >= halfs.len() || half.face as usize >= faces.len() {
+        if half.origin as usize >= verts.len()
+            || half.next as usize >= halfs.len()
+            || half.face as usize >= faces.len()
+        {
             return Err("dangling index".into());
         }
     }
     for face in &faces {
-        if face.outer.is_some_and(|h| h as usize >= halfs.len()) || face.inner.iter().any(|&h| h as usize >= halfs.len()) {
+        if face.outer.is_some_and(|h| h as usize >= halfs.len())
+            || face.inner.iter().any(|&h| h as usize >= halfs.len())
+        {
             return Err("dangling face index".into());
         }
     }
-    Ok(Map { verts, halfs, faces })
+    Ok(Map {
+        verts,
+        halfs,
+        faces,
+    })
 }

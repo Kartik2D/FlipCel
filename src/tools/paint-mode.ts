@@ -18,6 +18,19 @@ export const paintStyleSetting = {
 
 export type PaintStyle = (typeof paintStyleSetting.options)[number];
 
+/**
+ * How far a traced outline may leave the bitmap, in screen pixels.
+ * 0 keeps the trace. The kernel still stores that curve within one twip.
+ */
+export const traceSimplifySetting = {
+  type: "range" as const,
+  label: "Simplify (px)",
+  min: 0,
+  max: 8,
+  step: 0.1,
+  default: 0,
+};
+
 /** Pixel-canvas stroke width (traced tools). */
 export const strokeWidthSetting = {
   type: "range" as const,

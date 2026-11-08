@@ -3,6 +3,7 @@ import {
   paintModeSetting,
   paintStyleSetting,
   strokeWidthSetting,
+  traceSimplifySetting,
   scaleWithStageSetting,
 } from "./paint-mode";
 
@@ -10,6 +11,7 @@ const createPointsSettings = {
   mode: paintModeSetting,
   style: paintStyleSetting,
   width: strokeWidthSetting,
+  simplify: traceSimplifySetting,
   curve: {
     type: "toggle",
     options: ["smooth", "straight"] as const,

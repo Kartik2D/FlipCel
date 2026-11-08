@@ -32,7 +32,11 @@ pub(crate) fn overlay(pieces: Vec<Piece>, ov: Overlay) -> Labeled {
     let pieces = slice(pieces);
     let built = build(pieces);
     let (fills, winds) = label(&built, ov);
-    Labeled { built, fills, winds }
+    Labeled {
+        built,
+        fills,
+        winds,
+    }
 }
 
 pub(crate) fn finish(labeled: &Labeled) -> Map {
@@ -58,15 +62,29 @@ pub(crate) fn partition(labeled: &Labeled, inside: &[bool]) -> (Map, Map) {
         let (ia, ib) = (inside[fa], inside[fb]);
         let lift = (if ia { la } else { EMPTY }, if ib { lb } else { EMPTY });
         let stay = (if ia { EMPTY } else { la }, if ib { EMPTY } else { lb });
-        let plain = Piece { top: None, wind: [0, 0], fresh: false, ..*piece };
+        let plain = Piece {
+            top: None,
+            wind: [0, 0],
+            fresh: false,
+            ..*piece
+        };
         if lift != (EMPTY, EMPTY) || (piece.stroke.is_some() && ia && ib) {
-            lifted.push(Piece { under: Some(lift), ..plain });
+            lifted.push(Piece {
+                under: Some(lift),
+                ..plain
+            });
         }
         if stay != (EMPTY, EMPTY) || (piece.stroke.is_some() && !ia && !ib) {
-            rest.push(Piece { under: Some(stay), ..plain });
+            rest.push(Piece {
+                under: Some(stay),
+                ..plain
+            });
         }
     }
-    (assemble(lifted, Overlay::None), assemble(rest, Overlay::None))
+    (
+        assemble(lifted, Overlay::None),
+        assemble(rest, Overlay::None),
+    )
 }
 
 pub(crate) fn build(pieces: Vec<Piece>) -> Built {
@@ -104,18 +122,33 @@ pub(crate) fn build(pieces: Vec<Piece>) -> Built {
     link(&mut halfs, &verts);
     let cycles = walk(&mut halfs);
     let (faces, face_halves) = attach(&verts, &mut halfs, &cycles);
-    Built { verts, halfs, pairs, faces, face_halves }
+    Built {
+        verts,
+        halfs,
+        pairs,
+        faces,
+        face_halves,
+    }
 }
 
 fn into_map(built: Built, fills: Vec<u32>) -> Map {
-    let Built { verts, mut halfs, mut faces, .. } = built;
+    let Built {
+        verts,
+        mut halfs,
+        mut faces,
+        ..
+    } = built;
     for half in halfs.iter_mut() {
         half.fill = fills[half.face as usize];
     }
     for (face, fill) in faces.iter_mut().zip(fills) {
         face.fill = fill;
     }
-    Map { verts, halfs, faces }
+    Map {
+        verts,
+        halfs,
+        faces,
+    }
 }
 
 fn fills_from_labels(built: &Built) -> Vec<u32> {
@@ -139,7 +172,13 @@ fn dissolve(built: &Built, fills: &[u32]) -> Vec<Piece> {
             if l == r && piece.stroke.is_none() {
                 return None;
             }
-            Some(Piece { under: Some((l, r)), top: None, wind: [0, 0], fresh: false, ..*piece })
+            Some(Piece {
+                under: Some((l, r)),
+                top: None,
+                wind: [0, 0],
+                fresh: false,
+                ..*piece
+            })
         })
         .collect()
 }
@@ -275,13 +314,21 @@ fn attach(verts: &[P], halfs: &mut [HalfEdge], cycles: &[u32]) -> (Vec<Face>, Ve
     let unbounded = sets.find(n);
     let mut face_of_root: HashMap<usize, usize> = HashMap::new();
     face_of_root.insert(unbounded, 0);
-    let mut faces = vec![Face { fill: EMPTY, outer: None, inner: Vec::new() }];
+    let mut faces = vec![Face {
+        fill: EMPTY,
+        outer: None,
+        inner: Vec::new(),
+    }];
     let mut face_halves: Vec<Vec<u32>> = vec![Vec::new()];
     let mut cycle_face = vec![0usize; n];
     for c in 0..n {
         let root = sets.find(c);
         let face = *face_of_root.entry(root).or_insert_with(|| {
-            faces.push(Face { fill: EMPTY, outer: None, inner: Vec::new() });
+            faces.push(Face {
+                fill: EMPTY,
+                outer: None,
+                inner: Vec::new(),
+            });
             face_halves.push(Vec::new());
             faces.len() - 1
         });
@@ -311,7 +358,11 @@ fn attach(verts: &[P], halfs: &mut [HalfEdge], cycles: &[u32]) -> (Vec<Face>, Ve
             continue;
         }
         new_index[face] = compacted.len();
-        compacted.push(Face { fill: EMPTY, outer: faces[face].outer, inner: Vec::new() });
+        compacted.push(Face {
+            fill: EMPTY,
+            outer: faces[face].outer,
+            inner: Vec::new(),
+        });
         compacted_halves.push(Vec::new());
     }
     for c in 0..n {
@@ -362,7 +413,11 @@ fn ray_hits(a: P, b: P, ctrl: Option<P>, sy: f64, out: &mut Vec<RayHit>) {
         let goes_down = qb > 0.0 || (qb == 0.0 && qa > 0.0);
         if goes_down {
             let tx = 2.0 * (cx - ax);
-            let key = if qb != 0.0 { tx / qb } else { tx.signum() * big };
+            let key = if qb != 0.0 {
+                tx / qb
+            } else {
+                tx.signum() * big
+            };
             out.push(RayHit { x: ax, key, dy: 1 });
         }
     }
@@ -371,12 +426,20 @@ fn ray_hits(a: P, b: P, ctrl: Option<P>, sy: f64, out: &mut Vec<RayHit>) {
         let goes_down = d1 < 0.0 || (d1 == 0.0 && qa > 0.0);
         if goes_down {
             let tx = 2.0 * (bx - cx);
-            let key = if d1 != 0.0 { tx / d1 } else { -tx.signum() * big };
+            let key = if d1 != 0.0 {
+                tx / d1
+            } else {
+                -tx.signum() * big
+            };
             out.push(RayHit { x: bx, key, dy: -1 });
         }
     }
     let roots: Vec<f64> = if qa == 0.0 {
-        if qb == 0.0 { Vec::new() } else { vec![-qc / qb] }
+        if qb == 0.0 {
+            Vec::new()
+        } else {
+            vec![-qc / qb]
+        }
     } else {
         let disc = qb * qb - 4.0 * qa * qc;
         if disc <= 0.0 {
@@ -399,14 +462,23 @@ fn ray_hits(a: P, b: P, ctrl: Option<P>, sy: f64, out: &mut Vec<RayHit>) {
         }
         let (x, _) = quad_at(a, c, b, t);
         let (tx, _) = quad_tangent(a, c, b, t);
-        out.push(RayHit { x, key: tx / ty, dy: if ty > 0.0 { 1 } else { -1 } });
+        out.push(RayHit {
+            x,
+            key: tx / ty,
+            dy: if ty > 0.0 { 1 } else { -1 },
+        });
     }
 }
 
 /// Nearest edge crossing the leftward ray from `start`, as the half-edge
 /// whose face lies on the ray's side (to the right of the hit). Edges of the
 /// cycle `skip` are ignored.
-pub(crate) fn ray_left(verts: &[P], halfs: &[HalfEdge], start: (f64, f64), skip: Option<u32>) -> Option<u32> {
+pub(crate) fn ray_left(
+    verts: &[P],
+    halfs: &[HalfEdge],
+    start: (f64, f64),
+    skip: Option<u32>,
+) -> Option<u32> {
     let (sx, sy) = start;
     let mut best: Option<(f64, f64, u32)> = None;
     let mut hits = Vec::new();
@@ -470,7 +542,8 @@ fn label(built: &Built, ov: Overlay) -> (Vec<u32>, Vec<[i8; 2]>) {
                 debug_assert!(
                     wind[other] == implied,
                     "winding disagrees across an edge: {face} -> {other}, stored {:?}, implied {:?}",
-                    wind[other], implied
+                    wind[other],
+                    implied
                 );
                 continue;
             }
@@ -481,7 +554,9 @@ fn label(built: &Built, ov: Overlay) -> (Vec<u32>, Vec<[i8; 2]>) {
             queue.push_back(other);
         }
     }
-    let fills = (0..n).map(|f| final_fill(ov, under[f], top[f], wind[f])).collect();
+    let fills = (0..n)
+        .map(|f| final_fill(ov, under[f], top[f], wind[f]))
+        .collect();
     (fills, wind)
 }
 

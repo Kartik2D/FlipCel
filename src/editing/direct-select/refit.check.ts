@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { VectorLayer, initKernelSync, rectRing, type Px } from "../../vector/kernel";
+import { simplifyRings } from "./fit-curve";
 import { chainsOf, rekeyPicks, simplifyChains, smoothChains, vertexKey } from "./refit";
 
 class FakePath2D {
@@ -60,7 +61,7 @@ function tracedLoop(): VectorLayer {
   const after = l.vertices().length;
   const stats = segStats(l);
   check("simplify changed", changed);
-  check("simplify dropped most vertices", after <= before / 4, `${before} -> ${after}`);
+  check("simplify dropped most vertices", after < before / 2, `${before} -> ${after}`);
   check("simplify made curves", stats.quads > 0 && stats.lines === 0, JSON.stringify(stats));
   check("simplify kept the fill", l.faceAt({ x: 300, y: 200 }) === 1 && l.faceAt({ x: 200, y: 200 }) === 0);
   const re = rekeyPicks(l, picks);
@@ -158,6 +159,22 @@ function tracedLoop(): VectorLayer {
   check("split kept the curve", l.edges().filter((x) => x.ctrl).length === 2);
   check("split kept the fill", l.faceAt({ x: 50, y: -25 }) === insideBefore && l.faceAt({ x: 50, y: 50 }) === 1);
   l.free();
+}
+
+// Trace simplify runs on the rings, before paint. 0 keeps them; a loose tol drops corners.
+{
+  const pts: Px[] = [];
+  for (let i = 0; i < 48; i++) {
+    const a = (i / 48) * Math.PI * 2;
+    pts.push({ x: 200 + 80 * Math.cos(a), y: 200 + 80 * Math.sin(a) });
+  }
+  const ring = { start: pts[0], segs: pts.slice(1).map((p) => ({ kind: "L" as const, to: p })) };
+  const kept = simplifyRings([ring], 0);
+  check("simplify off keeps the trace", kept[0] === ring);
+  const loose = simplifyRings([ring], 1.5);
+  check("simplify drops corners", loose[0].segs.length < ring.segs.length, `${ring.segs.length} -> ${loose[0].segs.length}`);
+  check("simplify emits cubics", loose[0].segs.every((s) => s.kind === "C"));
+  check("simplify stays closed", loose[0].segs[loose[0].segs.length - 1].to.x === ring.start.x && loose[0].segs[loose[0].segs.length - 1].to.y === ring.start.y);
 }
 
 console.log(failures === 0 ? "\nrefit.check: all passed" : `\nrefit.check: ${failures} failure(s)`);

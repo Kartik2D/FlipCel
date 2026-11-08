@@ -5,7 +5,7 @@
  * Returns G1-continuous cubics through the points, within `tolerance`.
  * End tangents may be pinned so a fitted run blends into its neighbours.
  */
-import type { Px, Seg } from "../../vector/kernel";
+import type { Px, Ring, Seg } from "../../vector/kernel";
 
 export interface CubicSeg {
   kind: "C";
@@ -203,6 +203,35 @@ export function sampleQuad(p0: Px, c: Px, p2: Px, steps: number): Px[] {
     });
   }
   return out;
+}
+
+/**
+ * Refit each closed ring with as few cubics as stay within `tol` (world px)
+ * of its outline. `tol <= 0` returns the rings unchanged. A fit that does not
+ * reduce the edge count is discarded, so the slider only ever simplifies.
+ */
+export function simplifyRings(rings: readonly Ring[], tol: number): Ring[] {
+  if (!(tol > 0)) return rings.slice();
+  return rings.map((ring) => simplifyRing(ring, tol));
+}
+
+function simplifyRing(ring: Ring, tol: number): Ring {
+  if (ring.segs.length === 0) return ring;
+  const pts = flattenSegs(ring.start, ring.segs);
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  const gap = Math.hypot(last.x - first.x, last.y - first.y);
+  if (gap > 1e-6) pts.push(first);
+  else pts[pts.length - 1] = first;
+  if (pts.length < 4) return ring;
+  const prev = pts[pts.length - 2];
+  const next = pts[1];
+  const t = norm(sub(next, prev));
+  if (len(t) === 0) return ring;
+  const cubics = fitCubics(pts, tol, t, t);
+  const edges = ring.segs.length + (gap > 1e-6 ? 1 : 0);
+  if (cubics.length === 0 || cubics.length >= edges) return ring;
+  return { start: first, segs: cubics };
 }
 
 /** Flatten a run of kernel segments starting at `start` into a polyline (includes `start`). */
