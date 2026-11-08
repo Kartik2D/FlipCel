@@ -205,6 +205,14 @@ function unitHeart(steps = 48): Array<[number, number]> {
   return raw.map(([x, y]) => [(x - cx) / sx, (y - cy) / sy]);
 }
 
+/** Unit outline in [-1, 1]. Circle, rect, and round-rect are not polylines. */
+export function shapeUnitOutline(
+  kind: ShapeKind,
+  points = 5,
+): Array<[number, number]> | null {
+  return unitVerts(kind, points);
+}
+
 function unitVerts(kind: ShapeKind, points: number): Array<[number, number]> | null {
   switch (kind) {
     case "poly":

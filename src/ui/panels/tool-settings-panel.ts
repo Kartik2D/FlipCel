@@ -1,9 +1,9 @@
 import { html, css, svg, nothing, type TemplateResult } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { type ToolId, type SettingsSchema, type SettingDef, getTool } from "../../tools/registry";
+import { type ToolId, type SettingsSchema, type SettingDef, type RangeSetting, getTool } from "../../tools/registry";
 import { paintModeAccent } from "../../tools/paint-mode";
 import { isBrushTip, type BrushTip } from "../../tools/brush";
-import { isShapeKind, shapeUsesPoints } from "../../tools/shape";
+import { isShapeKind, shapeUnitOutline, shapeUsesPoints, type ShapeKind } from "../../tools/shape";
 import {
   ARTISTIC_TEXT_FONT_FILE,
   ARTISTIC_TEXT_FONTS,
@@ -43,6 +43,8 @@ import { getHelp, helpIdForTool } from "../help/catalog";
 export class FlipCelToolSettingsPanel extends FloatingPanel {
   @property({ type: Boolean, reflect: true }) override masonry = false;
   @state() private pixelResDraft: number | null = null;
+  /** Which brush-size handle is being dragged, so it stays above the other. */
+  @state() private brushSizeDrag: "min" | "max" | null = null;
 
   private tool = new StoreController(this, toolStore);
   private pixelRes = new StoreController(this, pixelResScaleStore);
@@ -83,32 +85,88 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
       color: var(--flipcel-text-secondary, #333);
     }
 
-    .tip-select {
-      display: flex;
-      align-items: center;
-      gap: 8px;
+    .shape-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+      width: 100%;
       min-width: 0;
     }
 
-    .tip-select select {
-      flex: 1 1 auto;
-    }
-
-    .tip-preview {
-      flex: 0 0 auto;
-      width: 22px;
-      height: 22px;
+    .shape-cell {
+      appearance: none;
       display: grid;
       place-items: center;
+      aspect-ratio: 1;
+      margin: 0;
+      padding: 4px;
+      border: none;
       border-radius: var(--flipcel-content-radius);
       background: var(--block-depth-color, #bcbcbc);
       color: var(--block-border, #555555);
+      cursor: pointer;
     }
 
-    .tip-preview svg {
+    .shape-cell:hover {
+      filter: brightness(0.97);
+    }
+
+    .shape-cell[active] {
+      background: var(--flipcel-accent, #4a6fb5);
+      color: var(--flipcel-accent-contrast, #ffffff);
+    }
+
+    .shape-cell svg {
       display: block;
-      width: 14px;
-      height: 14px;
+      width: 68%;
+      height: 68%;
+    }
+
+    /* Brush size: one track, min and max handles. Thumbs match the range inputs. */
+    .range-pair {
+      position: relative;
+      height: 28px;
+      touch-action: none;
+      cursor: pointer;
+    }
+
+    .range-pair-track {
+      position: absolute;
+      left: 11px;
+      right: 11px;
+      top: 50%;
+      height: 6px;
+      transform: translateY(-50%);
+      border-radius: 999px;
+      background: var(--panel-track-bg);
+    }
+
+    .range-pair-fill {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      border-radius: 999px;
+      background: var(--panel-accent);
+    }
+
+    .range-pair-thumb {
+      position: absolute;
+      top: 50%;
+      width: 22px;
+      height: 22px;
+      margin: 0;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: var(--panel-accent);
+      transform: translate(-50%, -50%);
+      cursor: pointer;
+    }
+
+    .range-pair-thumb:hover,
+    .range-pair-thumb[active] {
+      background: var(--panel-accent-hover);
+      z-index: 2;
     }
 
     .select-clipboard-actions {
@@ -125,9 +183,13 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
   }
 
   private updateSetting(toolId: ToolId, key: string, value: unknown) {
+    this.updateSettings(toolId, { [key]: value });
+  }
+
+  private updateSettings(toolId: ToolId, patch: Record<string, unknown>) {
     this.settings.update((s) => ({
       ...s,
-      [toolId]: { ...s[toolId], [key]: value },
+      [toolId]: { ...s[toolId], ...patch },
     }));
     this.emit("settings-change", this.settings.value);
   }
@@ -234,32 +296,34 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
 
     if (def.type === "select") {
       const selected = String(currentValue ?? def.default);
-      const select = html`
-        <select
-          .value=${selected}
-          @change=${(e: Event) =>
-            this.updateSetting(
-              toolId,
-              key,
-              (e.target as HTMLSelectElement).value,
-            )}
-        >
-          ${def.options.map(
-            (opt) =>
-              html`<option value=${opt} ?selected=${selected === opt}>
-                ${this.formatLabel(opt)}
-              </option>`,
-          )}
-        </select>
-      `;
+      const preview = this.previewKind(def.options);
+      if (preview) {
+        return html`
+          <label>
+            <span>${label}</span>
+            ${this.renderShapeGrid(toolId, key, def.options, selected, preview)}
+          </label>
+        `;
+      }
       return html`
         <label>
           <span>${label}</span>
-          ${key === "tip"
-            ? html`<div class="tip-select">
-                ${this.renderTipPreview(selected)}${select}
-              </div>`
-            : select}
+          <select
+            .value=${selected}
+            @change=${(e: Event) =>
+              this.updateSetting(
+                toolId,
+                key,
+                (e.target as HTMLSelectElement).value,
+              )}
+          >
+            ${def.options.map(
+              (opt) =>
+                html`<option value=${opt} ?selected=${selected === opt}>
+                  ${this.formatLabel(opt)}
+                </option>`,
+            )}
+          </select>
         </label>
       `;
     }
@@ -363,6 +427,53 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
     `;
   }
 
+  /** Brush tips and the shape catalog get a preview grid instead of a menu. */
+  private previewKind(options: readonly string[]): "tip" | "shape" | null {
+    if (options.length > 0 && options.every((opt) => isBrushTip(opt))) return "tip";
+    if (options.length > 0 && options.every((opt) => isShapeKind(opt))) return "shape";
+    return null;
+  }
+
+  private renderShapeGrid(
+    toolId: ToolId,
+    key: string,
+    options: readonly string[],
+    selected: string,
+    kind: "tip" | "shape",
+  ): TemplateResult {
+    const points = this.shapePoints(toolId);
+    return html`
+      <div class="shape-grid">
+        ${options.map((opt) => {
+          const name = this.formatLabel(opt);
+          return html`
+            <button
+              type="button"
+              class="shape-cell"
+              title=${name}
+              aria-label=${name}
+              aria-pressed=${selected === opt ? "true" : "false"}
+              ?active=${selected === opt}
+              @click=${() => this.updateSetting(toolId, key, opt)}
+            >
+              ${kind === "tip" && isBrushTip(opt)
+                ? this.tipPreviewSvg(opt)
+                : isShapeKind(opt)
+                  ? this.shapePreviewSvg(opt, points)
+                  : nothing}
+            </button>
+          `;
+        })}
+      </div>
+    `;
+  }
+
+  private shapePoints(toolId: ToolId): number {
+    const settings = this.settings.value[toolId] as { points?: unknown } | undefined;
+    const n = settings?.points;
+    return typeof n === "number" && Number.isFinite(n) ? n : 5;
+  }
+
   private formatLabel(key: string): string {
     return key
       .replace(/([A-Z])/g, " $1")
@@ -370,11 +481,25 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
       .trim();
   }
 
-  private renderTipPreview(value: string): TemplateResult | typeof nothing {
-    if (!isBrushTip(value)) return nothing;
-    return html`<span class="tip-preview" aria-hidden="true"
-      >${this.tipPreviewSvg(value)}</span
-    >`;
+  private shapePreviewSvg(kind: ShapeKind, points: number): TemplateResult {
+    if (kind === "circle") return this.tipPreviewSvg("circle");
+    if (kind === "rect") {
+      return svg`<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2.4" y="3.4" width="11.2" height="9.2" rx="1"/></svg>`;
+    }
+    if (kind === "roundRect") {
+      return svg`<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.6"/></svg>`;
+    }
+    const verts = shapeUnitOutline(kind, points);
+    if (!verts || verts.length === 0) return this.tipPreviewSvg("circle");
+    const d =
+      verts
+        .map(([x, y], i) => {
+          const px = (8 + x * 5.4).toFixed(2);
+          const py = (8 + y * 5.4).toFixed(2);
+          return `${i === 0 ? "M" : "L"}${px} ${py}`;
+        })
+        .join(" ") + " Z";
+    return svg`<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d=${d} /></svg>`;
   }
 
   private tipPreviewSvg(tip: BrushTip): TemplateResult {
@@ -387,6 +512,157 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
         return svg`<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1.5" y="7" width="13" height="2" rx="1" transform="rotate(-45 8 8)"/></svg>`;
       default:
         return svg`<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/></svg>`;
+    }
+  }
+
+  private formatRangeValue(n: number, step: number): string {
+    const digits = step < 1 ? 1 : 0;
+    return String(Number(n.toFixed(digits)));
+  }
+
+  private snapRange(value: number, min: number, max: number, step: number): number {
+    const steps = Math.round((value - min) / step);
+    const snapped = Number((min + steps * step).toFixed(step < 1 ? 1 : 0));
+    return Math.min(max, Math.max(min, snapped));
+  }
+
+  /** Brush pressure range: sizeMin and sizeMax share one track. */
+  private renderBrushSizeRange(
+    toolId: ToolId,
+    minDef: RangeSetting,
+    maxDef: RangeSetting,
+    toolSettings: Record<string, unknown>,
+  ): TemplateResult {
+    const lo = Number(toolSettings.sizeMin ?? minDef.default);
+    const hi = Number(toolSettings.sizeMax ?? maxDef.default);
+    const span = minDef.max - minDef.min || 1;
+    const loT = (lo - minDef.min) / span;
+    const hiT = (hi - minDef.min) / span;
+    const thumb = (end: "min" | "max", t: number, value: number) => html`
+      <button
+        type="button"
+        class="range-pair-thumb"
+        style="left: calc(11px + ${t} * (100% - 22px))"
+        role="slider"
+        aria-label=${end === "min" ? "Minimum size" : "Maximum size"}
+        aria-valuemin=${end === "min" ? minDef.min : lo}
+        aria-valuemax=${end === "min" ? hi : maxDef.max}
+        aria-valuenow=${value}
+        ?active=${this.brushSizeDrag === end}
+        @keydown=${(e: KeyboardEvent) =>
+          this.nudgeBrushSize(e, toolId, end, minDef, lo, hi)}
+      ></button>
+    `;
+    return html`
+      <label>
+        <span>Size: ${this.formatRangeValue(lo, minDef.step)}–${this.formatRangeValue(hi, maxDef.step)}</span>
+        <div
+          class="range-pair"
+          data-interactive
+          @pointerdown=${(e: PointerEvent) =>
+            this.onBrushSizeDown(e, toolId, minDef, lo, hi)}
+        >
+          <div class="range-pair-track">
+            <div
+              class="range-pair-fill"
+              style="left:${loT * 100}%;width:${Math.max(0, hiT - loT) * 100}%"
+            ></div>
+          </div>
+          ${thumb("min", loT, lo)}
+          ${thumb("max", hiT, hi)}
+        </div>
+      </label>
+    `;
+  }
+
+  private nudgeBrushSize(
+    e: KeyboardEvent,
+    toolId: ToolId,
+    end: "min" | "max",
+    def: RangeSetting,
+    lo: number,
+    hi: number,
+  ) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const dir = e.key === "ArrowRight" ? 1 : -1;
+    const delta = def.step * (e.shiftKey ? 10 : 1) * dir;
+    const next = this.snapRange((end === "min" ? lo : hi) + delta, def.min, def.max, def.step);
+    if (end === "min") {
+      this.updateSettings(toolId, { sizeMin: Math.min(next, hi) });
+    } else {
+      this.updateSettings(toolId, { sizeMax: Math.max(next, lo) });
+    }
+  }
+
+  private onBrushSizeDown(
+    e: PointerEvent,
+    toolId: ToolId,
+    def: RangeSetting,
+    lo: number,
+    hi: number,
+  ) {
+    if (e.button !== 0) return;
+    const el = e.currentTarget as HTMLElement;
+    const end = this.pickBrushSizeEnd(e, el, def, lo, hi);
+    el.setPointerCapture(e.pointerId);
+    this.brushSizeDrag = end;
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      this.applyBrushSize(ev, el, toolId, def, end);
+    };
+    const up = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      this.brushSizeDrag = null;
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+    this.applyBrushSize(e, el, toolId, def, end);
+  }
+
+  private pickBrushSizeEnd(
+    e: PointerEvent,
+    el: HTMLElement,
+    def: RangeSetting,
+    lo: number,
+    hi: number,
+  ): "min" | "max" {
+    const value = this.brushSizeValue(e, el, def);
+    const dMin = Math.abs(value - lo);
+    const dMax = Math.abs(value - hi);
+    if (Math.abs(dMin - dMax) <= def.step) {
+      const mid = (lo + hi) / 2;
+      return value < mid ? "min" : "max";
+    }
+    return dMin <= dMax ? "min" : "max";
+  }
+
+  private brushSizeValue(e: PointerEvent, el: HTMLElement, def: RangeSetting): number {
+    const rect = el.getBoundingClientRect();
+    const track = Math.max(1, rect.width - 22);
+    const t = Math.max(0, Math.min(1, (e.clientX - rect.left - 11) / track));
+    return def.min + t * (def.max - def.min);
+  }
+
+  private applyBrushSize(
+    e: PointerEvent,
+    el: HTMLElement,
+    toolId: ToolId,
+    def: RangeSetting,
+    end: "min" | "max",
+  ) {
+    const settings = this.settings.value[toolId] as { sizeMin?: unknown; sizeMax?: unknown };
+    const lo = Number(settings.sizeMin ?? def.min);
+    const hi = Number(settings.sizeMax ?? def.max);
+    const value = this.snapRange(this.brushSizeValue(e, el, def), def.min, def.max, def.step);
+    if (end === "min") {
+      this.updateSettings(toolId, { sizeMin: Math.min(value, hi) });
+    } else {
+      this.updateSettings(toolId, { sizeMax: Math.max(value, lo) });
     }
   }
 
@@ -432,9 +708,30 @@ export class FlipCelToolSettingsPanel extends FloatingPanel {
     }
 
     return html`
-      ${schemaKeys.map((key) =>
-        this.renderSetting(currentToolId, key, schema[key], toolSettings[key]),
-      )}
+      ${schemaKeys.map((key) => {
+        const minDef = schema.sizeMin;
+        const maxDef = schema.sizeMax;
+        if (
+          key === "sizeMax" &&
+          minDef?.type === "range" &&
+          maxDef?.type === "range"
+        ) {
+          return nothing;
+        }
+        if (
+          key === "sizeMin" &&
+          minDef?.type === "range" &&
+          maxDef?.type === "range"
+        ) {
+          return this.renderBrushSizeRange(
+            currentToolId,
+            minDef,
+            maxDef,
+            toolSettings,
+          );
+        }
+        return this.renderSetting(currentToolId, key, schema[key], toolSettings[key]);
+      })}
       ${currentToolId === "artistic-text" ? this.renderArtisticTextFont() : ""}
       ${currentToolId === "select"
         ? html`
