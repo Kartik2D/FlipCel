@@ -1,12 +1,10 @@
 /**
- * Magic Move timing-chart parsing (Paper-native).
+ * Magic Move timing-chart parsing.
  *
- * Longest stroke → trajectory path; shorter strokes that cross it → timing ticks.
- * Dense samples follow the bezier/polyline arc between ticks (Steps subdivisions).
+ * Longest stroke → trajectory; shorter strokes that cross it → timing ticks.
+ * Dense samples follow the polyline between ticks (Steps subdivisions).
  */
-import paper from "paper";
 import type { Point } from "../geometry/types";
-import { ensurePaperScope } from "../vector/paper-adapter";
 
 export interface ChartStroke {
   /** World/stage-space points. */
@@ -43,19 +41,68 @@ export type GraphParseResult =
 function strokeLength(points: Point[]): number {
   let len = 0;
   for (let i = 1; i < points.length; i++) {
-    const dx = points[i].x - points[i - 1].x;
-    const dy = points[i].y - points[i - 1].y;
-    len += Math.hypot(dx, dy);
+    len += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
   }
   return len;
 }
 
-function pathFromPoints(points: Point[]): paper.Path {
-  const path = new paper.Path({
-    segments: points.map((p) => new paper.Point(p.x, p.y)),
-    insert: false,
-  });
-  return path;
+/** Crossings of two polylines. `offset` is arc length along `traj`. */
+function polylineHits(
+  traj: Point[],
+  tick: Point[],
+): Array<{ x: number; y: number; offset: number }> {
+  const hits: Array<{ x: number; y: number; offset: number }> = [];
+  let walked = 0;
+  for (let i = 1; i < traj.length; i++) {
+    const a = traj[i - 1];
+    const b = traj[i];
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const abLen = Math.hypot(abx, aby);
+    for (let j = 1; j < tick.length; j++) {
+      const c = tick[j - 1];
+      const d = tick[j];
+      const cdx = d.x - c.x;
+      const cdy = d.y - c.y;
+      const den = abx * cdy - aby * cdx;
+      if (Math.abs(den) < 1e-12) continue;
+      const acx = c.x - a.x;
+      const acy = c.y - a.y;
+      const t = (acx * cdy - acy * cdx) / den;
+      const u = (acx * aby - acy * abx) / den;
+      if (t < -1e-9 || t > 1 + 1e-9 || u < -1e-9 || u > 1 + 1e-9) continue;
+      hits.push({
+        x: a.x + abx * t,
+        y: a.y + aby * t,
+        offset: walked + abLen * Math.max(0, Math.min(1, t)),
+      });
+    }
+    walked += abLen;
+  }
+  return hits;
+}
+
+/** Point and unit tangent of the segment that contains `offset`. */
+function pointOnPolyline(
+  points: Point[],
+  offset: number,
+): { x: number; y: number; tx: number; ty: number } {
+  let walked = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (walked + len >= offset - 1e-9 || i === points.length - 1) {
+      const u = len < 1e-9 ? 0 : Math.max(0, Math.min(1, (offset - walked) / len));
+      const n = len || 1;
+      return { x: a.x + dx * u, y: a.y + dy * u, tx: dx / n, ty: dy / n };
+    }
+    walked += len;
+  }
+  const a = points[0] ?? { x: 0, y: 0 };
+  return { x: a.x, y: a.y, tx: 1, ty: 0 };
 }
 
 interface ParseMemo {
@@ -70,8 +117,7 @@ const parseMemo: ParseMemo[] = [];
  * `parseTimingChart` over a controller's stroke list, memoized by stroke
  * identity. Strokes are appended as whole arrays and never mutated after,
  * so comparing each inner array by reference is exact. Lets the chrome
- * painter and `canApply()` re-ask every frame without re-running the
- * paper.js fit.
+ * painter and `canApply()` re-ask every frame without refitting the chart.
  */
 export function parseTimingChartMemo(strokes: readonly Point[][], steps: number): GraphParseResult {
   for (let i = 0; i < parseMemo.length; i++) {
@@ -109,7 +155,6 @@ export function parseTimingChart(
   strokes: ChartStroke[],
   steps: number,
 ): GraphParseResult {
-  ensurePaperScope();
   const usable = strokes.filter((s) => s.points.length >= 2);
   if (usable.length < 2) {
     return {
@@ -132,99 +177,84 @@ export function parseTimingChart(
     return { ok: false, error: "Trajectory is too short." };
   }
 
-  const trajectory = pathFromPoints(usable[trajIndex].points);
+  const trajectory = usable[trajIndex].points;
   const tickHits: Array<{ offset: number; length: number }> = [];
 
-  try {
-    for (let i = 0; i < usable.length; i++) {
-      if (i === trajIndex) continue;
-      const tick = pathFromPoints(usable[i].points);
-      try {
-        const hits = trajectory.getIntersections(tick);
-        if (hits.length === 0) continue;
-        // Prefer the hit closest to the tick midpoint (first intersection is fine).
-        let best = hits[0];
-        let bestDist = Infinity;
-        const mid =
-          usable[i].points[Math.floor(usable[i].points.length / 2)] ??
-          usable[i].points[0];
-        for (const hit of hits) {
-          const d = hit.point.getDistance(new paper.Point(mid.x, mid.y));
-          if (d < bestDist) {
-            bestDist = d;
-            best = hit;
-          }
-        }
-        tickHits.push({
-          offset: best.offset,
-          length: Math.max(1e-6, strokeLength(usable[i].points)),
-        });
-      } finally {
-        tick.remove();
+  for (let i = 0; i < usable.length; i++) {
+    if (i === trajIndex) continue;
+    const hits = polylineHits(trajectory, usable[i].points);
+    if (hits.length === 0) continue;
+    // Prefer the hit closest to the tick midpoint.
+    const mid =
+      usable[i].points[Math.floor(usable[i].points.length / 2)] ?? usable[i].points[0];
+    let best = hits[0];
+    let bestDist = Infinity;
+    for (const hit of hits) {
+      const d = Math.hypot(hit.x - mid.x, hit.y - mid.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = hit;
       }
     }
-
-    if (tickHits.length < 2) {
-      return {
-        ok: false,
-        error: "Need at least two timing ticks intersecting the trajectory.",
-      };
-    }
-
-    tickHits.sort((a, b) => a.offset - b.offset);
-    // Deduplicate near-identical offsets (keep the first tick’s length).
-    const unique: Array<{ offset: number; length: number }> = [tickHits[0]];
-    for (let i = 1; i < tickHits.length; i++) {
-      if (tickHits[i].offset - unique[unique.length - 1].offset > 1e-4) {
-        unique.push(tickHits[i]);
-      }
-    }
-    if (unique.length < 2) {
-      return {
-        ok: false,
-        error: "Need at least two distinct timing ticks on the trajectory.",
-      };
-    }
-
-    const baseLen = unique[0].length;
-    const tickScales = unique.map((t) => t.length / baseLen);
-
-    const subdiv = Math.max(1, Math.round(steps));
-    const samples: PathSample[] = [];
-
-    const pushAt = (offset: number, tickInterval: number, stepIndex: number) => {
-      const clamped = Math.max(0, Math.min(trajectory.length, offset));
-      const pt = trajectory.getPointAt(clamped);
-      const tan =
-        trajectory.length > 1e-6
-          ? trajectory.getTangentAt(clamped)
-          : new paper.Point(1, 0);
-      const len = Math.hypot(tan.x, tan.y) || 1;
-      samples.push({
-        x: pt.x,
-        y: pt.y,
-        offset: clamped,
-        tx: tan.x / len,
-        ty: tan.y / len,
-        tickInterval,
-        stepIndex,
-      });
-    };
-
-    pushAt(unique[0].offset, 0, 0);
-    for (let t = 0; t < unique.length - 1; t++) {
-      const oA = unique[t].offset;
-      const oB = unique[t + 1].offset;
-      for (let k = 1; k <= subdiv; k++) {
-        const offset = oA + ((oB - oA) * k) / subdiv;
-        pushAt(offset, t, k);
-      }
-    }
-
-    return { ok: true, samples, tickCount: unique.length, tickScales };
-  } finally {
-    trajectory.remove();
+    tickHits.push({
+      offset: best.offset,
+      length: Math.max(1e-6, strokeLength(usable[i].points)),
+    });
   }
+
+  if (tickHits.length < 2) {
+    return {
+      ok: false,
+      error: "Need at least two timing ticks intersecting the trajectory.",
+    };
+  }
+
+  tickHits.sort((a, b) => a.offset - b.offset);
+  // Deduplicate near-identical offsets (keep the first tick’s length).
+  const unique: Array<{ offset: number; length: number }> = [tickHits[0]];
+  for (let i = 1; i < tickHits.length; i++) {
+    if (tickHits[i].offset - unique[unique.length - 1].offset > 1e-4) {
+      unique.push(tickHits[i]);
+    }
+  }
+  if (unique.length < 2) {
+    return {
+      ok: false,
+      error: "Need at least two distinct timing ticks on the trajectory.",
+    };
+  }
+
+  const baseLen = unique[0].length;
+  const tickScales = unique.map((t) => t.length / baseLen);
+
+  const subdiv = Math.max(1, Math.round(steps));
+  const samples: PathSample[] = [];
+
+  const pushAt = (offset: number, tickInterval: number, stepIndex: number) => {
+    const clamped = Math.max(0, Math.min(maxLen, offset));
+    const pt = pointOnPolyline(trajectory, clamped);
+    samples.push({
+      x: pt.x,
+      y: pt.y,
+      offset: clamped,
+      tx: pt.tx,
+      ty: pt.ty,
+      tickInterval,
+      stepIndex,
+    });
+  };
+
+  pushAt(unique[0].offset, 0, 0);
+  for (let t = 0; t < unique.length - 1; t++) {
+    const oA = unique[t].offset;
+    const oB = unique[t + 1].offset;
+    for (let k = 1; k <= subdiv; k++) {
+      const offset = oA + ((oB - oA) * k) / subdiv;
+      pushAt(offset, t, k);
+    }
+  }
+
+  return { ok: true, samples, tickCount: unique.length, tickScales };
 }
 
 /**

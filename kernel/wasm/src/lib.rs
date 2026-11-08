@@ -120,6 +120,13 @@ impl VectorMap {
         VectorMap { map: self.map.clone() }
     }
 
+    /// Inbetween of this map (t = 0) and `other` (t = 1).
+    pub fn lerp(&self, other: &VectorMap, t: f64) -> VectorMap {
+        VectorMap {
+            map: self.map.lerp(&other.map, t),
+        }
+    }
+
     #[wasm_bindgen(js_name = isEmpty)]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()

@@ -770,11 +770,17 @@ export class StageRenderer {
     return cell ? cell.art.faceAt(world) : 0;
   }
 
-  /** Topmost visible color under a point (eyedropper). */
+  /** Topmost visible color under a point (eyedropper). Same order as `drawScene`. */
   colorAt(world: Px): string | null {
     for (const id of [...this.order].reverse()) {
       const layer = this.layers.get(id);
       if (!layer || !layer.visible || layer.imageAsset) continue;
+      for (const p of this.shownSelection()) {
+        if (p.layerId !== id) continue;
+        const local = applyAffine(invertAffine(p.xf), world);
+        const fill = p.base.faceAt(local);
+        if (fill !== 0) return this.palette.colorOf(fill);
+      }
       for (let ci = layer.cells.length - 1; ci >= 0; ci--) {
         const cell = layer.cells[ci];
         for (let i = cell.instances.length - 1; i >= 0; i--) {
@@ -784,11 +790,6 @@ export class StageRenderer {
         const fill = cell.art.faceAt(world);
         if (fill !== 0) return this.palette.colorOf(fill);
       }
-    }
-    for (const p of this.selection) {
-      const local = applyAffine(invertAffine(p.xf), world);
-      const fill = p.base.faceAt(local);
-      if (fill !== 0) return this.palette.colorOf(fill);
     }
     return null;
   }
@@ -831,18 +832,41 @@ export class StageRenderer {
     return this.selection.length > 0;
   }
 
+  /** Lifted parts whose layer is showing. Hidden layers keep the selection, they just don't draw it. */
+  private shownSelection(): SelectionPart[] {
+    return this.selection.filter((p) => this.layers.get(p.layerId)?.visible);
+  }
+
   selectionInstances(): PlacedInstance[] {
     return this.selection.flatMap((p) => p.instances);
   }
 
-  /** Is `world` over the floating selection? */
+  /** Is `world` over the floating selection, and not covered by a higher layer? */
   selectionContains(world: Px): boolean {
-    for (const p of this.selection) {
+    const order = this.order;
+    for (const p of this.shownSelection()) {
+      const local = applyAffine(invertAffine(p.xf), world);
+      if (p.base.faceAt(local) === 0 && !p.instances.some((inst) => this.instanceContains(inst, local, 0))) continue;
+      const at = order.indexOf(p.layerId);
+      if (order.slice(at + 1).some((id) => this.layerCovers(id, world))) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /** A higher layer's paint, including its own lifted parts, covers `world`. */
+  private layerCovers(id: string, world: Px): boolean {
+    const layer = this.layers.get(id);
+    if (!layer?.visible || layer.imageAsset) return false;
+    for (const p of this.shownSelection()) {
+      if (p.layerId !== id) continue;
       const local = applyAffine(invertAffine(p.xf), world);
       if (p.base.faceAt(local) !== 0) return true;
-      for (const inst of p.instances) {
-        if (this.instanceContains(inst, local, 0)) return true;
-      }
+      if (p.instances.some((inst) => this.instanceContains(inst, local, 0))) return true;
+    }
+    for (const cell of layer.cells) {
+      if (cell.art.faceAt(world) !== 0) return true;
+      if (cell.instances.some((inst) => this.instanceContains(inst, world, 0))) return true;
     }
     return false;
   }
@@ -1104,7 +1128,7 @@ export class StageRenderer {
   }
 
   selectionScreenBounds(): Bounds | null {
-    const b = this.selectionBounds();
+    const b = this.partsBounds(this.shownSelection());
     if (!b) return null;
     const sb = transformBounds(b, this.cameraMatrix());
     return sb;
@@ -1196,7 +1220,7 @@ export class StageRenderer {
         for (const inst of cell.instances) acc = boundsUnion(acc, this.instanceBounds(inst, 0, this.getLayerElapsed(id)));
       }
     }
-    return boundsUnion(acc, this.selectionBounds());
+    return boundsUnion(acc, this.partsBounds(this.shownSelection()));
   }
 
   /** World bounds of a layer's art. */
@@ -1400,16 +1424,16 @@ export class StageRenderer {
         this.drawArt(ctx, cell.art, zoom, 1);
         for (const inst of cell.instances) this.drawInstance(ctx, inst, view, elapsed, 0, 1);
       }
+      // Lifted art stays in this layer's slot. The outline is chrome, above everything.
+      for (const p of this.shownSelection()) {
+        if (p.layerId !== id) continue;
+        const m = mulAffine(view, p.xf);
+        setView(m);
+        this.drawArt(ctx, p.base, zoom, 1);
+        for (const inst of p.instances) this.drawInstance(ctx, inst, m, elapsed, 0, 1);
+      }
     });
     if (filledGhosts && activeIndex < 0) this.drawGhosts(ctx, view, zoom);
-
-    // Floating selection draws above everything.
-    for (const p of this.selection) {
-      const m = mulAffine(view, p.xf);
-      setView(m);
-      this.drawArt(ctx, p.base, zoom, 1);
-      for (const inst of p.instances) this.drawInstance(ctx, inst, m, this.getLayerElapsed(p.layerId), 0, 1);
-    }
 
     if (this.ghostOutline && !opts.skipGhosts) this.drawGhosts(ctx, view, zoom);
 
@@ -1523,7 +1547,7 @@ export class StageRenderer {
 
   /** Dashed outline of the floating selection on the chrome canvas (screen space). */
   strokeSelectionOutline(ctx: CanvasRenderingContext2D, accent: string | null = null): void {
-    this.strokePartsOutline(ctx, this.selection, accent);
+    this.strokePartsOutline(ctx, this.shownSelection(), accent);
   }
 
   /** Dashed outline for arbitrary floating parts (world art + instances under `xf`). */
@@ -1583,7 +1607,7 @@ export class StageRenderer {
     ctx: CanvasRenderingContext2D,
     rotating?: { cursor: Px; pivot: Px } | null,
   ): SelectionHandle[] {
-    if (this.selection.length === 0) return [];
+    if (this.shownSelection().length === 0) return [];
     this.strokeSelectionOutline(ctx);
     const sb = this.selectionScreenBounds();
     if (!sb) return [];

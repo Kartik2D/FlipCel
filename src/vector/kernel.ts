@@ -347,6 +347,11 @@ export class VectorLayer {
     return new VectorLayer(this.map.clone());
   }
 
+  /** Inbetween of this layer (t = 0) and `other` (t = 1). */
+  lerp(other: VectorLayer, t: number): VectorLayer {
+    return new VectorLayer(this.map.lerp(other.map, t));
+  }
+
   isEmpty(): boolean {
     return this.map.isEmpty();
   }

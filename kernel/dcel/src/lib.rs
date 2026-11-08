@@ -8,6 +8,7 @@
 mod build;
 mod geom;
 mod io;
+mod morph;
 mod slice;
 
 pub use geom::{P, cubic_to_quads};

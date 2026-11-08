@@ -32,6 +32,10 @@ export class VectorMap {
     fills(): Uint32Array;
     static fromBytes(bytes: Uint8Array | number[]): VectorMap;
     isEmpty(): boolean;
+    /**
+     * Inbetween of this map (t = 0) and `other` (t = 1).
+     */
+    lerp(other: VectorMap, t: number): VectorMap;
     moveVertex(x: number, y: number, nx: number, ny: number): boolean;
     /**
      * Flat `[fromX, fromY, toX, toY, ...]` twips; one rebuild for all moves.
@@ -108,6 +112,7 @@ export interface InitOutput {
     readonly vectormap_fills: (a: number) => [number, number];
     readonly vectormap_fromBytes: (a: number, b: number) => [number, number, number];
     readonly vectormap_isEmpty: (a: number) => number;
+    readonly vectormap_lerp: (a: number, b: number, c: number) => number;
     readonly vectormap_moveVertex: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly vectormap_moveVertices: (a: number, b: number, c: number) => number;
     readonly vectormap_nearestEdge: (a: number, b: number, c: number, d: number) => [number, number];

@@ -15,6 +15,7 @@ export const vectormap_fillAt: (a: number, b: number, c: number, d: number) => n
 export const vectormap_fills: (a: number) => [number, number];
 export const vectormap_fromBytes: (a: number, b: number) => [number, number, number];
 export const vectormap_isEmpty: (a: number) => number;
+export const vectormap_lerp: (a: number, b: number, c: number) => number;
 export const vectormap_moveVertex: (a: number, b: number, c: number, d: number, e: number) => number;
 export const vectormap_moveVertices: (a: number, b: number, c: number) => number;
 export const vectormap_nearestEdge: (a: number, b: number, c: number, d: number) => [number, number];

@@ -254,7 +254,7 @@ export class TimelineSession {
       if (toolStore.get() !== "select") {
         switchTool("select");
       }
-      selectionController.selectAll();
+      selectionController.selectAll("active");
     }
 
     requestRedraw();

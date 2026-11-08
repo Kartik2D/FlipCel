@@ -195,10 +195,10 @@ export class SelectionController {
     return this.layerScope;
   }
 
-  /** Lift everything on selectable layers. */
-  selectAll(): void {
+  /** Lift everything on selectable layers. `scope` overrides the tool setting. */
+  selectAll(scope: SelectLayerScope = this.layerScope): void {
     this.placeSelection();
-    this.renderer.liftAll(this.layerScope);
+    this.renderer.liftAll(scope);
     this.afterSelectionChanged();
   }
 

@@ -29,6 +29,10 @@ export class GenericColorPicker extends BaseColorPicker {
   private static readonly PLANE_RES = 192;
   /* ponytail: OK* is a full gamut solve per pixel. 64px, CSS-scaled. Raise if the field bands. */
   private static readonly OK_PLANE_RES = 64;
+  /* Bitmap is scaled by this much inside the circular clip so the bilinear
+     fringe of the low-res rim falls outside the mask. Color radius is the
+     inverse, so the clip edge is still full saturation. */
+  private static readonly CIRCLE_OVERSCAN = 1.1;
   private drawRaf: number | null = null;
   private lastPlaneSignature = "";
   /** Last hex already sent for this drag, so identical samples skip the app. */
@@ -111,6 +115,11 @@ export class GenericColorPicker extends BaseColorPicker {
       overflow: hidden;
       border: var(--picker-border-width) solid var(--picker-border-color);
       box-sizing: border-box;
+    }
+    /* Overscan the low-res bitmap so the circular clip covers the soft rim. */
+    .circle-disk canvas {
+      transform: scale(var(--circle-overscan, 1));
+      transform-origin: center;
     }
 
     canvas { display: block; width: 100%; height: 100%; image-rendering: auto; }
@@ -274,16 +283,13 @@ export class GenericColorPicker extends BaseColorPicker {
         }
       }
     } else {
-      const cx = w / 2, cy = h / 2, radius = Math.min(cx, cy);
+      const cx = w / 2, cy = h / 2;
+      const radius = Math.min(cx, cy) / GenericColorPicker.CIRCLE_OVERSCAN;
       const invRadius = radius > 0 ? 1 / radius : 0;
-      /* Edge anti-aliasing: fade pixels near the radius over ~1px so the
-         circle doesn't look jagged after CSS upscaling. */
-      const aaWidth = 1;
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const dx = x - cx, dy = y - cy;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist > radius + aaWidth) continue;
           const i = (y * w + x) * 4;
           let angleDeg = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
           if (angleDeg < 0) angleDeg += 360;
@@ -291,9 +297,7 @@ export class GenericColorPicker extends BaseColorPicker {
           pix[planeX] = mx.cyclic ? angleDeg : mx.min + (angleDeg / 360) * mxRange;
           pix[planeY] = my.min + t * myRange;
           const [r, g, b] = toRgb(pix);
-          const alpha = dist > radius ? Math.max(0, 1 - (dist - radius) / aaWidth) : 1;
-          data[i] = r; data[i + 1] = g; data[i + 2] = b;
-          data[i + 3] = Math.round(255 * alpha);
+          data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
         }
       }
     }
@@ -491,7 +495,12 @@ export class GenericColorPicker extends BaseColorPicker {
           ` : html`
             <div class="plane-circle-wrap">
               <div class="plane-circle-inner">
-                <div class="circle-disk" data-interactive @pointerdown=${this.handleCircleDown}>
+                <div
+                  class="circle-disk"
+                  style="--circle-overscan:${GenericColorPicker.CIRCLE_OVERSCAN}"
+                  data-interactive
+                  @pointerdown=${this.handleCircleDown}
+                >
                   <canvas></canvas>
                   <div class="handle" style="left:${h.left}%;top:${h.top}%;"></div>
                 </div>

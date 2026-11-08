@@ -79,10 +79,10 @@ const colorPickerSharedStyles = css`
     gap: 10px;
   }
 
-  /* Three picker variants on one equal-width tab row. */
+  /* Picker variants plus Palette, one equal-width tab row. */
   .variant-tabs {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
     width: 100%;
     min-width: 0;
@@ -92,6 +92,7 @@ const colorPickerSharedStyles = css`
     width: 100%;
     max-width: 100%;
     min-width: 0;
+    --block-face-padding: 5px 2px;
   }
 
   .picker-wrap {
@@ -169,6 +170,53 @@ const colorPickerSharedStyles = css`
   .swatch[active] {
     box-shadow: inset 0 0 0 3px var(--panel-accent);
   }
+
+  /* Palette tab fills the picker slot. Swatches scroll inside it. */
+  .palette-view {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--flipcel-space-2, 8px);
+    box-sizing: border-box;
+    border-radius: var(--flipcel-content-radius);
+    background: var(
+      --flipcel-panel-inset-bg,
+      color-mix(
+        in srgb,
+        var(--flipcel-panel-depth, #d4d4d4) 45%,
+        var(--block-face-bg, var(--flipcel-panel-surface, #ffffff))
+      )
+    );
+    padding: var(--flipcel-space-2, 8px);
+    overflow: hidden;
+  }
+
+  .palette-view .swatches-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .palette-view .swatches-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(32px, 1fr));
+    gap: 6px;
+    align-content: start;
+  }
+
+  .palette-view .swatch {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+    flex: none;
+  }
+
+  .palette-empty {
+    margin: 0;
+    color: var(--flipcel-text-muted, #666);
+    font-style: italic;
+  }
 `;
 
 type PanelConstructor = abstract new (...args: any[]) => FloatingPanel;
@@ -183,6 +231,8 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
     @state() protected prevColor = "#000000";
     /** When on, picker changes remap the selected document color everywhere. */
     @state() private recolorEnabled = false;
+    /** Main panel tab. Picker prefs stay put so leaving Palette restores the variant. */
+    @state() private paletteOpen = false;
     /** Document swatch hex currently targeted by Recolor (fixed during a drag). */
     @state() private recolorFrom: string | null = null;
     private hexFocused = false;
@@ -221,6 +271,7 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
     }
 
     private onVariantChange(id: string) {
+      this.paletteOpen = false;
       const variant = PICKER_VARIANTS.find((v) => v.id === id);
       if (!variant) return;
       colorPanelPrefsStore.set(normalizeColorPanelPrefs({ ...variant.prefs }));
@@ -308,48 +359,71 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
       `;
     }
 
-    private renderSwatches() {
+    private renderSwatchGrid() {
       const colors = this.documentColors.value;
+      if (colors.length === 0) {
+        return html`<p class="palette-empty">No document colors yet</p>`;
+      }
       const activeColor = this.color.trim().toLowerCase();
-      const showRecolor = this.showDocumentColorRecolor();
+      return html`
+        <div class="swatches-grid">
+          ${repeat(
+            colors,
+            (color) => color,
+            (color) => html`
+              <button
+                type="button"
+                class="swatch"
+                style="background:${color}"
+                title=${color}
+                ?active=${color === activeColor}
+                @click=${() => this.selectSwatch(color)}
+              ></button>
+            `,
+          )}
+        </div>
+      `;
+    }
 
+    private renderDocColorsHeader() {
+      const showRecolor = this.showDocumentColorRecolor();
+      return html`
+        <div class="doc-colors-header">
+          <h3>Document Colors</h3>
+          ${showRecolor
+            ? html`
+                <blocky-button
+                  flat
+                  ?active=${this.recolorEnabled}
+                  title=${this.recolorEnabled
+                    ? "Recolor on. Changing the picker remaps the selected document color everywhere"
+                    : "Recolor off. Select a document color, then enable to remap it"}
+                  @click=${() => this.toggleRecolor()}
+                  >Recolor</blocky-button
+                >
+              `
+            : nothing}
+        </div>
+      `;
+    }
+
+    /** Stage popup: swatches under the picker. */
+    private renderSwatches() {
       return html`
         <flipcel-panel-section data-interactive>
-          <div class="doc-colors-header">
-            <h3>Document Colors</h3>
-            ${showRecolor
-              ? html`
-                  <blocky-button
-                    flat
-                    ?active=${this.recolorEnabled}
-                    title=${this.recolorEnabled
-                      ? "Recolor on. Changing the picker remaps the selected document color everywhere"
-                      : "Recolor off. Select a document color, then enable to remap it"}
-                    @click=${() => this.toggleRecolor()}
-                    >Recolor</blocky-button
-                  >
-                `
-              : nothing}
-          </div>
-          <div class="swatches-wrap">
-            <div class="swatches-grid">
-              ${repeat(
-                colors,
-                (color) => color,
-                (color) => html`
-                  <button
-                    type="button"
-                    class="swatch"
-                    style="background:${color}"
-                    title=${color}
-                    ?active=${color === activeColor}
-                    @click=${() => this.selectSwatch(color)}
-                  ></button>
-                `,
-              )}
-            </div>
-          </div>
+          ${this.renderDocColorsHeader()}
+          <div class="swatches-wrap">${this.renderSwatchGrid()}</div>
         </flipcel-panel-section>
+      `;
+    }
+
+    /** Main panel Palette tab: document colors fill the picker slot. */
+    private renderPalette() {
+      return html`
+        <div class="palette-view" data-interactive>
+          ${this.renderDocColorsHeader()}
+          <div class="swatches-wrap">${this.renderSwatchGrid()}</div>
+        </div>
       `;
     }
 
@@ -357,52 +431,72 @@ function ColorPickerFeatures<T extends PanelConstructor>(Base: T) {
       const prefs = this.pickerPrefs.value;
       const activeVariant = exactVariantId(prefs) || PICKER_VARIANTS[0].id;
       const showVariantTabs = this.showPickerVariantTabs();
-      const showDocumentSwatches = this.showDocumentColorSwatches();
+      const showPalette = showVariantTabs && this.paletteOpen;
+      /* Popup has no tabs, so document colors stay under the picker. */
+      const showDocumentSwatches = !showVariantTabs && this.showDocumentColorSwatches();
+      const variantTabs = html`
+        <div class="variant-tabs">
+          ${PICKER_VARIANTS.map(
+            (v) => html`
+              <blocky-button
+                flat
+                stretch
+                ?active=${!this.paletteOpen && v.id === activeVariant}
+                @click=${() => this.onVariantChange(v.id)}
+                >${v.label}</blocky-button
+              >
+            `,
+          )}
+          <blocky-button
+            flat
+            stretch
+            ?active=${this.paletteOpen}
+            @click=${() => {
+              this.paletteOpen = true;
+            }}
+            >palette</blocky-button
+          >
+        </div>
+      `;
 
       return html`
         ${showVariantTabs
-          ? html`
-              <flipcel-panel-section title="Picker" data-interactive>
-                <div class="variant-tabs">
-                  ${PICKER_VARIANTS.map(
-                    (v) => html`
-                      <blocky-button
-                        flat
-                        stretch
-                        ?active=${v.id === activeVariant}
-                        @click=${() => this.onVariantChange(v.id)}
-                        >${v.label}</blocky-button
-                      >
-                    `,
-                  )}
-                </div>
-              </flipcel-panel-section>
-            `
+          ? this.mini
+            ? variantTabs
+            : html`
+                <flipcel-panel-section title="Picker" data-interactive>
+                  ${variantTabs}
+                </flipcel-panel-section>
+              `
           : nothing}
-        <div class="picker-wrap">
-          <generic-color-picker
-            .color=${this.color}
-            .prevColor=${this.prevColor}
-            .prefs=${prefs}
-            @input=${(e: CustomEvent<{ value: string }>) => {
-              this.emitPickerColor(e.detail.value, false);
-            }}
-            @change=${(e: CustomEvent<{ value: string }>) => {
-              const color = e.detail.value;
-              this.color = color;
-              colorStore.set(color);
-              prevColorStore.set(color);
-              this.emitPickerColor(color, true);
-            }}
-          ></generic-color-picker>
-        </div>
+        ${showPalette
+          ? this.renderPalette()
+          : html`
+              <div class="picker-wrap">
+                <generic-color-picker
+                  .color=${this.color}
+                  .prevColor=${this.prevColor}
+                  .prefs=${prefs}
+                  @input=${(e: CustomEvent<{ value: string }>) => {
+                    this.emitPickerColor(e.detail.value, false);
+                  }}
+                  @change=${(e: CustomEvent<{ value: string }>) => {
+                    const color = e.detail.value;
+                    this.color = color;
+                    colorStore.set(color);
+                    prevColorStore.set(color);
+                    this.emitPickerColor(color, true);
+                  }}
+                ></generic-color-picker>
+              </div>
+            `}
         ${this.showHexField() ? this.renderHexField() : nothing}
         ${showDocumentSwatches ? this.renderSwatches() : nothing}
       `;
     }
 
     protected showPickerVariantTabs(): boolean {
-      return !this.mini;
+      return true;
     }
 
     protected showDocumentColorSwatches(): boolean {
@@ -436,11 +530,13 @@ export class FlipCelColorPanel extends ColorPickerFeatures(FloatingPanel) {
     ${colorPickerSharedStyles}
 
     :host {
-      --panel-width: 288px;
-      /* Tabs + square plane + hex + one swatch row, no scroll. */
-      --panel-height: 500px;
+      /* Floor that fits the tab row, a square wheel beside the slider, and the hex field.
+         Wider than this only adds slack beside the tabs; taller only letterboxes the circle. */
+      --panel-width: 264px;
+      --panel-min-width: 264px;
+      --panel-height: 396px;
       height: var(--panel-height);
-      min-height: 280px;
+      min-height: var(--panel-height);
       --picker-border-width: 2px;
       --picker-border-color: var(--block-border, #9f9f9f);
       --picker-slider-width: 20px;
@@ -449,10 +545,20 @@ export class FlipCelColorPanel extends ColorPickerFeatures(FloatingPanel) {
     }
 
     :host([mini]) {
-      --panel-width: 204px;
-      --panel-min-width: 204px;
-      --panel-height: 208px;
-      min-height: 208px;
+      --panel-width: 248px;
+      --panel-min-width: 248px;
+      /* Tab row plus the wheel. Palette uses the same body. */
+      --panel-height: 256px;
+      min-height: 248px;
+    }
+
+    :host([mini]) .variant-tabs {
+      gap: 4px;
+    }
+
+    :host([mini]) .variant-tabs > blocky-button {
+      --block-font-size: 11px;
+      --block-face-padding: 4px 0;
     }
 
     .picker-wrap {
@@ -461,16 +567,16 @@ export class FlipCelColorPanel extends ColorPickerFeatures(FloatingPanel) {
     }
 
     :host([mini]) .picker-wrap {
-      min-height: 132px;
+      min-height: 0;
     }
   `;
 
   protected override getResizeMinWidth(): number {
-    return this.mini ? 204 : super.getResizeMinWidth();
+    return this.mini ? 248 : 264;
   }
 
   protected override getResizeMinHeight(_width: number): number {
-    return this.mini ? 208 : 280;
+    return this.mini ? 248 : 396;
   }
 
   render() {

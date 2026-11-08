@@ -1794,7 +1794,7 @@ class App {
     if (toolStore.get() !== "select") {
       this.switchTool("select");
     }
-    this.selectionController.selectAll();
+    this.selectionController.selectAll("active");
   }
 
   private onLayerRename(layerId: string, name: string) {
@@ -1828,14 +1828,8 @@ class App {
         l.id === layerId ? { ...l, visible: newVisibility } : l
       ),
     }));
-    // Solo + visibility → Paper; do not write Paper before effective pass.
+    // Solo + visibility → Paper. Lifted art stays selected and is not drawn while its layer is hidden.
     this.documentManager.applyEffectiveVisibility();
-    // Content JSON can embed a stale visible:false from while the layer was
-    // hidden; re-apply store visibility after any pending import path.
-    if (newVisibility) {
-      this.documentManager.invalidateLoadedLayer(layerId);
-      this.documentManager.reloadVisibleFrame();
-    }
 
     // Visibility is part of the layer-structure snapshot, so it participates
     // in undo/redo like every other layer operation.

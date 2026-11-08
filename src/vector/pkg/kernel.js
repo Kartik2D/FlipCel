@@ -138,6 +138,17 @@ export class VectorMap {
         return ret !== 0;
     }
     /**
+     * Inbetween of this map (t = 0) and `other` (t = 1).
+     * @param {VectorMap} other
+     * @param {number} t
+     * @returns {VectorMap}
+     */
+    lerp(other, t) {
+        _assertClass(other, VectorMap);
+        const ret = wasm.vectormap_lerp(this.__wbg_ptr, other.__wbg_ptr, t);
+        return VectorMap.__wrap(ret);
+    }
+    /**
      * @param {number} x
      * @param {number} y
      * @param {number} nx

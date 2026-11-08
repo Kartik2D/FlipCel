@@ -24,18 +24,13 @@ import {
   type ChartStroke,
 } from "./magic-move-graph";
 import { scheduler, Surface } from "../render/frame-scheduler";
-import { morphLayerJson, type MorphOptions } from "./magic-morph-blend";
-import { contentToPaperLayerJson, paperLayerJsonToContent } from "../vector/paper-adapter";
-import { isVectorContent } from "../vector/content";
+import { decodeContent, encodeContent, isVectorContent } from "../vector/content";
+import { VectorLayer } from "../vector/kernel";
 import { timelineStore, layerJsonEquals } from "../document/document";
 
 interface Settings {
   scope: "active" | "all";
-  solver: "vector" | "sdf";
   divisions: number;
-  density: number;
-  stickiness: number;
-  simplify: number;
 }
 
 /**
@@ -185,9 +180,7 @@ export class MagicMorphController {
 
     this.documentManager.commitDirtyLayerContent();
 
-    const { divisions, density, stickiness, simplify, solver } =
-      this.readSettings();
-    const morphOpts = { density, stickiness, simplify, solver };
+    const { divisions } = this.readSettings();
     const ratioResult = morphRatiosFromChart(this.chartStrokes(), divisions);
     if (!ratioResult.ok) return ratioResult;
 
@@ -242,7 +235,7 @@ export class MagicMorphController {
       const span = spans[li];
       const publish = li === spans.length - 1;
       for (let i = 0; i < frames.length; i++) {
-        const json = this.morphContent(span.startJson, span.endJson, ratios[i] ?? 0, morphOpts);
+        const json = this.morphContent(span.startJson, span.endJson, ratios[i] ?? 0);
         if (!json) continue;
         this.documentManager.writeLayerContentAtFrame(span.layerId, frames[i], json, {
           publish: false,
@@ -286,8 +279,6 @@ export class MagicMorphController {
     }
     this.documentManager.commitDirtyLayerContent();
 
-    const { density, stickiness, simplify, solver } = this.readSettings();
-    const morphOpts = { density, stickiness, simplify, solver };
     // Snapshot before writing: morph inbetweens insert keyframes, and we
     // only want to process the holds that existed at click time.
     const tracks = timelineStore.get().tracks;
@@ -327,7 +318,7 @@ export class MagicMorphController {
         if (frames.length === 0) continue;
 
         for (let i = 0; i < frames.length; i++) {
-          const json = this.morphContent(span.startJson, span.endJson, ratios[i] ?? 0, morphOpts);
+          const json = this.morphContent(span.startJson, span.endJson, ratios[i] ?? 0);
           if (!json) continue;
           this.documentManager.writeLayerContentAtFrame(
             layerId,
@@ -392,11 +383,7 @@ export class MagicMorphController {
     const raw = toolSettingsStore.get()["magic-morph"] as Partial<Settings>;
     return {
       scope: raw?.scope === "active" ? "active" : "all",
-      solver: raw?.solver === "sdf" ? "sdf" : "vector",
       divisions: typeof raw?.divisions === "number" ? raw.divisions : 1,
-      density: typeof raw?.density === "number" ? raw.density : 1,
-      stickiness: typeof raw?.stickiness === "number" ? raw.stickiness : 0,
-      simplify: typeof raw?.simplify === "number" ? raw.simplify : 0,
     };
   }
 
@@ -411,25 +398,23 @@ export class MagicMorphController {
   }
 
   /**
-   * Morph two kernel content strings through the Paper-based solver.
-   * Instances ride along from the start pose (not interpolated).
+   * Lerp two kernel maps. Instances ride along from the start pose.
    */
-  private morphContent(
-    aJson: string,
-    bJson: string,
-    t: number,
-    opts: Partial<MorphOptions>,
-  ): string {
+  private morphContent(aJson: string, bJson: string, t: number): string {
     if (!aJson || !isVectorContent(aJson)) return "";
     if (t <= 0) return aJson;
     if (t >= 1) return bJson || aJson;
-    const palette = this.renderer.getPalette();
-    if (!palette) return "";
-    const a = contentToPaperLayerJson(aJson, palette);
-    const b = contentToPaperLayerJson(bJson, palette);
-    const morphed = morphLayerJson(a.layerJson, b.layerJson, t, opts);
-    if (!morphed) return "";
-    return paperLayerJsonToContent(morphed, palette, a.instances);
+    const a = decodeContent(aJson);
+    const b = decodeContent(bJson);
+    if (a.map.length === 0) return aJson;
+    const layerA = VectorLayer.fromBytes(a.map);
+    const layerB = b.map.length ? VectorLayer.fromBytes(b.map) : new VectorLayer();
+    const morphed = layerA.lerp(layerB, t);
+    const json = encodeContent(morphed.isEmpty() ? null : morphed.toBytes(), a.instances);
+    morphed.free();
+    layerB.free();
+    layerA.free();
+    return json;
   }
 
   private toViewport(points: Point[]): Point[] {
